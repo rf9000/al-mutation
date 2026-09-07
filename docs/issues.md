@@ -7,3 +7,4 @@
 | Mutating `if` conditions in `else if`, `then if`, `do if`, or case-branch position | Requires wrapping the whole `if` statement in `begin…end`, which needs compound-statement end detection. | 2026-09-07 |
 | Objects other than codeunits (table/page triggers) | Same tokenizer would work; cut for POC size. | 2026-09-07 |
 | Phase 4 triage page, Phase 5 incremental runs, Suggest-Test | After Gate G0. | 2026-09-07 |
+| Pester 6.1.0 is what an unpinned Install-Module returns | Spec §9.3 pins Pester 5.x; all test runs import with -MaximumVersion 5.99. Pester 6 compatibility unverified. | 2026-09-07 |

@@ -721,7 +721,7 @@ Sections in this order, each a table with columns `Metric | Value | Backend | Da
 
 ### 9.3 PowerShell
 - Windows PowerShell 5.1 compatible: `Set-StrictMode -Version Latest`, `$ErrorActionPreference = 'Stop'`, no `&&`/`||`, no ternary, `[pscustomobject]` for records, `ConvertTo-Json -Depth 10`.
-- Tests: Pester 5 (`Install-Module Pester -Scope CurrentUser -Force -SkipPublisherCheck -MinimumVersion 5.5`; `Import-Module Pester -MinimumVersion 5.0`). Test files `orchestrator/tests/<Module>.Tests.ps1`, run with `Invoke-Pester orchestrator/tests -Output Detailed`. Mock `Invoke-Continia` with `Mock -ModuleName DemoPortal Invoke-Continia -MockWith { … }`; never call the real CLI from unit tests.
+- Tests: Pester 5 (`Install-Module Pester -Scope CurrentUser -Force -SkipPublisherCheck -MinimumVersion 5.5 -MaximumVersion 5.99`; `Import-Module Pester -MinimumVersion 5.0 -MaximumVersion 5.99` (Pester 6 is not used; its breaking changes are unverified)). Test files `orchestrator/tests/<Module>.Tests.ps1`, run with `Invoke-Pester orchestrator/tests -Output Detailed`. Mock `Invoke-Continia` with `Mock -ModuleName DemoPortal Invoke-Continia -MockWith { … }`; never call the real CLI from unit tests.
 - Module files export only the functions listed in this spec (`Export-ModuleMember`).
 
 ### 9.4 TypeScript

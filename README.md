@@ -19,4 +19,4 @@ three-codeunit slice of the real AUT (Tier B) before any full run.
 | Node | 22.19 |
 | npm | 11.10 |
 | PowerShell | Windows PowerShell 5.1 |
-| Pester | 5 (installed per user; the preinstalled 3.4.0 is too old) |
+| Pester | 5.9.1 (installed per user with `-MaximumVersion 5.99`; import with `Import-Module Pester -MinimumVersion 5.0 -MaximumVersion 5.99`; the preinstalled 3.4.0 is too old) |
