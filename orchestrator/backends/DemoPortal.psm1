@@ -7,6 +7,9 @@ $script:RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 # Poll loop tuning for env get / env stop-start status polling.
 $script:PollIntervalSec = 10
 $script:MaxPollIterations = 60
+# New-MutEnvironment's "wait for env get to return an object with a status property at all"
+# budget is intentionally much shorter than the full start-to-Running poll (§6.5.3): 6 x 10s = 60s.
+$script:MaxAppearIterations = 6
 
 function Resolve-MutCliPath {
     param($Config)
@@ -53,14 +56,32 @@ function Invoke-Continia {
         Runs the CLI via System.Diagnostics.Process (not PowerShell's `&` operator with
         `2>&1`): Windows PowerShell 5.1 wraps redirected native stderr in NativeCommandError
         records, and $ErrorActionPreference = 'Stop' turns those into terminating errors even
-        on a zero exit code. Process gives independent, non-terminating access to stdout and
-        stderr, so the CLI's stderr diagnostics (see .claude/skills/continia-deps/SKILL.md)
-        never corrupt the stdout JSON parse.
+        on a zero exit code. Both stdout and stderr are read via the .NET async Task readers
+        (StandardOutput/StandardError.ReadToEndAsync), NOT via Register-ObjectEvent on
+        OutputDataReceived/ErrorDataReceived: PowerShell dispatches those events through the
+        runspace event queue with no ordering guarantee across rapid-fire line events, which
+        was found (T03, fix round 2) to reorder lines non-deterministically and corrupt every
+        multi-line JSON response. ReadToEndAsync reads each stream on a single dedicated task
+        in original byte order; starting both tasks before WaitForExit avoids the classic
+        redirected-pipe deadlock, and WaitForExit(timeout) is never blocked behind either read.
+
+        .PARAMETER ExpectJson
+        Some CLI subcommands (`env start`, `env stop`, `env delete`, `env use`) have no `--json`
+        output at all: on success they print a one-line confirmation to stderr, stdout is
+        empty, and exit code is 0 (verified against the real CLI, T03 fix round 3). Calling
+        Invoke-Continia for one of those with the default $ExpectJson = $true would previously
+        either hang parsing empty stdout as JSON or silently swallow a failure. Pass
+        -ExpectJson:$false for those commands: no JSON parse is attempted, a non-zero exit code
+        throws (message includes stderr), and the raw exit code/stdout/stderr are returned.
+        With the default $ExpectJson = $true, empty/whitespace stdout is always an error (never
+        a silent $null) and a non-zero exit code is never treated as failure by itself (F18:
+        `test run` exits 1 when tests fail while still emitting valid JSON on stdout).
     #>
     param(
         [Parameter(Mandatory = $true)]
         [string[]]$Arguments,
-        [int]$TimeoutSec = 600
+        [int]$TimeoutSec = 600,
+        [bool]$ExpectJson = $true
     )
 
     $cliPath = $script:CliPath
@@ -78,14 +99,6 @@ function Invoke-Continia {
     $proc = New-Object System.Diagnostics.Process
     $proc.StartInfo = $psi
 
-    # Both streams are read via the .NET async Task readers (ReadToEndAsync), NOT via
-    # Register-ObjectEvent on OutputDataReceived/ErrorDataReceived: PowerShell dispatches
-    # those events through the runspace event queue with no ordering guarantee across
-    # rapid-fire line events, so a StringBuilder fed from that queue can come back with
-    # lines out of their original order (observed corrupting every multi-line CLI response
-    # in T03 — see docs/issues.md). ReadToEndAsync reads its stream on a single dedicated
-    # task in original byte order; starting both tasks before WaitForExit avoids the classic
-    # redirected-pipe deadlock, and WaitForExit(timeout) is never blocked behind either read.
     $stdout = ''
     $stderr = ''
     $exitCode = $null
@@ -111,6 +124,17 @@ function Invoke-Continia {
     }
 
     $script:LastContiniaExitCode = $exitCode
+
+    if (-not $ExpectJson) {
+        if ($exitCode -ne 0) {
+            throw "continia exited with code ${exitCode}: continia $quotedArgs; stderr: $stderr"
+        }
+        return [pscustomobject]@{ ExitCode = $exitCode; StdOut = $stdout; StdErr = $stderr }
+    }
+
+    if ([string]::IsNullOrWhiteSpace($stdout)) {
+        throw "continia returned no JSON: $quotedArgs; stderr: $stderr"
+    }
 
     try {
         return $stdout | ConvertFrom-Json
@@ -141,8 +165,26 @@ function Assert-MutEnvironmentAllowed {
     }
 }
 
+function Test-MutHasProperty {
+    param($Object, [string]$Name)
+
+    if ($null -eq $Object) {
+        return $false
+    }
+    return $null -ne $Object.PSObject.Properties[$Name]
+}
+
 function ConvertTo-MutEnvironmentHandle {
     param($Raw)
+
+    # $Raw.status is read through Test-MutHasProperty, not a bare dot access: under
+    # Set-StrictMode -Version Latest, accessing a property that is entirely absent from a
+    # PSCustomObject throws PropertyNotFoundException rather than returning $null (this is
+    # exactly the class of bug that crashed New-MutEnvironment against the real CLI in T03).
+    $status = $null
+    if (Test-MutHasProperty $Raw 'status') {
+        $status = $Raw.status
+    }
 
     [pscustomobject]@{
         Id      = $Raw.id
@@ -150,6 +192,8 @@ function ConvertTo-MutEnvironmentHandle {
         Url     = $Raw.url
         Backend = 'DemoPortal'
         Shared  = [bool]$Raw.shared
+        Status  = $status
+        CliPath = $script:CliPath
     }
 }
 
@@ -158,7 +202,7 @@ function Get-MutEnvironment {
         .SYNOPSIS
         Looks up an existing DemoPortal environment by name (description).
         .OUTPUTS
-        A handle [pscustomobject]@{Id;Name;Url;Backend;Shared}, or $null if not found.
+        A handle [pscustomobject]@{Id;Name;Url;Backend;Shared;Status;CliPath}, or $null if not found.
     #>
     param(
         [Parameter(Mandatory = $true)]
@@ -183,6 +227,15 @@ function Get-MutEnvironment {
 }
 
 function Wait-MutEnvironmentStatus {
+    <#
+        .SYNOPSIS
+        Polls `env get <id> --json` every 10s (max 60 iterations, i.e. up to 10 minutes) until
+        the response's `status` equals $Status. A response missing the `status` property
+        entirely (or $null) counts as "not yet ready" and is retried rather than treated as an
+        error (T03 fix round 3: the CLI can return a transiently incomplete body immediately
+        after `env create`/`env start`, and under Set-StrictMode a bare `.status` access on
+        such a response is a hard crash rather than "not equal").
+    #>
     param(
         [Parameter(Mandatory = $true)]
         [string]$Id,
@@ -190,22 +243,103 @@ function Wait-MutEnvironmentStatus {
         [string]$Status
     )
 
+    $lastResponse = $null
     for ($i = 0; $i -lt $script:MaxPollIterations; $i++) {
         $env = Invoke-Continia -Arguments @('env', 'get', $Id, '--json')
-        if ($env.status -eq $Status) {
+        $lastResponse = $env
+        if ((Test-MutHasProperty $env 'status') -and $env.status -eq $Status) {
             return $env
         }
         Start-Sleep -Seconds $script:PollIntervalSec
     }
 
-    throw "Wait-MutEnvironmentStatus: environment '$Id' did not reach status '$Status' within $($script:MaxPollIterations * $script:PollIntervalSec) seconds."
+    $lastJson = $lastResponse | ConvertTo-Json -Depth 10 -Compress
+    throw "Wait-MutEnvironmentStatus: environment '$Id' did not reach status '$Status' within $($script:MaxPollIterations * $script:PollIntervalSec) seconds. Last response: $lastJson"
+}
+
+function Wait-MutEnvironmentAppears {
+    <#
+        .SYNOPSIS
+        Polls `env get <id> --json` every 10s (max 6 iterations, i.e. up to 60s) until the
+        response is an object carrying a `status` property at all, regardless of its value.
+        Used right after `env create`, whose immediate `env get` response can be transiently
+        incomplete (T03 fix round 3).
+    #>
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Id
+    )
+
+    $lastResponse = $null
+    for ($i = 0; $i -lt $script:MaxAppearIterations; $i++) {
+        $env = Invoke-Continia -Arguments @('env', 'get', $Id, '--json')
+        $lastResponse = $env
+        if (Test-MutHasProperty $env 'status') {
+            return $env
+        }
+        Start-Sleep -Seconds $script:PollIntervalSec
+    }
+
+    $lastJson = $lastResponse | ConvertTo-Json -Depth 10 -Compress
+    throw "Wait-MutEnvironmentAppears: environment '$Id' did not return a 'status' property within $($script:MaxAppearIterations * $script:PollIntervalSec) seconds. Last response: $lastJson"
+}
+
+function Start-MutEnvironment {
+    <#
+        .SYNOPSIS
+        Idempotently ensures the environment is started and ready: refreshes status via
+        `env get`; if not already Running, issues `env start` (no --json; stdout is empty,
+        confirmation is on stderr, per T03 fix round 3) then polls to Running; then installs
+        the Continia Core Internal Activation App and sets the workspace default env
+        (`env use`) unconditionally, since those are safe to repeat.
+        .OUTPUTS
+        The handle with Status='Running', StartDurationSec, ActivationInstallDurationSec (0 for
+        StartDurationSec when the environment was already Running and env start/poll were
+        skipped).
+    #>
+    param(
+        [Parameter(Mandatory = $true)]
+        $Env,
+        [Parameter(Mandatory = $true)]
+        $Config
+    )
+
+    Assert-MutEnvironmentAllowed $Env
+
+    $script:CliPath = Resolve-MutCliPath -Config $Config
+
+    $current = Invoke-Continia -Arguments @('env', 'get', $Env.Id, '--json')
+
+    $startDurationSec = 0
+    $running = $current
+
+    if (-not ((Test-MutHasProperty $current 'status') -and $current.status -eq 'Running')) {
+        $startStart = Get-Date
+        Invoke-Continia -Arguments @('env', 'start', $Env.Id) -ExpectJson:$false | Out-Null
+        $running = Wait-MutEnvironmentStatus -Id $Env.Id -Status 'Running'
+        $startDurationSec = ((Get-Date) - $startStart).TotalSeconds
+    }
+
+    $activationStart = Get-Date
+    Invoke-Continia -Arguments @('deps', 'install-by-id', $Env.Id, $Config.demoPortal.activationAppId, '--json') | Out-Null
+    $activationInstallDurationSec = ((Get-Date) - $activationStart).TotalSeconds
+
+    Invoke-Continia -Arguments @('env', 'use', $Env.Id) -ExpectJson:$false | Out-Null
+
+    $handle = ConvertTo-MutEnvironmentHandle -Raw $running
+
+    Add-Member -InputObject $handle -NotePropertyName 'StartDurationSec' -NotePropertyValue $startDurationSec
+    Add-Member -InputObject $handle -NotePropertyName 'ActivationInstallDurationSec' -NotePropertyValue $activationInstallDurationSec
+
+    return $handle
 }
 
 function New-MutEnvironment {
     <#
         .SYNOPSIS
-        Creates, starts, and prepares a fresh DemoPortal environment: env create, env start,
-        poll env get until Running, install the activation app, set the workspace env.
+        Creates a fresh DemoPortal environment (env create), waits for it to become visible
+        with a status at all (env get, up to 60s), then delegates starting/activating it to
+        Start-MutEnvironment.
         .OUTPUTS
         A handle plus CreateDurationSec, StartDurationSec, ActivationInstallDurationSec.
     #>
@@ -224,26 +358,15 @@ function New-MutEnvironment {
 
     $createStart = Get-Date
     $created = Invoke-Continia -Arguments @('env', 'create', '--name', $Name, '--profile', $Config.demoPortal.profileId, '--json')
-    $createDurationSec = ((Get-Date) - $createStart).TotalSeconds
-
     $envId = $created.id
 
-    $startStart = Get-Date
-    Invoke-Continia -Arguments @('env', 'start', $envId, '--json') | Out-Null
-    $running = Wait-MutEnvironmentStatus -Id $envId -Status 'Running'
-    $startDurationSec = ((Get-Date) - $startStart).TotalSeconds
+    $appeared = Wait-MutEnvironmentAppears -Id $envId
+    $createDurationSec = ((Get-Date) - $createStart).TotalSeconds
 
-    $activationStart = Get-Date
-    Invoke-Continia -Arguments @('deps', 'install-by-id', $envId, $Config.demoPortal.activationAppId, '--json') | Out-Null
-    $activationInstallDurationSec = ((Get-Date) - $activationStart).TotalSeconds
-
-    Invoke-Continia -Arguments @('env', 'use', $envId, '--json') | Out-Null
-
-    $handle = ConvertTo-MutEnvironmentHandle -Raw $running
+    $envHandle = ConvertTo-MutEnvironmentHandle -Raw $appeared
+    $handle = Start-MutEnvironment -Env $envHandle -Config $Config
 
     Add-Member -InputObject $handle -NotePropertyName 'CreateDurationSec' -NotePropertyValue $createDurationSec
-    Add-Member -InputObject $handle -NotePropertyName 'StartDurationSec' -NotePropertyValue $startDurationSec
-    Add-Member -InputObject $handle -NotePropertyName 'ActivationInstallDurationSec' -NotePropertyValue $activationInstallDurationSec
 
     return $handle
 }
@@ -265,10 +388,10 @@ function Remove-MutEnvironment {
     $script:CliPath = Resolve-MutCliPath -Config $Config
 
     if ($Config.keepEnvironment) {
-        Invoke-Continia -Arguments @('env', 'stop', $Env.Id, '--json') | Out-Null
+        Invoke-Continia -Arguments @('env', 'stop', $Env.Id) -ExpectJson:$false | Out-Null
     }
     else {
-        Invoke-Continia -Arguments @('env', 'delete', $Env.Id, '--json') | Out-Null
+        Invoke-Continia -Arguments @('env', 'delete', $Env.Id) -ExpectJson:$false | Out-Null
     }
 }
 
@@ -288,10 +411,10 @@ function Reset-MutEnvironment {
 
     $start = Get-Date
 
-    Invoke-Continia -Arguments @('env', 'stop', $Env.Id, '--json') | Out-Null
+    Invoke-Continia -Arguments @('env', 'stop', $Env.Id) -ExpectJson:$false | Out-Null
     Wait-MutEnvironmentStatus -Id $Env.Id -Status 'Stopped' | Out-Null
 
-    Invoke-Continia -Arguments @('env', 'start', $Env.Id, '--json') | Out-Null
+    Invoke-Continia -Arguments @('env', 'start', $Env.Id) -ExpectJson:$false | Out-Null
     Wait-MutEnvironmentStatus -Id $Env.Id -Status 'Running' | Out-Null
 
     $durationSec = ((Get-Date) - $start).TotalSeconds
@@ -299,4 +422,4 @@ function Reset-MutEnvironment {
     return [pscustomobject]@{ DurationSec = $durationSec }
 }
 
-Export-ModuleMember -Function Get-MutEnvironment, New-MutEnvironment, Remove-MutEnvironment, Reset-MutEnvironment, Assert-MutEnvironmentAllowed
+Export-ModuleMember -Function Get-MutEnvironment, New-MutEnvironment, Start-MutEnvironment, Remove-MutEnvironment, Reset-MutEnvironment, Assert-MutEnvironmentAllowed
