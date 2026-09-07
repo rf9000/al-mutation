@@ -194,6 +194,22 @@ Describe 'Invoke-Continia (private, mock point)' {
         }
     }
 
+    It 'preserves stdout line order on a large multi-line payload (real Process invocation, not mocked)' {
+        InModuleScope DemoPortal {
+            $previousCliPath = $script:CliPath
+            try {
+                $script:CliPath = 'powershell.exe'
+                $result = Invoke-Continia -Arguments @('-NoProfile', '-Command', 'ConvertTo-Json (1..300)') -TimeoutSec 60
+                $result.Count | Should -Be 300
+                $result[0] | Should -Be 1
+                $result[299] | Should -Be 300
+            }
+            finally {
+                $script:CliPath = $previousCliPath
+            }
+        }
+    }
+
     It 'throws when stdout is not JSON (real Process invocation, not mocked)' {
         InModuleScope DemoPortal {
             $previousCliPath = $script:CliPath

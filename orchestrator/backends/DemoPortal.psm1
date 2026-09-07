@@ -78,29 +78,21 @@ function Invoke-Continia {
     $proc = New-Object System.Diagnostics.Process
     $proc.StartInfo = $psi
 
-    # Both streams are drained asynchronously via event handlers, and WaitForExit(timeout)
-    # is never blocked behind a synchronous ReadToEnd(): a synchronous ReadToEnd() on either
-    # stream would hang forever against a child that never closes that handle, and the
-    # -TimeoutSec guard would then never get a chance to fire.
-    $stdoutBuilder = New-Object System.Text.StringBuilder
-    $stderrBuilder = New-Object System.Text.StringBuilder
-
-    $stdoutEvent = Register-ObjectEvent -InputObject $proc -EventName OutputDataReceived -Action {
-        if ($null -ne $EventArgs.Data) {
-            $null = $Event.MessageData.AppendLine($EventArgs.Data)
-        }
-    } -MessageData $stdoutBuilder
-
-    $stderrEvent = Register-ObjectEvent -InputObject $proc -EventName ErrorDataReceived -Action {
-        if ($null -ne $EventArgs.Data) {
-            $null = $Event.MessageData.AppendLine($EventArgs.Data)
-        }
-    } -MessageData $stderrBuilder
-
+    # Both streams are read via the .NET async Task readers (ReadToEndAsync), NOT via
+    # Register-ObjectEvent on OutputDataReceived/ErrorDataReceived: PowerShell dispatches
+    # those events through the runspace event queue with no ordering guarantee across
+    # rapid-fire line events, so a StringBuilder fed from that queue can come back with
+    # lines out of their original order (observed corrupting every multi-line CLI response
+    # in T03 — see docs/issues.md). ReadToEndAsync reads its stream on a single dedicated
+    # task in original byte order; starting both tasks before WaitForExit avoids the classic
+    # redirected-pipe deadlock, and WaitForExit(timeout) is never blocked behind either read.
+    $stdout = ''
+    $stderr = ''
+    $exitCode = $null
     try {
         $null = $proc.Start()
-        $proc.BeginOutputReadLine()
-        $proc.BeginErrorReadLine()
+        $stdoutTask = $proc.StandardOutput.ReadToEndAsync()
+        $stderrTask = $proc.StandardError.ReadToEndAsync()
 
         $exited = $proc.WaitForExit($TimeoutSec * 1000)
         if (-not $exited) {
@@ -108,17 +100,17 @@ function Invoke-Continia {
             throw "continia timed out after $TimeoutSec s: continia $quotedArgs"
         }
         $proc.WaitForExit()
+
+        [System.Threading.Tasks.Task]::WaitAll(@($stdoutTask, $stderrTask), 30000) | Out-Null
+        $stdout = $stdoutTask.Result
+        $stderr = $stderrTask.Result
+        $exitCode = $proc.ExitCode
     }
     finally {
-        Unregister-Event -SourceIdentifier $stdoutEvent.Name -ErrorAction SilentlyContinue
-        Remove-Job -Id $stdoutEvent.Id -Force -ErrorAction SilentlyContinue
-        Unregister-Event -SourceIdentifier $stderrEvent.Name -ErrorAction SilentlyContinue
-        Remove-Job -Id $stderrEvent.Id -Force -ErrorAction SilentlyContinue
+        $proc.Dispose()
     }
 
-    $script:LastContiniaExitCode = $proc.ExitCode
-    $stdout = $stdoutBuilder.ToString()
-    $stderr = $stderrBuilder.ToString()
+    $script:LastContiniaExitCode = $exitCode
 
     try {
         return $stdout | ConvertFrom-Json
