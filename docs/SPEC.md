@@ -386,7 +386,7 @@ With `--include-break` one extra `BREAK` mutant per simple statement is generate
 
 ### 6.4 Generator (`generator/`, TypeScript)
 
-Toolchain: `package.json` with `"type": "module"`, devDependency `typescript@^5.6`, scripts `build: tsc -p .`, `test: npm run build && node --test dist/test/`. `tsconfig.json`: `target ES2022`, `module NodeNext`, `strict true`, `rootDir .`, `outDir dist`, `include ["src", "test"]`. No runtime dependencies. Node's built-in `node:test`, `node:assert/strict`, `node:crypto`, `node:fs`, `node:path` only.
+Toolchain: `package.json` with `"type": "module"`, devDependencies `typescript@^5.6` and `@types/node`, scripts `build: tsc -p .`, `test: npm run build && node --test dist/test/*.test.js` (Node 22 on Windows rejects a bare directory argument). `tsconfig.json`: `target ES2022`, `module NodeNext`, `strict true`, `rootDir .`, `outDir dist`, `include ["src", "test"]`. No runtime dependencies. Node's built-in `node:test`, `node:assert/strict`, `node:crypto`, `node:fs`, `node:path` only.
 
 Source files and their single responsibility:
 
@@ -409,7 +409,7 @@ Source files and their single responsibility:
 type TokenKind = 'identifier' | 'quotedIdentifier' | 'keyword' | 'string' | 'number' | 'comment' | 'preprocessor' | 'operator' | 'punct';
 interface Token { kind: TokenKind; text: string; start: number; end: number; line: number; column: number; }
 ```
-Rules: `//` to end of line and `/* … */` are single `comment` tokens. `'…'` strings with `''` escape are one `string` token. `"…"` is one `quotedIdentifier`. A line starting (after whitespace) with `#` is one `preprocessor` token. Operators (longest match first): `:=` `<>` `<=` `>=` `::` `..` `+=` `-=` `*=` `/=` `<` `>` `=` `+` `-` `*` `/` `.` Punct: `;` `:` `,` `(` `)` `[` `]`. Numbers: digits with optional `.` fraction. Identifiers: `[A-Za-z_][A-Za-z0-9_]*`; a token whose lower-cased text is in the keyword list is `keyword`: `procedure trigger var begin end if then else while do repeat until case of for to downto foreach in exit not and or xor div mod true false local internal protected`. Lines are 1-based, columns 1-based. Whitespace is not tokenized; `start`/`end` are offsets into the source so text between tokens is preserved on rewrite.
+Rules: `//` to end of line and `/* … */` are single `comment` tokens. `'…'` strings with `''` escape are one `string` token. `"…"` is one `quotedIdentifier`. A line starting (after whitespace) with `#` is one `preprocessor` token. Operators (longest match first): `:=` `<>` `<=` `>=` `::` `..` `+=` `-=` `*=` `/=` `<` `>` `=` `+` `-` `*` `/` `.` Punct: `;` `:` `,` `(` `)` `[` `]` `{` `}` (braces delimit object bodies and property blocks; §6.4.2 depends on them). Numbers: digits with optional `.` fraction. Identifiers: `[A-Za-z_][A-Za-z0-9_]*`; a token whose lower-cased text is in the keyword list is `keyword`: `procedure trigger var begin end if then else while do repeat until case of for to downto foreach in exit not and or xor div mod true false local internal protected`. Lines are 1-based, columns 1-based. Whitespace is not tokenized; `start`/`end` are offsets into the source so text between tokens is preserved on rewrite.
 
 Golden tests: `fixtures/tokenizer/<name>.al` + `<name>.tokens.json` (array of `{kind,text,line,column}`). Minimum cases: comments containing quotes, strings containing `//`, `''` escape, `<>` vs `<` `>`, `#if`/`#endif`, quoted identifier with spaces.
 
