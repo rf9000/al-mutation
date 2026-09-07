@@ -548,8 +548,11 @@ Every backend module exports exactly these functions. `$Env` is the handle retur
 
 | Function | Returns | DemoPortal implementation |
 |---|---|---|
-| `Get-MutEnvironment -Name -Config` | handle or `$null` | `env list --json`; match `description -eq Name` |
-| `New-MutEnvironment -Name -Config` | handle | refuse if Name !~ `^mut-`; `env create --name <Name> --profile <profileId> --json` → `env start <id>` → poll `env get <id> --json` every 10 s until `Running` (max 10 min) → `deps install-by-id <id> <activationAppId> --json` → `env use <id>`. Records `CreateDurationSec`, `StartDurationSec` on the handle. |
+| `Get-MutEnvironment -Name -Config` | handle or `$null` | `env list --json`; match `description -eq Name`. Handle also carries `Status` (Draft/Starting/Running/Stopped) and `CliPath`. |
+| `Start-MutEnvironment -Env -Config` | handle (Status Running) | idempotent: if `Status -ne 'Running'`: `env start <id>` (no `--json`; stdout empty, message on stderr) → poll `env get <id> --json` every 10 s until `Running` (max 10 min; a response without a `status` property counts as "not yet", never as an error) → `deps install-by-id <id> <activationAppId> --json` → `env use <id>`. Records `StartDurationSec`, `ActivationInstallDurationSec`. |
+| `New-MutEnvironment -Name -Config` | handle | refuse if Name !~ `^mut-`; `env create --name <Name> --profile <profileId> --json` → poll `env get <id> --json` until it returns an object with `status` (max 60 s) → `Start-MutEnvironment`. Records `CreateDurationSec`. |
+
+`Invoke-Continia -Arguments [-ExpectJson]` (private): `env start`, `env stop`, `env delete`, `env use` and `launch add` have no `--json` output; call them with `-ExpectJson:$false`, which returns `@{ ExitCode; StdOut; StdErr }` and throws when `ExitCode -ne 0` (message includes StdErr). With `-ExpectJson` (default) an empty stdout is an error whose message includes StdErr; it never returns `$null` silently.
 | `Remove-MutEnvironment -Env` | none | `env delete <id>` (or `env stop` when `keepEnvironment`) |
 | `Reset-MutEnvironment -Env` | `@{ DurationSec }` | `env stop <id>`; poll to `Stopped`; `env start <id>`; poll to `Running` |
 | `Install-MutDependencies -Env -AppPath` | JSON object | `deps install <id> <AppPath> --json` |
