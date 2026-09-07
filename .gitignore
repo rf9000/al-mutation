@@ -1,0 +1,13 @@
+# CLI binary and per-workspace CLI state (see docs/AL-MUTATION-TESTING-PLAN.md §1)
+.tools/
+.continia/
+
+# AL build output and symbol caches
+.alpackages/
+out/
+*.app
+!fixtures/**/*.app
+
+# Node
+node_modules/
+generator/dist/
