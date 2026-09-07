@@ -123,7 +123,7 @@
     "dependsOn": ["T04"],
     "model": "sonnet",
     "specSections": ["§6.2", "§6.0.1", "§9.2"],
-    "files": { "create": ["core-app-test/app.json", "core-app-test/.vscode/settings.json", "core-app-test/src/MutTests.Codeunit.al"], "modify": [], "readOnly": [] },
+    "files": { "create": ["core-app-test/app.json", "core-app-test/.vscode/settings.json", "core-app-test/src/MUTMutTests.Codeunit.al"], "modify": [], "readOnly": [] },
     "interfaces": { "consumes": ["MUT Mut from T04"], "produces": ["Test codeunit 50400 \"MUT Mut Tests\" deployed on mut-spike-01"] },
     "steps": [
       { "n": 1, "do": "Write core-app-test/app.json (id 7a2e3d4b-9c5f-4e6a-8b7c-8d9e0f1a2b3c, idRanges 50400-50499, dependencies: Mutation Core 1.0.0.0, Library Assert dd0be2ea-f733-4d65-bb34-a28f4624fb14 28.0.0.0, Test Runner 23de40a6-dfe8-4f80-80db-d70f83ce8caf 28.0.0.0) and the three tests from §6.2 using `Assert: Codeunit Assert` and `MutationCore: Codeunit \"MUT Mut\"`." },
@@ -144,8 +144,8 @@
     "specSections": ["§6.3", "§6.0.1", "§9.2"],
     "files": {
       "create": [
-        "fixtures/fixture-aut/app.json", "fixtures/fixture-aut/.vscode/settings.json", "fixtures/fixture-aut/src/FxOrder.Table.al", "fixtures/fixture-aut/src/FxOrderMgt.Codeunit.al",
-        "fixtures/fixture-test/app.json", "fixtures/fixture-test/.vscode/settings.json", "fixtures/fixture-test/src/FxOrderTests.Codeunit.al", "fixtures/fixture-test/src/FxU4SpikeTests.Codeunit.al", "fixtures/fixture-test/src/FxU5SpikeTests.Codeunit.al"
+        "fixtures/fixture-aut/app.json", "fixtures/fixture-aut/.vscode/settings.json", "fixtures/fixture-aut/src/MUTFxOrder.Table.al", "fixtures/fixture-aut/src/MUTFxOrderMgt.Codeunit.al",
+        "fixtures/fixture-test/app.json", "fixtures/fixture-test/.vscode/settings.json", "fixtures/fixture-test/src/MUTFxOrderTests.Codeunit.al", "fixtures/fixture-test/src/MUTFxU4SpikeTests.Codeunit.al", "fixtures/fixture-test/src/MUTFxU5SpikeTests.Codeunit.al"
       ],
       "modify": [], "readOnly": []
     },
