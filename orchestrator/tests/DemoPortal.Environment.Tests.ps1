@@ -179,4 +179,31 @@ Describe 'Invoke-Continia (private, mock point)' {
         $exported = (Get-Module DemoPortal).ExportedFunctions.Keys
         $exported | Should -Not -Contain 'Invoke-Continia'
     }
+
+    It 'parses stdout JSON and ignores stderr text (real Process invocation, not mocked)' {
+        InModuleScope DemoPortal {
+            $previousCliPath = $script:CliPath
+            try {
+                $script:CliPath = 'cmd.exe'
+                $result = Invoke-Continia -Arguments @('/c', 'echo {"ok":true} & echo warn 1>&2') -TimeoutSec 30
+                $result.ok | Should -Be $true
+            }
+            finally {
+                $script:CliPath = $previousCliPath
+            }
+        }
+    }
+
+    It 'throws when stdout is not JSON (real Process invocation, not mocked)' {
+        InModuleScope DemoPortal {
+            $previousCliPath = $script:CliPath
+            try {
+                $script:CliPath = 'cmd.exe'
+                { Invoke-Continia -Arguments @('/c', 'echo not-json') -TimeoutSec 30 } | Should -Throw
+            }
+            finally {
+                $script:CliPath = $previousCliPath
+            }
+        }
+    }
 }
