@@ -248,6 +248,13 @@ These signatures are copied from `TestRunnerMgt.Codeunit.al` in BCApps (lines 26
 #### 6.1.5 Codeunit 50002 "MUT Install"
 `Subtype = Install`. `OnInstallAppPerDatabase`: `if not EnvironmentInformation.IsSandbox() then Error(NotSandboxErr)` where `NotSandboxErr: Label 'Mutation Core can only be installed in a sandbox environment.'`. Then `Setup.GetOrCreate()`.
 
+#### 6.1.5b PermissionSet 50000 "MUT Core All"
+`Assignable = true; Caption = 'Mutation Core - all'`. Permissions: `tabledata` RIMD and `table` X for all four MUT tables; `codeunit` X for the three codeunits; `page` X for the four API pages.
+**Why:** DemoPortal test sessions run under a restricted user (§6.1.4). A codeunit's `Permissions` property only elevates
+permissions the user already holds indirectly, so the environment users MUST be granted this set (via `Grant-MutPermissionSet`,
+§6.5.3) before the hooks can read the setup row. Without it the hooks swallow a permission error and every mutant looks inactive;
+the `HookErrorIsEmpty` test (§6.2) detects that state.
+
 #### 6.1.6 Custom TestRunner (deferred)
 A `SubType = TestRunner` codeunit that loops over mutants in one session would remove per-job overhead but cannot be used on DemoPortal (F7). Not built in v1; recorded in `docs/issues.md`.
 
@@ -282,6 +289,8 @@ Codeunit 50400 "MUT Mut Tests", `Subtype = Test`:
 #### 6.3.1 `fixtures/fixture-aut` — "MUT Fixture AUT" (no dependencies)
 
 **Table 50200 "MUT Fx Order"**: `1 "Entry No." Integer` (PK), `2 Quantity Integer`, `3 Amount Decimal`, `4 Posted Boolean`.
+
+**PermissionSet 50200 "MUT Fx All"**: `Assignable = true`; `tabledata "MUT Fx Order" = RIMD`, `table "MUT Fx Order" = X`, `codeunit "MUT Fx Order Mgt" = X`. Granted to the environment users by the fixture configuration (§6.5.1 `permissionSets`) so the fixture tests can write the table under the restricted test session (§6.1.5b).
 
 **Codeunit 50200 "MUT Fx Order Mgt"**, `Access = Public`. The bodies below are normative; the generator's expected results (§7.4) are derived from them, so implement them **exactly** (whitespace may differ, tokens may not).
 
@@ -541,6 +550,7 @@ node generator/dist/src/cli.js lint --schemata <dir>
   "testApp": { "sourcePath": "C:/GeneralDev/AL/Continia Banking Master/Continia Banking/base-application-test", "appId": "02b81fad-90fa-4cdc-a414-5bda25e96db0", "testCodeunits": [95155, 95913] },
   "rulesets": { "sourcePath": "C:/GeneralDev/AL/Continia Banking Master/Continia Banking/Banking Rulesets", "file": ".cli-ruleset-localdeploy.json" },
   "coreApp": { "path": "./core-app", "appId": "6f1d2c3a-8b4e-4d5f-9a6b-7c8d9e0f1a2b", "version": "1.0.0.0" },
+  "permissionSets": [ { "id": "MUT Core All", "appId": "6f1d2c3a-8b4e-4d5f-9a6b-7c8d9e0f1a2b" } ],
   "workDir": "./out",
   "generator": { "maxMutants": 0, "onlyObjects": [72918635, 72918690, 72918691], "seed": 1, "operators": ["REL", "BOOL", "NOT", "COND", "DEL", "INSFLAG"], "includeBreak": false },
   "schemata": { "publishStrategy": "same-version" },
@@ -548,7 +558,7 @@ node generator/dist/src/cli.js lint --schemata <dir>
   "demoPortal": { "profileId": "cc557829-71df-40ee-9516-98ca954d4b2f", "activationAppId": "c3755ece-dab0-4d16-987d-040661f18522", "cliPath": "./.tools/continia.exe" }
 }
 ```
-`mutation.fixture.config.json` (Tier A) differs in: `aut.sourcePath = "./fixtures/fixture-aut"`, `aut.appId = "8b3f4e5c-ad6a-4f7b-9c8d-9e0f1a2b3c4d"`, `aut.version = "1.0.0.0"`, `testApp.sourcePath = "./fixtures/fixture-test"`, `testApp.appId = "9c4a5f6d-be7b-4a8c-8d9e-0f1a2b3c4d5e"`, `testApp.testCodeunits = [50300]`, `rulesets = null`, `generator.onlyObjects = []`.
+`mutation.fixture.config.json` (Tier A) differs in: `aut.sourcePath = "./fixtures/fixture-aut"`, `aut.appId = "8b3f4e5c-ad6a-4f7b-9c8d-9e0f1a2b3c4d"`, `aut.version = "1.0.0.0"`, `testApp.sourcePath = "./fixtures/fixture-test"`, `testApp.appId = "9c4a5f6d-be7b-4a8c-8d9e-0f1a2b3c4d5e"`, `testApp.testCodeunits = [50300]`, `rulesets = null`, `generator.onlyObjects = []`, and `permissionSets` additionally contains `{ "id": "MUT Fx All", "appId": "8b3f4e5c-ad6a-4f7b-9c8d-9e0f1a2b3c4d" }`.
 `schemata.publishStrategy` ∈ `same-version | bump-build | unpublish-test-app` (set after U6). `Get-MutConfig -Path` loads, validates required keys, resolves relative paths against the repo root, and throws on `environmentName` not matching `^mut-`.
 
 #### 6.5.2 AUT copy (`lib/AutCopy.psm1`)
@@ -576,6 +586,7 @@ Every backend module exports exactly these functions. `$Env` is the handle retur
 | `Get-MutCoverage -Env -JobIds` | `[{ObjectType; ObjectId; LineNo; Hits}]` | `Get-MutCoverageRaw` then `ConvertFrom-MutCoverageCsv` (§6.5.5) per document; merge by summing `Hits` |
 | `Get-MutApiBase -Env` | string | U8: derive from `Url`; verify `GET <base>/api/v2.0/companies` returns 200 |
 | `Get-MutCompanyId -Env` | GUID string | first company from `/api/v2.0/companies` |
+| `Grant-MutPermissionSet -Env -PermissionSetId -AppId` | `@{ Granted = [users]; AlreadyHad = [users] }` | Automation API: `GET <apiBase>/api/microsoft/automation/v2.0/companies({companyId})/users` → for every user, `GET users({userSecurityId})/userPermissions`; if no row has that `permissionSetId`, `POST users({userSecurityId})/userPermissions` with `{ "permissionSetId": <id>, "appId": <AppId>, "scope": "System" }`. Idempotent. Used by `Publish-Baseline` for every entry of config `permissionSets`. |
 | `Invoke-MutApi -Env -Method -Path [-Body]` | parsed JSON | `Invoke-RestMethod` with Basic auth from `env users <id> --json` (cache credentials in the module for the session; never log them), `If-Match: *` on PATCH, path relative to `<apiBase>/api/mutation/core/v1.0/companies(<companyId>)/` |
 
 `Targets` is `@([pscustomobject]@{ CodeunitId = 95155; Function = $null })`. All CLI calls go through one private function `Invoke-Continia -Arguments <string[]> -TimeoutSec` in `DemoPortal.psm1` that runs `cliPath`, captures stdout, parses JSON, and is the single Pester mock point. `Docker.psm1` exports the same names and each throws `[System.NotImplementedException]'Docker backend is not implemented in v1'`.
@@ -585,7 +596,7 @@ Each step is a function in `lib/*.psm1`; the script is idempotent per run number
 
 1. `Initialize-MutRun` — load config (§6.5.1), compute `RunNo` (next after highest in `results/`), create `<workDir>/runs/<RunNo>/`.
 2. `Ensure-MutEnvironment` — `Get-MutEnvironment` or `New-MutEnvironment` (`-SkipEnvironment` requires an existing one). `Sync-MutAutCopy`.
-3. `Publish-Baseline` — `Install-MutDependencies` for `aut-original` and for `test-app`; `Publish-MutApp` for Mutation Core, then `aut-original`, then `test-app` (with ruleset and `-AllowDowngrade`). `Invoke-MutTests` over `testApp.testCodeunits` with `-Coverage`. **Abort if any failure.** Save `baseline.json` (`{ tests[], durationsByCodeunit }`), `coverage.json` (§7.2) when job ids exist, and `references.json` (§6.5.5).
+3. `Publish-Baseline` — `Install-MutDependencies` for `aut-original` and for `test-app`; `Publish-MutApp` for Mutation Core, then `aut-original`, then `test-app` (with ruleset and `-AllowDowngrade`); then `Grant-MutPermissionSet` for every entry of config `permissionSets` (§6.1.5b). `Invoke-MutTests` over `testApp.testCodeunits` with `-Coverage`. **Abort if any failure.** Save `baseline.json` (`{ tests[], durationsByCodeunit }`), `coverage.json` (§7.2) when job ids exist, and `references.json` (§6.5.5).
 4. `Build-Schemata` — run the generator (§6.4.9) with config flags into `<workDir>/runs/<RunNo>/gen/`; `Compile-MutApp` on `gen/aut-schemata`. On errors: for each diagnostic with a `file`/`line`, find the `linemap.json` block containing that line → collect mutant ids → mark them `CompileError` in `results` → append their stable keys to `gen/exclude.json` → regenerate with `--exclude-stable-keys gen/exclude.json` → recompile. Cap at 10 iterations, then throw. Diagnostics without a mapped block are fatal.
 5. `Publish-Schemata` — per `schemata.publishStrategy`: `same-version`: `Publish-MutAppFile` schemata `.app`; `bump-build`: generator was called with `--aut-version <version with build+1>`, then `Publish-MutAppFile`; `unpublish-test-app`: `Unpublish-MutApp testApp` → `Publish-MutAppFile` schemata → `Publish-MutApp test-app`. Then PATCH setup `activeMutantId = 0` and rerun `Invoke-MutTests` over `testApp.testCodeunits`. **Abort if any failure** (the schemata must be behaviour-preserving when inactive).
 6. `Push-Manifest` — PATCH setup `currentRunNo = RunNo`; POST each mutant of `mutants.json` to `mutants` (skip ids already present, `status = Pending`).

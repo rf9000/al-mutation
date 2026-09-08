@@ -139,12 +139,12 @@
     "id": "T06",
     "title": "Fixture AUT and fixture test app",
     "wave": 1,
-    "dependsOn": ["T03"],
+    "dependsOn": ["T03", "T07"],
     "model": "sonnet",
     "specSections": ["§6.3", "§6.0.1", "§9.2"],
     "files": {
       "create": [
-        "fixtures/fixture-aut/app.json", "fixtures/fixture-aut/.vscode/settings.json", "fixtures/fixture-aut/src/MUTFxOrder.Table.al", "fixtures/fixture-aut/src/MUTFxOrderMgt.Codeunit.al",
+        "fixtures/fixture-aut/app.json", "fixtures/fixture-aut/.vscode/settings.json", "fixtures/fixture-aut/src/MUTFxOrder.Table.al", "fixtures/fixture-aut/src/MUTFxOrderMgt.Codeunit.al", "fixtures/fixture-aut/src/MUTFxAll.PermissionSet.al",
         "fixtures/fixture-test/app.json", "fixtures/fixture-test/.vscode/settings.json", "fixtures/fixture-test/src/MUTFxOrderTests.Codeunit.al", "fixtures/fixture-test/src/MUTFxU4SpikeTests.Codeunit.al", "fixtures/fixture-test/src/MUTFxU5SpikeTests.Codeunit.al"
       ],
       "modify": [], "readOnly": []
@@ -176,7 +176,8 @@
       "produces": [
         "function Get-MutApiBase($Env) -> string like 'https://host/tenant' such that <base>/api/v2.0/companies answers 200",
         "function Get-MutCompanyId($Env) -> GUID string of the first company",
-        "function Invoke-MutApi($Env, [string]$Method, [string]$Path, $Body) -> parsed JSON; Path relative to /api/mutation/core/v1.0/companies(<id>)/; PATCH sends If-Match: *; the setup row is addressed as mutationSetup(0)"
+        "function Invoke-MutApi($Env, [string]$Method, [string]$Path, $Body) -> parsed JSON; Path relative to /api/mutation/core/v1.0/companies(<id>)/; PATCH sends If-Match: *; the setup row is addressed as mutationSetup(0)",
+        "function Grant-MutPermissionSet($Env, [string]$PermissionSetId, [string]$AppId) -> @{Granted;AlreadyHad} via the Automation API users/userPermissions (spec §6.5.3), idempotent"
       ]
     },
     "steps": [
@@ -185,10 +186,12 @@
       { "n": 3, "do": "Run the unit tests to green.", "run": "powershell -NoProfile -Command \"Import-Module Pester -MinimumVersion 5.0 -MaximumVersion 5.99; Invoke-Pester orchestrator/tests/DemoPortal.Api.Tests.ps1 -Output Detailed\"" },
       { "n": 4, "do": "Live check against mut-spike-01 (the only live call): GET mutationSetup, PATCH activeMutantId = 7, GET again, PATCH back to 0.", "run": "powershell -NoProfile -Command \"Import-Module ./orchestrator/backends/DemoPortal.psm1; $cfg = Get-Content mutation.config.json -Raw | ConvertFrom-Json; $e = Get-MutEnvironment -Name 'mut-spike-01' -Config $cfg; Invoke-MutApi $e GET 'mutationSetup' | ConvertTo-Json\"", "expect": "value array with one row, activeMutantId 0" },
       { "n": 5, "do": "Record in docs/spike-baseline.md §U8 the working API base URL pattern (host only, no credentials) and whether '/BC' was needed." },
-      { "n": 6, "do": "Commit.", "run": "git add orchestrator docs/spike-baseline.md; git commit -m \"feat(orchestrator): Mutation Core API access for DemoPortal (U8)\"" }
+      { "n": 6, "do": "Implement Grant-MutPermissionSet per spec §6.5.3 (Automation API: GET companies({cid})/users; GET users({uid})/userPermissions; POST when the set is missing with {permissionSetId, appId, scope: 'System'}). Unit-test it with a mocked Invoke-RestMethod: grants to a user lacking the set, skips a user that already has it. Add `permissionSets` to mutation.config.json and mutation.fixture.config.json exactly as spec §6.5.1." },
+      { "n": 7, "do": "Live: grant 'MUT Core All' (appId 6f1d2c3a-8b4e-4d5f-9a6b-7c8d9e0f1a2b) and 'MUT Fx All' (appId 8b3f4e5c-ad6a-4f7b-9c8d-9e0f1a2b3c4d) to all users of mut-spike-01, then run the fixture suite and expect 9 passed, 0 failed, 0 skipped. Record the outcome in docs/spike-baseline.md §U8.", "run": ".tools/continia.exe test run <envId> 50300 --json", "expect": "summary.passed = 9, skipped = 0" },
+      { "n": 8, "do": "Commit.", "run": "git add orchestrator docs/spike-baseline.md mutation.config.json mutation.fixture.config.json; git commit -m \"feat(orchestrator): Mutation Core API access and permission-set grants for DemoPortal (U8)\"" }
     ],
     "acceptance": ["Unit tests pass without network.", "Live GET/PATCH round trip on mutationSetup works and is reverted to 0.", "§U8 row filled."],
-    "commit": "feat(orchestrator): Mutation Core API access for DemoPortal (U8)",
+    "commit": "feat(orchestrator): Mutation Core API access and permission-set grants for DemoPortal (U8)",
     "guardrails": ["Never echo credentials. Redact them in any error message.", "If the API base cannot be found, record every attempted URL pattern in docs/issues.md and stop."]
   },
   {
