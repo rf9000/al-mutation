@@ -109,7 +109,7 @@ name and the date.
 | U1 | Does `alc.exe` accept ~500 `case true of MutationCore.Active(n)` blocks in one codeunit, and what do compile and publish cost? | `spikes/u1-guard-bench` | If compile > 10 min or publish fails: chunk schemata generation per object folder (`--only-objects`). |
 | U2 | How much does covering-test selection save on this suite? Measured as (tests covering an object) / (all tests) for the Tier B objects, plus median over all AUT codeunits at Gate G1. | Tier B baseline; Gate G1 | Provisional in POC. Sets `--max-mutants` default. |
 | U3 | Overhead of a `case true of MutationCore.Active(n)` guard in a 100k-iteration loop. | `spikes/u1-guard-bench` | If > 2× slowdown, `Active()` becomes a global-variable compare inside the AUT (id copied once per test). |
-| U4 | Do `OnBeforeTestMethodRun`/`OnAfterTestMethodRun` on codeunit 130454 fire under the DemoPortal test job, and does the after-subscriber's insert survive a failed test? | `spikes/u4-runner-events` | If events do not fire: **stop**, redesign §5 before Phase 1 continues. If they fire but the write is rolled back: hooks only set the active id; the orchestrator is the sole writer (§5 step 5). |
+| U4 | Do `OnBeforeTestMethodRun`/`OnAfterTestMethodRun` on codeunit 130454 fire under the DemoPortal test job, and does the after-subscriber's insert survive a failed test? | `spikes/u4-runner-events` | **Answered 2026-09-08 (spike U4b):** events fire (runner chain "Test Runner - Isol. Codeunit" 130450 → "Test Runner - Mgt" 130454); the test session cannot read Mutation Core tables (even indirect read is denied for SUPER users), so the hooks read the active id from Isolated Storage (§6.1.2, §6.1.4); the Killed row inserted by the after-hook for a failed test IS persisted (`{runNo 1, mutantId 999, Killed, 'MUT Fx U4 Spike Tests:U4_Failing'}`). §5 step 5 remains as a fallback. |
 | U5 | Can a running DemoPortal test job be stopped? How long does `env stop` + `env start` take? | `spikes/u5-u6` | Sets `Reset-MutEnvironment` implementation and the timeout budget. |
 | U6 | How to replace the installed AUT with the schemata build while the test app depends on it. Options: (a) `continia publish` same id + same version (CLI auto-unpublishes; BC may refuse with dependents), (b) same id + bumped build number `28.5.0.1`, (c) unpublish test app → publish schemata → republish test app. | `spikes/u5-u6` on fixture apps | Sets `schemata.publishStrategy` in config. |
 | U7 | Fixed cost of one DemoPortal job (single-method test) and duration of test codeunits 95155 and 95913. | Tier B baseline | Sets `timeouts.jobOverheadSeconds` and the sampling default. |
@@ -199,6 +199,7 @@ Values: `0 Pending`, `1 Killed`, `2 Survived`, `3 Equivalent`, `4 Timeout`, `5 C
 `1 "Primary Key" Integer` (PK, always `0`), `2 "Active Mutant Id" Integer`, `3 "Current Run No." Integer`.
 Procedure `GetOrCreate()` does `if not Get(0) then begin Init(); "Primary Key" := 0; Insert(); end;`. The API
 URL for PATCH is therefore `mutationSetup(0)`.
+Triggers `OnInsert` and `OnModify` call `MirrorToIsolatedStorage()`: `IsolatedStorage.Set('ActiveMutantId', Format("Active Mutant Id", 0, 9), DataScope::Module)` and the same for `'CurrentRunNo'`. This mirror is the channel the hooks read (§6.1.4): Isolated Storage in module scope needs no table permission, unlike the table itself, which is unreadable inside the restricted test session (verified 2026-09-08, spike U4b).
 
 **Table 50001 "MUT Mutant"** (`DataPerCompany = false`):
 `1 Id Integer` (PK), `2 "Stable Key" Text[50]` (secondary unique key), `3 "Object Type" Option Codeunit,Table,Page,Report,Enum` (only Codeunit is used in v1), `4 "Object Id" Integer`, `5 "Procedure Name" Text[128]`, `6 "Line No." Integer`, `7 Operator Code[20]`, `8 "Original Text" Text[250]`, `9 "Mutated Text" Text[250]`, `10 Status Enum "MUT Mutant Status"`.
@@ -232,7 +233,9 @@ makes the runner skip every test (observed 2026-09-08). `GetOrCreate()` is for `
 local procedure OnBeforeTestMethodRun(var CurrentTestMethodLine: Record "Test Method Line"; CodeunitID: Integer; CodeunitName: Text[30]; FunctionName: Text[128]; FunctionTestPermissions: TestPermissions; var Skip: Boolean)
 // ClearLastError(); if TryReadActiveMutant(Id, RunNo) then MutationCore.SetActive(Id)
 // else begin MutationCore.SetActive(0); MutationCore.SetLastHookError('Before ' + FunctionName + ': ' + GetLastErrorText()); end;
-// TryReadActiveMutant is a [TryFunction] doing Setup.Get(0) directly in this codeunit (read-only).
+// TryReadActiveMutant is a [TryFunction] that reads IsolatedStorage.Get('ActiveMutantId', DataScope::Module, Value) and
+// 'CurrentRunNo' (missing key → 0), Evaluate(…, Value, 9). It does NOT read the table: inside the restricted test session the
+// table is unreadable even for SUPER users, while Isolated Storage (module scope) works (spike U4b, 2026-09-08).
 // The hooks MUST never raise an error: an error in OnBeforeTestMethodRun makes the platform skip the test.
 
 [EventSubscriber(ObjectType::Codeunit, Codeunit::"Test Runner - Mgt", OnAfterTestMethodRun, '', false, false)]
@@ -349,7 +352,7 @@ end;
 #### 6.3.2 `fixtures/fixture-test` — "MUT Fixture Test"
 Dependencies: MUT Fixture AUT, Microsoft "Library Assert", Microsoft "Test Runner". Id range 50300–50399.
 
-**Codeunit 50300 "MUT Fx Order Tests"** (`Subtype = Test`, `Permissions = tabledata "MUT Fx Order" = RIMD;` because DemoPortal test sessions are not SUPER) — the baseline suite. Tests, all MUST pass on the unmutated fixture:
+**Codeunit 50300 "MUT Fx Order Tests"** (`Subtype = Test`, `TestPermissions = Disabled;` — the restricted default mode denies table access to the fixture's own table even with `Permissions = tabledata "MUT Fx Order" = RIMD` declared and permission sets granted (spike U4b); 52 of the Continia test codeunits use the same setting. Keep the `Permissions` line too.) — the baseline suite. Codeunits 50301 and 50302 also set `TestPermissions = Disabled`. Tests, all MUST pass on the unmutated fixture:
 
 | Test | Calls | Asserts |
 |---|---|---|
