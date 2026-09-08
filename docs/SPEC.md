@@ -214,8 +214,10 @@ PK `1 "Run No." Integer`, `2 "Mutant Id" Integer`; `3 Status Enum "MUT Mutant St
 ```al
 procedure SetActive(Id: Integer)          // ActiveId := Id
 procedure Active(Id: Integer): Boolean    // exit(Id = ActiveId)  — MUST NOT touch the database (U3)
-procedure Reset()                         // ActiveId := 0
+procedure Reset()                         // ActiveId := 0; LastHookError := ''
 procedure GetActive(): Integer            // exit(ActiveId)
+procedure SetLastHookError(ErrorText: Text)   // diagnostics: the hooks store the last swallowed error here
+procedure GetLastHookError(): Text            // read by the diagnostic test in the same session (F6)
 ```
 
 #### 6.1.4 Codeunit 50001 "MUT Test Hooks"
@@ -228,13 +230,16 @@ makes the runner skip every test (observed 2026-09-08). `GetOrCreate()` is for `
 ```al
 [EventSubscriber(ObjectType::Codeunit, Codeunit::"Test Runner - Mgt", OnBeforeTestMethodRun, '', false, false)]
 local procedure OnBeforeTestMethodRun(var CurrentTestMethodLine: Record "Test Method Line"; CodeunitID: Integer; CodeunitName: Text[30]; FunctionName: Text[128]; FunctionTestPermissions: TestPermissions; var Skip: Boolean)
-// if not Setup.Get(0) then exit;   -- direct Get in THIS codeunit; never call a table method for DB access here
-// MutationCore.SetActive(Setup."Active Mutant Id")
+// ClearLastError(); if TryReadActiveMutant(Id, RunNo) then MutationCore.SetActive(Id)
+// else begin MutationCore.SetActive(0); MutationCore.SetLastHookError('Before ' + FunctionName + ': ' + GetLastErrorText()); end;
+// TryReadActiveMutant is a [TryFunction] doing Setup.Get(0) directly in this codeunit (read-only).
+// The hooks MUST never raise an error: an error in OnBeforeTestMethodRun makes the platform skip the test.
 
 [EventSubscriber(ObjectType::Codeunit, Codeunit::"Test Runner - Mgt", OnAfterTestMethodRun, '', false, false)]
 local procedure OnAfterTestMethodRun(var CurrentTestMethodLine: Record "Test Method Line"; CodeunitID: Integer; CodeunitName: Text[30]; FunctionName: Text[128]; FunctionTestPermissions: TestPermissions; IsSuccess: Boolean)
 // if IsSuccess then exit; if FunctionName = '' then exit;
-// if not Setup.Get(0) then exit; if Setup."Active Mutant Id" = 0 then exit;
+// ClearLastError(); if not TryReadActiveMutant(Id, RunNo) then begin MutationCore.SetLastHookError('After ' + FunctionName + ': ' + GetLastErrorText()); exit; end;
+// if Id = 0 then exit;
 // if MutantResult.Get(Setup."Current Run No.", Setup."Active Mutant Id") then exit;
 // insert MutantResult: Status Killed, "Killing Test" = CopyStr(CodeunitName + ':' + FunctionName, 1, 250), "Recorded At" = CurrentDateTime()
 ```
@@ -270,6 +275,7 @@ Codeunit 50400 "MUT Mut Tests", `Subtype = Test`:
 - `SetActive_ThenActiveMatchesOnlyThatId`: `SetActive(5)`; `Active(5)` true; `Active(6)` false.
 - `Reset_ClearsActive`: `SetActive(5)`; `Reset()`; `Active(5)` false; `GetActive()` = 0.
 - `Active_ZeroWhenNothingSet`: fresh `Reset()`; `Active(0)` true (documented: id 0 means "no mutant").
+- `HookErrorIsEmpty` (diagnostic, MUST be the last test in the codeunit so the hooks have run for the earlier tests): `Assert.AreEqual('', MutationCore.GetLastHookError(), 'MUT Test Hooks swallowed an error')`. When the hooks cannot read the setup row, this test fails and its message carries the real error text, which the CLI otherwise never shows.
 
 ### 6.3 Fixture apps
 

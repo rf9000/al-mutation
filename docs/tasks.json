@@ -126,7 +126,7 @@
     "files": { "create": ["core-app-test/app.json", "core-app-test/.vscode/settings.json", "core-app-test/src/MUTMutTests.Codeunit.al"], "modify": [], "readOnly": [] },
     "interfaces": { "consumes": ["MUT Mut from T04"], "produces": ["Test codeunit 50400 \"MUT Mut Tests\" deployed on mut-spike-01"] },
     "steps": [
-      { "n": 1, "do": "Write core-app-test/app.json (id 7a2e3d4b-9c5f-4e6a-8b7c-8d9e0f1a2b3c, idRanges 50400-50499, dependencies: Mutation Core 1.0.0.0, Library Assert dd0be2ea-f733-4d65-bb34-a28f4624fb14 28.0.0.0, Test Runner 23de40a6-dfe8-4f80-80db-d70f83ce8caf 28.0.0.0) and the three tests from §6.2 using `Assert: Codeunit Assert` and `MutationCore: Codeunit \"MUT Mut\"`." },
+      { "n": 1, "do": "Write core-app-test/app.json (id 7a2e3d4b-9c5f-4e6a-8b7c-8d9e0f1a2b3c, idRanges 50400-50499, dependencies: Mutation Core 1.0.0.0, Library Assert dd0be2ea-f733-4d65-bb34-a28f4624fb14 28.0.0.0, Test Runner 23de40a6-dfe8-4f80-80db-d70f83ce8caf 28.0.0.0) and the four tests from §6.2 (the fourth, HookErrorIsEmpty, must be the last test procedure in the file) using `Assert: Codeunit Assert` and `MutationCore: Codeunit \"MUT Mut\"`." },
       { "n": 2, "do": "Compile and deploy.", "run": ".tools/continia.exe deploy <envId> core-app-test --json", "expect": "published: true" },
       { "n": 3, "do": "Run the tests.", "run": ".tools/continia.exe test run <envId> 50400 --json", "expect": "summary.total = 3, failed = 0" },
       { "n": 4, "do": "Commit.", "run": "git add core-app-test; git commit -m \"test(core-app): MUT Mut unit tests\"" }
