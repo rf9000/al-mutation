@@ -10,6 +10,10 @@ Numbers recorded by each spike task, per §7.6 of `docs/SPEC.md`.
 | CreateDurationSec | n/a (created in attempt 2 at 2026-09-07 13:42:53 UTC; started manually) | DemoPortal | 2026-09-07 | T03 |
 | StartDurationSec | 0 | DemoPortal | 2026-09-07 | T03 |
 | ActivationInstallDurationSec | 2.0046002 | DemoPortal | 2026-09-07 | T03 |
+| depsInstallSec (aut-original) | 1.4 | DemoPortal | 2026-09-08 | T12 |
+| depsInstallSec (test-app) | 1.6 | DemoPortal | 2026-09-08 | T12 |
+| autDeploySec | 73.0 (1,065 files; `continia deploy` direct CLI call, `--ruleset out/rulesets/.cli-ruleset-localdeploy.json --allow-downgrade --json`, exit 0, `published:true`) | DemoPortal | 2026-09-08 | T12 |
+| testAppDeploySec | 31.5 (`Publish-MutApp -AllowDowngrade`, `Success:true`) | DemoPortal | 2026-09-08 | T12 |
 
 ## U1/U3
 
@@ -46,6 +50,10 @@ Numbers recorded by each spike task, per §7.6 of `docs/SPEC.md`.
 
 | Metric | Value | Backend | Date | Source task |
 |---|---|---|---|---|
+| single-method job s | 9.3 (codeunit 95155, procedure `UpdatePlaceholderRows_EmptyInputs_BecomesNoMatchingAccounts`; substituted for the brief's codeunit 95913 / `TestAuthGrantedAcc.Codeunit.al`, which does not exist in the current AUT checkout — see `docs/issues.md` T12 entry) | DemoPortal | 2026-09-08 | T12 |
+| 95155 s | 10.7 (whole codeunit, `Invoke-MutTests`, 13 total / 13 passed / 0 failed) | DemoPortal | 2026-09-08 | T12 |
+| 95913 s | 8.3 (whole codeunit, `Invoke-MutTests`) — codeunit does not exist in the current AUT checkout; CLI returns `{"status":"completed","passed":true,"summary":{"total":0,"passed":0,"failed":0,"skipped":0,...},"tests":[]}` rather than erroring, so this is a job-overhead number for a no-op run, not a real codeunit duration | DemoPortal | 2026-09-08 | T12 |
+| per-test median s | not computed (only 2 of the 2 target codeunits attempted; 95913 has 0 tests) — deferred to Gate G1 per §7.6 | DemoPortal | 2026-09-08 | T12 |
 
 ## U8
 
@@ -61,11 +69,16 @@ Numbers recorded by each spike task, per §7.6 of `docs/SPEC.md`.
 
 | Metric | Value | Backend | Date | Source task |
 |---|---|---|---|---|
+| job id field name | not exposed by `test run --json` (top-level properties are exactly `status, passed, summary, tests`, confirming F18); exposed only in the CLI's human-mode (non-`--json`) text output as `Test job started: N` — `test coverage <envId> <N> --json` accepts that plain integer and returns `{envId, jobId, csv}` correctly. Static reference selection is therefore the only covering-test selector available from `test run --json` alone; a job id is still obtainable per test run via one extra human-mode CLI call if the orchestrator needs it live. | DemoPortal | 2026-09-08 | T12 |
+| CSV header line | **no header row** — every line of `test coverage --json`'s `csv` field, including the first, is a data row: `"Codeunit","50000","Object","0","0"`. 5 positional columns, not 4: `ObjectType` (`"Codeunit"` only, observed), `ObjectId`, a line-classification string (`"Object"`/`"Trigger/Function"`/`"Empty"`/`"Code"`, undocumented), `LineNo`, `Hits`. Full finding (columns, object ids observed, impact on §6.5.5's planned `ConvertFrom-MutCoverageCsv`) in `docs/issues.md`. `fixtures/coverage/sample.csv` is the first 200 raw lines of job 41's 1691-line CSV, verbatim. | DemoPortal | 2026-09-08 | T12 |
 
 ## Tier B baseline
 
 | Metric | Value | Backend | Date | Source task |
 |---|---|---|---|---|
+| codeunit 95155 "CTS-CB Test Auth Share Detect" | 13 total / 13 passed / 0 failed, 10.7s, on a fresh AUT+test-app deploy | DemoPortal | 2026-09-08 | T12 |
+| codeunit 95913 "CTS-CB Test Auth Granted Acc" | **does not exist in the current AUT/test-app checkout** — 0 total / 0 passed / 0 failed, 8.3s (CLI reports `status:completed, passed:true` for an unknown codeunit id rather than erroring). Not the expected 15/15; see `docs/issues.md` T12 entry for the live evidence (AUT codeunit 72918690 is currently "CTS-CB Line Date Import Def.", not "CTS-CB Auth Granted Acc. Mgt"; id 72918691 is unused; two non-`mut-*` DemoPortal environments named `AuthGrantedAccountApply` / `build-2026-09-03-auth-granted-accounts-share-design` suggest this feature lives on an unmerged branch). | DemoPortal | 2026-09-08 | T12 |
+| AUT repo read-only verification | `git -C "Continia Banking" status --short` identical before/after (14 pre-existing lines, unrelated to Tier B); 5 sample files (`AuthShareDetection.Codeunit.al`, `TestAuthShareDetect.Codeunit.al`, `.cli-ruleset-localdeploy.json`, both apps' `app.json`) hash-identical (`Get-FileHash`/`sha1sum`) before and after the full sync+deploy+test run. | DemoPortal | 2026-09-08 | T12 |
 
 ## Hand mutants
 
