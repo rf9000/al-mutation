@@ -141,6 +141,7 @@ Describe 'Build-MutSchemata: compile-error loop' {
         $result.SchemataPath | Should -Be (Join-Path $script:runDir 'gen/aut-schemata')
         $result.Mutants.Count | Should -Be 5
         $result.ExcludeFile | Should -Not -BeNullOrEmpty
+        $result.RunNo | Should -Be 1
 
         (Test-Path $result.ExcludeFile) | Should -Be $true
         $excludeContent = Get-Content -Path $result.ExcludeFile -Raw | ConvertFrom-Json
@@ -170,7 +171,25 @@ Describe 'Build-MutSchemata: compile-error loop' {
         { Build-MutSchemata -Config $script:config -Env $script:envHandle -RunDir $script:runDir -RunNo 1 } | Should -Throw
     }
 
-    It 'throws after more than 10 iterations of compile failure' {
+    It 'throws immediately on a diagnostic with no File/Line (a compiler-level error unrelated to any mutant), without spinning through the iteration cap' {
+        Mock -ModuleName Schemata Compile-MutApp {
+            [pscustomobject]@{
+                Success     = $false
+                Diagnostics = @(
+                    [pscustomobject]@{ Severity = 'Error'; Code = 'AL1022'; File = $null; Line = $null; Column = $null; Message = 'symbol missing' }
+                )
+                AppFile     = $null
+                DurationSec = 1.0
+            }
+        }
+
+        { Build-MutSchemata -Config $script:config -Env $script:envHandle -RunDir $script:runDir -RunNo 1 } | Should -Throw '*AL1022*'
+
+        Should -Invoke -ModuleName Schemata Compile-MutApp -Times 1
+        $script:generatorCalls.Count | Should -Be 1
+    }
+
+    It 'throws after more than 10 iterations of compile failure, with the last compile diagnostics in the error' {
         Mock -ModuleName Schemata Compile-MutApp {
             [pscustomobject]@{
                 Success     = $false
@@ -182,7 +201,7 @@ Describe 'Build-MutSchemata: compile-error loop' {
             }
         }
 
-        { Build-MutSchemata -Config $script:config -Env $script:envHandle -RunDir $script:runDir -RunNo 1 } | Should -Throw
+        { Build-MutSchemata -Config $script:config -Env $script:envHandle -RunDir $script:runDir -RunNo 1 } | Should -Throw '*AL0*boom*'
 
         Should -Invoke -ModuleName Schemata Compile-MutApp -Times 10
         $script:generatorCalls.Count | Should -Be 10

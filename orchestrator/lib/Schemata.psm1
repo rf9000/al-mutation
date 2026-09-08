@@ -193,12 +193,15 @@ function Get-MutLineMapEntries {
 function Resolve-MutCompileErrorMutantIds {
     <#
         .SYNOPSIS
-        Maps every diagnostic with a non-null File and Line to the linemap.json block whose
-        [startLine, endLine] contains it, and collects that block's mutantIds. A diagnostic
-        with both File and Line set that maps to no block is FATAL (§6.5.4 step 4): it means a
-        compile error occurred somewhere the generator did not instrument, which the loop can
-        never resolve by excluding mutants, so it throws immediately rather than spinning
-        through the iteration cap.
+        Maps every diagnostic to the linemap.json block whose [startLine, endLine] contains
+        its Line, matched within that Line's File. A diagnostic that maps to no block is FATAL
+        (§6.5.4 step 4, "Diagnostics without a mapped block are fatal") -- this includes a
+        diagnostic with no usable location at all (File null/empty, or Line null), NOT just one
+        whose File/Line fail to match any block: a compiler-level error unrelated to any mutant
+        guard (a bad app.json, a missing symbol package -- AL1003/AL1018/AL1022, say) has no
+        File/Line to begin with, and letting it be silently skipped here would leave the
+        exclusion set unchanged and spin the loop through the full iteration cap before
+        throwing a generic, cause-less error (fix round 1, T25 review).
         .OUTPUTS
         [int[]] mutant ids (not de-duplicated across diagnostics; the caller de-duplicates).
     #>
@@ -215,22 +218,26 @@ function Resolve-MutCompileErrorMutantIds {
         if ($null -eq $diagnostic) {
             continue
         }
-        if ($null -eq $diagnostic.File -or $null -eq $diagnostic.Line) {
-            continue
-        }
 
-        $entries = Get-MutLineMapEntries -LineMap $LineMap -File $diagnostic.File
+        $hasLocation = (-not [string]::IsNullOrWhiteSpace([string]$diagnostic.File)) -and ($null -ne $diagnostic.Line)
 
         $block = $null
-        foreach ($entry in $entries) {
-            if ($diagnostic.Line -ge $entry.startLine -and $diagnostic.Line -le $entry.endLine) {
-                $block = $entry
-                break
+        if ($hasLocation) {
+            $entries = Get-MutLineMapEntries -LineMap $LineMap -File $diagnostic.File
+            foreach ($entry in $entries) {
+                if ($diagnostic.Line -ge $entry.startLine -and $diagnostic.Line -le $entry.endLine) {
+                    $block = $entry
+                    break
+                }
             }
         }
 
         if ($null -eq $block) {
-            throw "Build-MutSchemata: compile diagnostic at '$($diagnostic.File):$($diagnostic.Line)' ($($diagnostic.Message)) does not map to any mutant guard block in linemap.json; this compile error cannot be resolved by excluding mutants."
+            $location = 'no File/Line'
+            if ($hasLocation) {
+                $location = "'$($diagnostic.File):$($diagnostic.Line)'"
+            }
+            throw "Build-MutSchemata: compile diagnostic $($diagnostic.Code) at $location does not map to any mutant guard block in linemap.json ($($diagnostic.Message)); this compile error cannot be resolved by excluding mutants."
         }
 
         foreach ($id in @($block.mutantIds)) {
@@ -259,8 +266,9 @@ function Build-MutSchemata {
         this module without this module ever referencing the backend by name.
         .OUTPUTS
         [pscustomobject]@{ SchemataPath; AppFile; Mutants; CompileErrorIds; Iterations;
-        ExcludeFile } -- ExcludeFile is $null when the first iteration compiled cleanly (no
-        exclude.json was ever written).
+        ExcludeFile; RunNo } -- ExcludeFile is $null when the first iteration compiled cleanly
+        (no exclude.json was ever written); RunNo echoes the caller's $RunNo unchanged (T27
+        threads it through the run's results).
     #>
     param(
         [Parameter(Mandatory = $true)]
@@ -286,6 +294,7 @@ function Build-MutSchemata {
     $compileErrorIds = @()
     $excludedStableKeys = @()
     $excludeFileWritten = $null
+    $lastDiagnostics = @()
 
     for ($iteration = 1; $iteration -le $script:MaxIterations; $iteration++) {
         $excludeArg = $null
@@ -312,6 +321,7 @@ function Build-MutSchemata {
         }
 
         $compileResult = Compile-MutApp @compileParams
+        $lastDiagnostics = @($compileResult.Diagnostics)
 
         if ($compileResult.Success) {
             return [pscustomobject]@{
@@ -321,10 +331,11 @@ function Build-MutSchemata {
                 CompileErrorIds = $compileErrorIds
                 Iterations      = $iteration
                 ExcludeFile     = $excludeFileWritten
+                RunNo           = $RunNo
             }
         }
 
-        $newIds = Resolve-MutCompileErrorMutantIds -Diagnostics @($compileResult.Diagnostics) -LineMap $lineMap
+        $newIds = Resolve-MutCompileErrorMutantIds -Diagnostics $lastDiagnostics -LineMap $lineMap
         $compileErrorIds = @($compileErrorIds) + @($newIds)
 
         foreach ($id in $newIds) {
@@ -342,7 +353,8 @@ function Build-MutSchemata {
         $excludeFileWritten = $excludeFile
     }
 
-    throw "Build-MutSchemata: compile did not succeed within $script:MaxIterations iteration(s); last CompileErrorIds: $($compileErrorIds -join ', ')."
+    $diagnosticsSummary = ($lastDiagnostics | Select-Object -First 10 | ForEach-Object { "$($_.Code): $($_.Message)" }) -join '; '
+    throw "Build-MutSchemata: compile did not succeed within $script:MaxIterations iteration(s); last CompileErrorIds: $($compileErrorIds -join ', '); last compile diagnostics: $diagnosticsSummary"
 }
 
 Export-ModuleMember -Function Build-MutSchemata
