@@ -5,6 +5,7 @@ codeunit 50000 "MUT Mut"
 
     var
         ActiveId: Integer;
+        LastHookError: Text;
 
     procedure SetActive(Id: Integer)
     begin
@@ -19,10 +20,21 @@ codeunit 50000 "MUT Mut"
     procedure Reset()
     begin
         ActiveId := 0;
+        LastHookError := '';
     end;
 
     procedure GetActive(): Integer
     begin
         exit(ActiveId);
+    end;
+
+    procedure SetLastHookError(ErrorText: Text)
+    begin
+        LastHookError := ErrorText;
+    end;
+
+    procedure GetLastHookError(): Text
+    begin
+        exit(LastHookError);
     end;
 }
