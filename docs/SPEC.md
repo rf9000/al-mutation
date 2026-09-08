@@ -219,17 +219,22 @@ procedure GetActive(): Integer            // exit(ActiveId)
 ```
 
 #### 6.1.4 Codeunit 50001 "MUT Test Hooks"
-`Access = Internal`. `Permissions = tabledata "MUT Mutation Setup" = RI, tabledata "MUT Mutant Result" = RI;`
+`Access = Internal`. `Permissions = tabledata "MUT Mutation Setup" = R, tabledata "MUT Mutant Result" = RI;`
+**DemoPortal test sessions run under a restricted user, not SUPER.** Every table access in the hooks must be executed by
+code inside this codeunit (Get/Insert on record variables declared here) so the `Permissions` property applies. A table
+method such as `GetOrCreate()` runs in the table object, is denied, and the resulting error in `OnBeforeTestMethodRun`
+makes the runner skip every test (observed 2026-09-08). `GetOrCreate()` is for `MUT Install` only.
 
 ```al
 [EventSubscriber(ObjectType::Codeunit, Codeunit::"Test Runner - Mgt", OnBeforeTestMethodRun, '', false, false)]
 local procedure OnBeforeTestMethodRun(var CurrentTestMethodLine: Record "Test Method Line"; CodeunitID: Integer; CodeunitName: Text[30]; FunctionName: Text[128]; FunctionTestPermissions: TestPermissions; var Skip: Boolean)
-// read MUT Mutation Setup (GetOrCreate), MutationCore.SetActive("Active Mutant Id")
+// if not Setup.Get(0) then exit;   -- direct Get in THIS codeunit; never call a table method for DB access here
+// MutationCore.SetActive(Setup."Active Mutant Id")
 
 [EventSubscriber(ObjectType::Codeunit, Codeunit::"Test Runner - Mgt", OnAfterTestMethodRun, '', false, false)]
 local procedure OnAfterTestMethodRun(var CurrentTestMethodLine: Record "Test Method Line"; CodeunitID: Integer; CodeunitName: Text[30]; FunctionName: Text[128]; FunctionTestPermissions: TestPermissions; IsSuccess: Boolean)
 // if IsSuccess then exit; if FunctionName = '' then exit;
-// Setup.GetOrCreate(); if Setup."Active Mutant Id" = 0 then exit;
+// if not Setup.Get(0) then exit; if Setup."Active Mutant Id" = 0 then exit;
 // if MutantResult.Get(Setup."Current Run No.", Setup."Active Mutant Id") then exit;
 // insert MutantResult: Status Killed, "Killing Test" = CopyStr(CodeunitName + ':' + FunctionName, 1, 250), "Recorded At" = CurrentDateTime()
 ```
@@ -329,7 +334,7 @@ end;
 #### 6.3.2 `fixtures/fixture-test` — "MUT Fixture Test"
 Dependencies: MUT Fixture AUT, Microsoft "Library Assert", Microsoft "Test Runner". Id range 50300–50399.
 
-**Codeunit 50300 "MUT Fx Order Tests"** (`Subtype = Test`) — the baseline suite. Tests, all MUST pass on the unmutated fixture:
+**Codeunit 50300 "MUT Fx Order Tests"** (`Subtype = Test`, `Permissions = tabledata "MUT Fx Order" = RIMD;` because DemoPortal test sessions are not SUPER) — the baseline suite. Tests, all MUST pass on the unmutated fixture:
 
 | Test | Calls | Asserts |
 |---|---|---|
@@ -718,7 +723,7 @@ Sections in this order, each a table with columns `Metric | Value | Backend | Da
 - If a spec statement turns out to be wrong (e.g. an AL construct does not compile), do not guess: record the finding in `docs/issues.md` with the exact compiler message, stop the task, and report.
 
 ### 9.2 AL
-- Prefix `MUT`, ids in the ranges of §6.0.1, no namespace, `Access` explicit on every object, labels for all user text, no unused variables (AA0137), `NoImplicitWith`, one statement per line, 4-space indent.
+- Prefix `MUT`, ids in the ranges of §6.0.1, no namespace, `Access` explicit on every object except API pages (AL0124 forbids it there), labels for all user text. Every test codeunit declares `Permissions = tabledata <table> = RIMD` for each table it reads or writes, and codeunits that touch tables from event subscribers declare `Permissions` and perform the Get/Insert in their own code (DemoPortal test sessions are not SUPER), no unused variables (AA0137), `NoImplicitWith`, one statement per line, 4-space indent.
 - Compile with the strict ruleset for our own apps: `continia compile <app> --json` uses `<app>/.vscode/settings.json` `al.codeAnalyzers: ["${CodeCop}", "${UICop}"]` (no AppSourceCop, no PerTenantExtensionCop). Zero errors required; warnings are reported in the task result.
 - AUT copies compile with `--ruleset <workDir>/rulesets/.cli-ruleset-localdeploy.json`.
 
