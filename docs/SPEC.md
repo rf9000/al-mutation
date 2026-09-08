@@ -40,17 +40,17 @@ The full suite is **not** run in this task list. Everything is proven on two tie
 written for this project. Used to prove the whole mechanism end to end (§6.3) and as the acceptance
 fixture for generator and orchestrator.
 
-**Tier B — real AUT slice.** Three AUT codeunits and the two test codeunits that exercise them:
+**Tier B — real AUT slice.** One AUT codeunit and the test codeunit that exercises it:
 
 | AUT codeunit | Id | File (relative to AUT root) | Covered by test codeunit |
 |---|---|---|---|
 | CTS-CB Auth Share Detection | 72918635 | `Authentication\Codeunit\AuthShareDetection.Codeunit.al` | 95155 "CTS-CB Test Auth Share Detect" (13 tests) |
-| CTS-CB Auth Granted Acc. Mgt | 72918690 | `Authentication\Codeunit\AuthGrantedAccMgt.Codeunit.al` | 95913 "CTS-CB Test Auth Granted Acc" (15 tests) |
-| CTS-CB Bank Acc. External ID | 72918691 | `Bank Communication\Codeunits\Authentication\BankAccExternalID.Codeunit.al` | 95913 |
 
-Test codeunit files: `Authentication\TestAuthShareDetect.Codeunit.al`, `Authentication\TestAuthGrantedAcc.Codeunit.al`
-(relative to the test app root). Test 95155 also references `CTS-CB Upgrade To 28xxx` and `CTS-CB Http Factory`;
-coverage rows for those objects are filtered out, not an error.
+Test codeunit file: `Authentication\TestAuthShareDetect.Codeunit.al` (relative to the test app root). Test 95155 also
+references `CTS-CB Upgrade To 28xxx` and `CTS-CB Http Factory`; coverage rows for those objects are filtered out, not an error.
+**The AUT repo is a moving target** (the owning team merges daily; on 2026-09-08 the previously planned objects 72918690 /
+72918691 and test codeunit 95913 were no longer present). `Sync-MutAutCopy` snapshots the working tree at run time; every
+live task re-verifies that its target objects exist in the copy before using them and records drift in `docs/issues.md`.
 
 **Gate G1 — full baseline.** Running all 181 test codeunits (baseline + coverage) is required before
 the first full mutation run, but only after the go decision at Gate G0 (§8). It is the last task in the list
@@ -114,7 +114,7 @@ name and the date.
 | U6 | How to replace the installed AUT with the schemata build while the test app depends on it. Options: (a) `continia publish` same id + same version (CLI auto-unpublishes; BC may refuse with dependents), (b) same id + bumped build number `28.5.0.1`, (c) unpublish test app → publish schemata → republish test app. | `spikes/u5-u6` on fixture apps | Sets `schemata.publishStrategy` in config. |
 | U7 | Fixed cost of one DemoPortal job (single-method test) and duration of test codeunits 95155 and 95913. | Tier B baseline | Sets `timeouts.jobOverheadSeconds` and the sampling default. |
 | U8 | The BC API base URL and credentials for a DemoPortal environment. `env get --json` returns a portal `url`; the API root is expected at `<url>/api/v2.0/companies` with Basic auth from `continia env users <envId> --json`. | `Invoke-MutApi` task | If 404: inspect `continia --help` for an API/URL command and `env get` output for a web-service URL; record the working pattern in `docs/spike-baseline.md`. |
-| U9 | Does `test run --json` expose the job id needed by `test coverage`? What are the CSV columns? | Tier B baseline | If no job id: coverage selection is unavailable on DemoPortal; static reference selection (§6.5.5) is the only selector and U2 is answered statically. |
+| U9 | Does `test run --json` expose the job id needed by `test coverage`? What are the CSV columns? | Tier B baseline | **Answered 2026-09-08:** `--json` does not expose it; `--raw` prints `Test job started: <N>` before the xUnit XML (§6.5.3 Invoke-MutTests). CSV: no header, five positional columns ObjectType, ObjectId, LineType, LineNo, Hits (§6.5.5, `fixtures/coverage/sample.csv`). |
 
 ---
 
@@ -587,7 +587,7 @@ Every backend module exports exactly these functions. `$Env` is the handle retur
 | `Publish-MutApp -Env -Path [-Ruleset] [-AllowDowngrade] [-SyncMode]` | `@{ Success; Code; Diagnostics; DurationSec }` | `deploy <id> <Path> --json [--ruleset] [--allow-downgrade] [--sync-mode]` |
 | `Publish-MutAppFile -Env -AppFile [-SyncMode]` | `@{ Success; DurationSec }` | `publish <id> <AppFile> --json` |
 | `Unpublish-MutApp -Env -AppId [-Version]` | `@{ Success }` | `unpublish <id> --app-id <AppId> [--app-version <Version>] --json` |
-| `Invoke-MutTests -Env -Targets -TimeoutSec [-Coverage]` | `@{ Passed; Failed; Tests; DurationMs; JobIds }` | one `test run <id> <CodeunitId> [<Function>] --json --timeout <TimeoutSec>` per distinct target, sequential; `Tests` = `[{Codeunit; Function; Result ('Pass'/'Fail'/'Skip'); DurationMs; Error}]`; `JobIds` from the JSON if present (U9), else `@()` |
+| `Invoke-MutTests -Env -Targets -TimeoutSec [-Coverage]` | `@{ Passed; Failed; Tests; DurationMs; JobIds }` | one `test run <id> <CodeunitId> [<Function>] --timeout <TimeoutSec>` per distinct target, sequential; `Tests` = `[{Codeunit; Function; Result ('Pass'/'Fail'/'Skip'); DurationMs; Error}]`. Without `-Coverage`: `--json`, `JobIds = @()`. **With `-Coverage` (U9 answered 2026-09-08): `--json` does not expose the job id, so run with `--raw` via `-ExpectJson:$false`**: stdout is the line `Test job started: <N>` followed by xUnit XML (`<assemblies><assembly><collection><test name method time result>` with `<failure><message>` on failed tests); parse `N` into `JobIds` and the XML into `Tests`. |
 | `Get-MutCoverageRaw -Env -JobIds` | `[string[]]` raw CSV documents | `test coverage <id> <jobId> --json` per job; returns each `csv` string |
 | `Get-MutCoverage -Env -JobIds` | `[{ObjectType; ObjectId; LineNo; Hits}]` | `Get-MutCoverageRaw` then `ConvertFrom-MutCoverageCsv` (§6.5.5) per document; merge by summing `Hits` |
 | `Get-MutApiBase -Env` | string | U8: derive from `Url`; verify `GET <base>/api/v2.0/companies` returns 200 |
@@ -612,7 +612,7 @@ Each step is a function in `lib/*.psm1`; the script is idempotent per run number
 
 #### 6.5.5 Covering-test selection (`lib/References.psm1`, `lib/Coverage.psm1`)
 - `Get-MutReferenceMap -AutPath -TestAppPath` → `references.json`: `{ "<autObjectId>": [<testCodeunitId>, …] }`. Build a name→id map from every AUT `.al` file's first line (`^(codeunit|table|page|report|enum|interface|query|xmlport)\s+(\d+)\s+("[^"]+"|\S+)`), then for each test codeunit file (`Subtype = Test`) collect quoted object names in `Codeunit "…"`, `Record "…"`, `Page "…"`, `Enum "…"`, `Codeunit::"…"`, `Page::"…"`, `Database::"…"` and map them to ids.
-- `ConvertFrom-MutCoverageCsv -Csv` → `[{ObjectType; ObjectId; LineNo; Hits}]`. Column mapping is pinned by `fixtures/coverage/sample.csv` (U9); the parser MUST use header names, not positions, and MUST throw on an unknown header set.
+- `ConvertFrom-MutCoverageCsv -Csv` → `[{ObjectType; ObjectId; LineType; LineNo; Hits}]`. **Format pinned by `fixtures/coverage/sample.csv` (U9, 2026-09-08): no header row; five quoted positional columns** `"ObjectType","ObjectId","LineType","LineNo","Hits"` where LineType ∈ `Object | Trigger/Function | Empty | Code`, e.g. `"Codeunit","50000","Code","12","1"`. The parser MUST validate exactly five columns per row and a known ObjectType, and MUST throw otherwise. Only `LineType = Code` rows carry meaningful `Hits`; selection uses those rows.
 - `Get-CoveringTests -Mutant -Coverage -References -TestCodeunits` → `[int[]]` of test codeunit ids: if `Coverage` has rows for `(ObjectId, LineNo)` with `Hits > 0`, the test codeunits whose jobs produced them; else `References[ObjectId]`; else `@()`.
 
 #### 6.5.6 Mutant loop and timeout (`lib/MutantLoop.psm1`)
@@ -669,13 +669,17 @@ Paths are relative to the AUT root; line numbers refer to the AUT at commit of 2
 | HM13 | same | 644 | `TempAuthShareTarget.DeleteAll();` | `;` | DEL | 95155 |
 | HM14 | same | 401 | `if TempAuthShareTarget.FindLast() then` | `if false then` | COND | 95155 |
 | HM15 | same | 577 | `exit;` | `;` | DEL | 95155 |
-| HM16 | `Authentication\Codeunit\AuthGrantedAccMgt.Codeunit.al` | 23 | `if AuthenticationEntryNo = 0 then` | `if AuthenticationEntryNo <> 0 then` | REL | 95913 |
-| HM17 | same | 26 | `if GrantedAccounts.Count = 0 then` | `if GrantedAccounts.Count <> 0 then` | REL | 95913 |
-| HM18 | same | 30 | `AuthGrantedAccount.DeleteAll();` | `;` | DEL | 95913 |
-| HM19 | same | 54 | `if not AuthGrantedAccount.IsEmpty() then` | `if AuthGrantedAccount.IsEmpty() then` | NOT | 95913 |
-| HM20 | `Bank Communication\Codeunits\Authentication\BankAccExternalID.Codeunit.al` | 120 | `if LinkUnlinkedAccounts and (BankAccount."CTS-CB Bank Code" = '') then begin` | `if LinkUnlinkedAccounts or (BankAccount."CTS-CB Bank Code" = '') then begin` | BOOL | 95913 |
+| HM16 | same | 211 | `if TempBank.Code <> '' then` | `if TempBank.Code = '' then` | REL | 95155 |
+| HM17 | same | 84 | `if SourceBank.Code = '' then` | `if SourceBank.Code <> '' then` | REL | 95155 |
+| HM18 | same | 323 | `if not ToBank.WritePermission() then` | `if ToBank.WritePermission() then` | NOT | 95155 |
+| HM19 | same | 328 | `ToBank.Insert(true);` | `;` | DEL | 95155 |
+| HM20 | same | 274 | `(CurrentCompany <> PreferredCompany) and TryGetSourceBank(CurrentCompany, SourceBankCode, SourceBank)` | `(CurrentCompany <> PreferredCompany) or TryGetSourceBank(CurrentCompany, SourceBankCode, SourceBank)` | BOOL | 95155 |
 
-HM15's line 577 is the `exit;` inside `EmitSystemNotMappedRow` after `PlaceholderConsumed := true;` (the script must match the 577th line; there are several `exit;` lines in the file).
+All 20 mutants live in `AuthShareDetection.Codeunit.al` (the other planned objects disappeared from the checkout on 2026-09-08, §1.1).
+**Locating a mutant:** `line` is advisory. The script first checks the given line; if the `find` text is not there, it searches
+the whole file and requires exactly one occurrence, else aborts with `source drift: <id>`. HM11–HM13 and HM15 have `find` texts
+that occur several times in the file, so their `line` MUST match (the script reports drift otherwise); HM15's `exit;` is the
+one inside `EmitSystemNotMappedRow` after `PlaceholderConsumed := true;`.
 
 ---
 
