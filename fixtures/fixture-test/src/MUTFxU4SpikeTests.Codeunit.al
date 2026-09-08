@@ -1,6 +1,7 @@
 codeunit 50301 "MUT Fx U4 Spike Tests"
 {
     Subtype = Test;
+    TestPermissions = Disabled;
     Access = Internal;
 
     var

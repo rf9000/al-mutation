@@ -1,6 +1,7 @@
 codeunit 50302 "MUT Fx U5 Spike Tests"
 {
     Subtype = Test;
+    TestPermissions = Disabled;
     Access = Internal;
 
     [Test]

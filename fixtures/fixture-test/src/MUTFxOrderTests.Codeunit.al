@@ -1,6 +1,7 @@
 codeunit 50300 "MUT Fx Order Tests"
 {
     Subtype = Test;
+    TestPermissions = Disabled;
     Permissions = tabledata "MUT Fx Order" = RIMD;
     Access = Internal;
 
