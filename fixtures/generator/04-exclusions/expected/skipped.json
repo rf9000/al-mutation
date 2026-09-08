@@ -1,0 +1,27 @@
+[
+  {
+    "file": "src/Case04Cu.Codeunit.al",
+    "line": 8,
+    "reason": "preprocessor-region"
+  },
+  {
+    "file": "src/Case04Cu.Codeunit.al",
+    "line": 9,
+    "reason": "preprocessor-region"
+  },
+  {
+    "file": "src/Case04Cu.Codeunit.al",
+    "line": 11,
+    "reason": "ignore-comment"
+  },
+  {
+    "file": "src/Case04Table.Table.al",
+    "line": 0,
+    "reason": "not-a-codeunit"
+  },
+  {
+    "file": "src/Case04Tests.Codeunit.al",
+    "line": 0,
+    "reason": "test-codeunit"
+  }
+]

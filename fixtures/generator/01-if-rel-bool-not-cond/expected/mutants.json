@@ -1,0 +1,67 @@
+[
+  {
+    "id": 1,
+    "stableKey": "440ea983f459f56f",
+    "objectType": "codeunit",
+    "objectId": 50210,
+    "objectName": "Case01 Cu",
+    "procedure": "Check",
+    "line": 9,
+    "operator": "REL",
+    "original": "(Amount > 1000) and (not IsTrusted)",
+    "mutated": "(Amount >= 1000) and (not IsTrusted)",
+    "file": "src/Case01Cu.Codeunit.al"
+  },
+  {
+    "id": 2,
+    "stableKey": "7e148209984c7742",
+    "objectType": "codeunit",
+    "objectId": 50210,
+    "objectName": "Case01 Cu",
+    "procedure": "Check",
+    "line": 9,
+    "operator": "BOOL",
+    "original": "(Amount > 1000) and (not IsTrusted)",
+    "mutated": "(Amount > 1000) or (not IsTrusted)",
+    "file": "src/Case01Cu.Codeunit.al"
+  },
+  {
+    "id": 3,
+    "stableKey": "2a1601b5178c2417",
+    "objectType": "codeunit",
+    "objectId": 50210,
+    "objectName": "Case01 Cu",
+    "procedure": "Check",
+    "line": 9,
+    "operator": "NOT",
+    "original": "(Amount > 1000) and (not IsTrusted)",
+    "mutated": "(Amount > 1000) and (IsTrusted)",
+    "file": "src/Case01Cu.Codeunit.al"
+  },
+  {
+    "id": 4,
+    "stableKey": "8f3b8e40488b3104",
+    "objectType": "codeunit",
+    "objectId": 50210,
+    "objectName": "Case01 Cu",
+    "procedure": "Check",
+    "line": 9,
+    "operator": "COND",
+    "original": "(Amount > 1000) and (not IsTrusted)",
+    "mutated": "true",
+    "file": "src/Case01Cu.Codeunit.al"
+  },
+  {
+    "id": 5,
+    "stableKey": "813cc1ec197d96ca",
+    "objectType": "codeunit",
+    "objectId": 50210,
+    "objectName": "Case01 Cu",
+    "procedure": "Check",
+    "line": 9,
+    "operator": "COND",
+    "original": "(Amount > 1000) and (not IsTrusted)",
+    "mutated": "false",
+    "file": "src/Case01Cu.Codeunit.al"
+  }
+]
