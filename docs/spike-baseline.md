@@ -35,6 +35,12 @@ Numbers recorded by each spike task, per §7.6 of `docs/SPEC.md`.
 
 | Metric | Value | Backend | Date | Source task |
 |---|---|---|---|---|
+| option a (same-version) | success — generated `out/gen-fixture` with no `--aut-version` (schemata `app.json` version stays `1.0.0.0`, same as the already-installed fixture AUT and fixture test app); `.tools/continia.exe compile out/gen-fixture/aut-schemata --json --no-raw-output` → 0 errors, 11 warnings, 3 info (15 s); `continia.exe publish 30004698-209d-467c-96eb-9b412e9ee6ee "out/gen-fixture/aut-schemata/Continia Software_MUT Fixture AUT_1.0.0.0.app" --json` → `{success:true, message:"Publication successful", readinessOutcome:"ready"}` (5 s), with the fixture test app (id `9c4a5f6d-be7b-4a8c-8d9e-0f1a2b3c4d5e`) left installed throughout and never unpublished. Options b/c were not attempted — a was tried first and succeeded, per the ladder in this task's brief. | DemoPortal | 2026-09-08 | T22 |
+| schemataCompileSec | 15 | DemoPortal | 2026-09-08 | T22 |
+| schemataPublishSec | 5 | DemoPortal | 2026-09-08 | T22 |
+| inactiveSuite | 9/9 pass — after publish, PATCH `mutationSetup(0)` `{activeMutantId:0, currentRunNo:0}` (confirmed by GET), `continia test run 30004698-209d-467c-96eb-9b412e9ee6ee 50300 --json` → 9 total, 9 passed, 0 failed, 0 skipped. Schemata is behaviour-preserving when inactive. | DemoPortal | 2026-09-08 | T22 |
+| activatedMutantKilled | yes — looked up mutant id 3 in `out/gen-fixture/mutants.json` (procedure `IsLargeOrder`, operator `COND`, `original:"Quantity >= 10"`, `mutated:"false"`, matching §6.3.3's "IsLargeOrder COND → false, Killed by Twelve_IsTrue" row); PATCH `mutationSetup(0)` `{activeMutantId:3, currentRunNo:2}` (confirmed by GET); `test run 50300 --json` → 9 total, 8 passed, 1 failed — the single failure was `IsLargeOrder_Twelve_IsTrue` (`Assert.IsTrue failed. Order with quantity 12 should be large.`), all 8 others passed. Matches expectation exactly. | DemoPortal | 2026-09-08 | T22 |
+| killedRowWritten | yes — GET `mutantResults?$filter=runNo eq 2 and mutantId eq 3` returned exactly one row `{runNo:2, mutantId:3, status:"Killed", killingTest:"MUT Fx Order Tests:IsLargeOrder_Twelve_IsTrue", durationMs:0}`, written automatically by the hooks (no orchestrator-side POST fallback needed, consistent with the T04b finding). Setup PATCHed back to `{activeMutantId:0, currentRunNo:0}` and confirmed via GET; environment left with the fixture schemata (mutation-instrumented AUT) installed and inactive, as later tasks expect. | DemoPortal | 2026-09-08 | T22 |
 
 ## U7
 
