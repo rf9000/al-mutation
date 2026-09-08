@@ -4,6 +4,10 @@ $ErrorActionPreference = 'Stop'
 # Repo root is two levels above this module file (orchestrator/backends/DemoPortal.psm1).
 $script:RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 
+# Backend-agnostic coverage CSV parser (T24, §6.5.5), imported by relative path so this backend
+# is the only place that wires it to the real CLI's coverage output.
+Import-Module (Join-Path $PSScriptRoot '..\lib\Coverage.psm1') -Force
+
 # Poll loop tuning for env get / env stop-start status polling.
 $script:PollIntervalSec = 10
 $script:MaxPollIterations = 60
@@ -83,12 +87,23 @@ function Invoke-Continia {
         With the default $ExpectJson = $true, empty/whitespace stdout is always an error (never
         a silent $null) and a non-zero exit code is never treated as failure by itself (F18:
         `test run` exits 1 when tests fail while still emitting valid JSON on stdout).
+
+        .PARAMETER AllowNonZeroExit
+        T24: `test run ... --raw` also exits 1 when tests fail (F18 applies to `--raw` output
+        just as it does to `--json`), but unlike `--json` its stdout is not JSON at all (a
+        `Test job started: <N>` line followed by xUnit XML), so it must go through the
+        $ExpectJson:$false path to avoid a JSON-parse attempt. Without this switch that path
+        throws on any non-zero exit code (the "env start/stop/etc. have no --json and a
+        non-zero exit is really an error" case); passing it suppresses that throw so a failing
+        test run's `--raw` output can still be read and parsed. Used only by Invoke-MutTests's
+        `-Coverage` path.
     #>
     param(
         [Parameter(Mandatory = $true)]
         [string[]]$Arguments,
         [int]$TimeoutSec = 600,
-        [bool]$ExpectJson = $true
+        [bool]$ExpectJson = $true,
+        [switch]$AllowNonZeroExit
     )
 
     $cliPath = $script:CliPath
@@ -133,7 +148,7 @@ function Invoke-Continia {
     $script:LastContiniaExitCode = $exitCode
 
     if (-not $ExpectJson) {
-        if ($exitCode -ne 0) {
+        if ($exitCode -ne 0 -and -not $AllowNonZeroExit) {
             throw "continia exited with code ${exitCode}: continia $quotedArgs; stderr: $stderr"
         }
         return [pscustomobject]@{ ExitCode = $exitCode; StdOut = $stdout; StdErr = $stderr }
@@ -909,10 +924,104 @@ function ConvertTo-MutTestOutcome {
     }
 }
 
+function ConvertTo-MutXunitTests {
+    <#
+        .SYNOPSIS
+        Parses `test run ... --raw`'s xUnit XML body into the same Tests[] row shape as the
+        --json path (§6.5.3, T24/U9): `<assemblies><assembly><collection><test name method time
+        result>` with `<failure><message>` on failed tests. Selects `//test` nodes so the parse
+        does not depend on the exact assembly/collection nesting.
+        .OUTPUTS
+        [pscustomobject[]] {Codeunit; Function; Result; DurationMs; Error}
+    #>
+    param(
+        [Parameter(Mandatory = $true)]
+        [System.Xml.XmlDocument]$XmlDoc,
+        [Parameter(Mandatory = $true)]
+        $Target
+    )
+
+    $tests = @()
+    foreach ($node in @($XmlDoc.SelectNodes('//test'))) {
+        if ($null -eq $node) {
+            continue
+        }
+
+        $function = $null
+        if ($node.Attributes['method']) {
+            $function = $node.Attributes['method'].Value
+        }
+        elseif ($node.Attributes['name']) {
+            $function = $node.Attributes['name'].Value
+        }
+
+        $codeunit = "$($Target.CodeunitId)"
+        if ($node.Attributes['type']) {
+            $codeunit = $node.Attributes['type'].Value
+        }
+
+        $durationMs = 0
+        if ($node.Attributes['time']) {
+            $durationMs = [int][math]::Round([double]$node.Attributes['time'].Value * 1000)
+        }
+
+        $resultRaw = $null
+        if ($node.Attributes['result']) {
+            $resultRaw = $node.Attributes['result'].Value
+        }
+
+        $errorMessage = ''
+        $failureMessageNode = $node.SelectSingleNode('failure/message')
+        if ($null -ne $failureMessageNode) {
+            $errorMessage = $failureMessageNode.InnerText
+        }
+
+        $tests += [pscustomobject]@{
+            Codeunit   = $codeunit
+            Function   = $function
+            Result     = ConvertTo-MutTestOutcome -Raw $resultRaw
+            DurationMs = $durationMs
+            Error      = $errorMessage
+        }
+    }
+
+    # See the identical note on ConvertTo-MutDiagnosticList: the unary comma keeps a 1-element
+    # result an array instead of unwrapping it via pipeline enumeration.
+    return , $tests
+}
+
+function Get-MutTestJobId {
+    <#
+        .SYNOPSIS
+        Extracts the job id from `test run ... --raw`'s leading `Test job started: <N>` line
+        (U9, answered 2026-09-08). Searches $StdOut then $StdErr (the line's stream is not
+        pinned by the spec); returns $null when neither carries it.
+    #>
+    param(
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyString()]
+        [string]$StdOut,
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyString()]
+        [string]$StdErr
+    )
+
+    foreach ($stream in @($StdOut, $StdErr)) {
+        if ([string]::IsNullOrEmpty($stream)) {
+            continue
+        }
+        $match = [regex]::Match($stream, '(?m)^Test job started:\s*(\d+)')
+        if ($match.Success) {
+            return $match.Groups[1].Value
+        }
+    }
+    return $null
+}
+
 function Invoke-MutTests {
     <#
         .SYNOPSIS
-        Runs one `test run <envId> <CodeunitId> [<Function>] --json --timeout <TimeoutSec>` per
+        Runs one `test run <envId> <CodeunitId> [<Function>] ... --timeout <TimeoutSec>` per
         DISTINCT (CodeunitId, Function) pair in $Targets (first-seen order), strictly
         sequentially in a plain foreach (F7, F9, guardrail #8: never two DemoPortal test jobs at
         once — no Start-Job/background job is used here). $TimeoutSec is passed to the CLI's
@@ -920,12 +1029,20 @@ function Invoke-MutTests {
         -TimeoutSec so the wrapper does not kill the process before the CLI's own client-side
         wait would give up.
 
-        Per F18, `test run` exits 1 when tests fail while still emitting valid JSON on stdout;
-        Invoke-Continia's default -ExpectJson path never treats a non-zero exit code as failure
-        by itself, so a failing test run here does not throw.
+        Without -Coverage: `--json` (unchanged from T08). Per F18, `test run` exits 1 when
+        tests fail while still emitting valid JSON on stdout; Invoke-Continia's default
+        -ExpectJson path never treats a non-zero exit code as failure by itself, so a failing
+        test run here does not throw. A job id (U9: field name unconfirmed for --json) is read
+        from a `jobId` property first, then an `id` property; a target whose response carries
+        neither contributes nothing to JobIds.
 
-        A job id (U9: field name unconfirmed) is read from a `jobId` property first, then an
-        `id` property; a target whose response carries neither contributes nothing to JobIds.
+        With -Coverage (U9, answered 2026-09-08): `--json` does not expose the job id needed by
+        `test coverage`, so this runs `--raw` instead via `-ExpectJson:$false -AllowNonZeroExit`
+        (F18 applies to `--raw` too: it also exits 1 on test failure, but its stdout is not
+        JSON, so -AllowNonZeroExit is required to read it rather than throw). stdout is the
+        line `Test job started: <N>` (searched via Get-MutTestJobId, which also checks stderr)
+        followed by xUnit XML; the XML is parsed via `[xml]` cast of the text starting at
+        stdout's first '<' and converted to Tests rows by ConvertTo-MutXunitTests.
         .OUTPUTS
         [pscustomobject]@{ Passed; Failed; Tests; DurationMs; JobIds }
     #>
@@ -966,6 +1083,35 @@ function Invoke-MutTests {
         if ($target.Function) {
             $arguments += $target.Function
         }
+
+        if ($Coverage) {
+            $arguments += @('--raw', '--timeout', $TimeoutSec)
+
+            $response = Invoke-Continia -Arguments $arguments -TimeoutSec ($TimeoutSec + 60) -ExpectJson:$false -AllowNonZeroExit
+
+            $jobId = Get-MutTestJobId -StdOut $response.StdOut -StdErr $response.StdErr
+            if ($jobId) {
+                $jobIds += $jobId
+            }
+
+            $xmlStart = $response.StdOut.IndexOf('<')
+            if ($xmlStart -ge 0) {
+                [xml]$xmlDoc = $response.StdOut.Substring($xmlStart)
+                foreach ($t in (ConvertTo-MutXunitTests -XmlDoc $xmlDoc -Target $target)) {
+                    $tests += $t
+                    if ($t.Result -eq 'Pass') {
+                        $totalPassed++
+                    }
+                    elseif ($t.Result -eq 'Fail') {
+                        $totalFailed++
+                    }
+                    $totalDurationMs += $t.DurationMs
+                }
+            }
+
+            continue
+        }
+
         $arguments += @('--json', '--timeout', $TimeoutSec)
 
         $response = Invoke-Continia -Arguments $arguments -TimeoutSec ($TimeoutSec + 60)
@@ -1062,4 +1208,51 @@ function Get-MutCoverageRaw {
     return , [string[]]$csvDocuments
 }
 
-Export-ModuleMember -Function Get-MutEnvironment, New-MutEnvironment, Start-MutEnvironment, Remove-MutEnvironment, Reset-MutEnvironment, Assert-MutEnvironmentAllowed, Get-MutApiBase, Get-MutCompanyId, Grant-MutPermissionSet, Invoke-MutApi, Install-MutDependencies, Compile-MutApp, Publish-MutApp, Publish-MutAppFile, Unpublish-MutApp, Invoke-MutTests, Get-MutCoverageRaw
+function Get-MutCoverage {
+    <#
+        .SYNOPSIS
+        `Get-MutCoverageRaw` then `ConvertFrom-MutCoverageCsv` (§6.5.5, from the backend-agnostic
+        lib/Coverage.psm1) per document; merges rows across jobs by summing Hits for identical
+        (ObjectType, ObjectId, LineNo), keeping the LineType of the first row seen for that key
+        (§6.5.3 Get-MutCoverage: "finishes T08", T24).
+        .OUTPUTS
+        [pscustomobject[]] {ObjectType; ObjectId; LineType; LineNo; Hits}
+    #>
+    param(
+        [Parameter(Mandatory = $true)]
+        $Env,
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyString()]
+        [AllowNull()]
+        [string[]]$JobIds
+    )
+
+    Assert-MutEnvironmentAllowed $Env
+
+    $csvDocuments = Get-MutCoverageRaw -Env $Env -JobIds $JobIds
+
+    $merged = [ordered]@{}
+    foreach ($csv in $csvDocuments) {
+        foreach ($row in (ConvertFrom-MutCoverageCsv -Csv $csv)) {
+            $key = '{0}|{1}|{2}' -f $row.ObjectType, $row.ObjectId, $row.LineNo
+            if ($merged.Contains($key)) {
+                $merged[$key].Hits += $row.Hits
+            }
+            else {
+                $merged[$key] = [pscustomobject]@{
+                    ObjectType = $row.ObjectType
+                    ObjectId   = $row.ObjectId
+                    LineType   = $row.LineType
+                    LineNo     = $row.LineNo
+                    Hits       = $row.Hits
+                }
+            }
+        }
+    }
+
+    # See the comment on ConvertTo-MutDiagnosticList: the unary comma keeps a 1-element result
+    # an array instead of unwrapping it via pipeline enumeration.
+    return , [pscustomobject[]]@($merged.Values)
+}
+
+Export-ModuleMember -Function Get-MutEnvironment, New-MutEnvironment, Start-MutEnvironment, Remove-MutEnvironment, Reset-MutEnvironment, Assert-MutEnvironmentAllowed, Get-MutApiBase, Get-MutCompanyId, Grant-MutPermissionSet, Invoke-MutApi, Install-MutDependencies, Compile-MutApp, Publish-MutApp, Publish-MutAppFile, Unpublish-MutApp, Invoke-MutTests, Get-MutCoverageRaw, Get-MutCoverage
