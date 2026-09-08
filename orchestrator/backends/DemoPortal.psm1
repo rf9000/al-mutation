@@ -11,6 +11,13 @@ $script:MaxPollIterations = 60
 # budget is intentionally much shorter than the full start-to-Running poll (§6.5.3): 6 x 10s = 60s.
 $script:MaxAppearIterations = 6
 
+# Per-environment-id caches for Get-MutApiBase (U8) and the Basic-auth credential. Initialized
+# here (not lazily inside the functions) because Set-StrictMode -Version Latest throws
+# RuntimeException on a bare read of a $script: variable that was never assigned at all, as
+# opposed to one that is $null.
+$script:MutApiBaseCache = @{}
+$script:MutCredentialCache = @{}
+
 function Resolve-MutCliPath {
     param($Config)
 
@@ -422,4 +429,225 @@ function Reset-MutEnvironment {
     return [pscustomobject]@{ DurationSec = $durationSec }
 }
 
-Export-ModuleMember -Function Get-MutEnvironment, New-MutEnvironment, Start-MutEnvironment, Remove-MutEnvironment, Reset-MutEnvironment, Assert-MutEnvironmentAllowed
+function Get-MutCredential {
+    <#
+        .SYNOPSIS
+        Returns a PSCredential for the environment's "Super User" (username "Rf"), read once
+        per session from `env users <id> --json` and cached in a script-scoped hashtable keyed
+        by environment id. Never written to output, files, the ledger, or console.
+    #>
+    param(
+        [Parameter(Mandatory = $true)]
+        $Env
+    )
+
+    Assert-MutEnvironmentAllowed $Env
+
+    if ($script:MutCredentialCache.ContainsKey($Env.Id)) {
+        return $script:MutCredentialCache[$Env.Id]
+    }
+
+    $users = Invoke-Continia -Arguments @('env', 'users', $Env.Id, '--json')
+    $superUser = $users | Where-Object { $_.description -eq 'Super User' } | Select-Object -First 1
+    if (-not $superUser) {
+        throw "Get-MutCredential: no user with description 'Super User' found for environment '$($Env.Name)'."
+    }
+
+    $securePassword = ConvertTo-SecureString -String $superUser.password -AsPlainText -Force
+    $credential = New-Object System.Management.Automation.PSCredential($superUser.username, $securePassword)
+
+    $script:MutCredentialCache[$Env.Id] = $credential
+    return $credential
+}
+
+function Get-MutBasicAuthHeader {
+    <#
+        .SYNOPSIS
+        Builds a @{ Authorization = 'Basic <base64>' } header hashtable from a PSCredential.
+        Credentials are encoded in-memory only; never logged.
+    #>
+    param(
+        [Parameter(Mandatory = $true)]
+        [System.Management.Automation.PSCredential]$Credential
+    )
+
+    $plainPassword = $Credential.GetNetworkCredential().Password
+    $pair = '{0}:{1}' -f $Credential.UserName, $plainPassword
+    $bytes = [System.Text.Encoding]::UTF8.GetBytes($pair)
+    $encoded = [Convert]::ToBase64String($bytes)
+
+    return @{ Authorization = "Basic $encoded" }
+}
+
+function Get-MutApiBase {
+    <#
+        .SYNOPSIS
+        U8: derives the BC web API base URL for the environment. Tries `$Env.Url`, then
+        `$Env.Url` with '/BC' appended; the first candidate whose `/api/v2.0/companies` GET
+        succeeds (2xx) with Basic auth wins. Result is cached per environment id. Throws with
+        both attempted URLs if neither works.
+    #>
+    param(
+        [Parameter(Mandatory = $true)]
+        $Env
+    )
+
+    Assert-MutEnvironmentAllowed $Env
+
+    if ($script:MutApiBaseCache.ContainsKey($Env.Id)) {
+        return $script:MutApiBaseCache[$Env.Id]
+    }
+
+    $credential = Get-MutCredential -Env $Env
+    $headers = Get-MutBasicAuthHeader -Credential $credential
+
+    $candidates = @($Env.Url, "$($Env.Url)/BC")
+    foreach ($candidate in $candidates) {
+        try {
+            Invoke-RestMethod -Uri "$candidate/api/v2.0/companies" -Method Get -Headers $headers | Out-Null
+            $script:MutApiBaseCache[$Env.Id] = $candidate
+            return $candidate
+        }
+        catch {
+            continue
+        }
+    }
+
+    throw "Get-MutApiBase: no working API base found for environment '$($Env.Name)'. Tried: $($candidates -join ', ')"
+}
+
+function Get-MutCompanyId {
+    <#
+        .SYNOPSIS
+        Returns the GUID id of the first company reported by `<apiBase>/api/v2.0/companies`.
+    #>
+    param(
+        [Parameter(Mandatory = $true)]
+        $Env
+    )
+
+    Assert-MutEnvironmentAllowed $Env
+
+    $apiBase = Get-MutApiBase -Env $Env
+    $credential = Get-MutCredential -Env $Env
+    $headers = Get-MutBasicAuthHeader -Credential $credential
+
+    $response = Invoke-RestMethod -Uri "$apiBase/api/v2.0/companies" -Method Get -Headers $headers
+    $companies = @($response.value)
+    if ($companies.Count -eq 0) {
+        throw "Get-MutCompanyId: environment '$($Env.Name)' has no companies."
+    }
+
+    return $companies[0].id
+}
+
+function Invoke-MutApi {
+    <#
+        .SYNOPSIS
+        Calls the Mutation Core API pages. Path is relative to
+        `<apiBase>/api/mutation/core/v1.0/companies(<companyId>)/`; a PATCH sends
+        `If-Match: *`; the body (if any) is serialized with `ConvertTo-Json -Depth 10`.
+        .OUTPUTS
+        Parsed JSON (the raw object returned by Invoke-RestMethod).
+    #>
+    param(
+        [Parameter(Mandatory = $true)]
+        $Env,
+        [Parameter(Mandatory = $true)]
+        [string]$Method,
+        [Parameter(Mandatory = $true)]
+        [string]$Path,
+        $Body
+    )
+
+    Assert-MutEnvironmentAllowed $Env
+
+    $apiBase = Get-MutApiBase -Env $Env
+    $companyId = Get-MutCompanyId -Env $Env
+    $credential = Get-MutCredential -Env $Env
+    $headers = Get-MutBasicAuthHeader -Credential $credential
+
+    if ($Method -eq 'PATCH') {
+        $headers['If-Match'] = '*'
+    }
+
+    $uri = "$apiBase/api/mutation/core/v1.0/companies($companyId)/$Path"
+
+    $invokeArgs = @{
+        Uri     = $uri
+        Method  = $Method
+        Headers = $headers
+    }
+
+    if ($PSBoundParameters.ContainsKey('Body') -and $null -ne $Body) {
+        $invokeArgs['Body'] = ($Body | ConvertTo-Json -Depth 10)
+        $invokeArgs['ContentType'] = 'application/json'
+    }
+
+    return Invoke-RestMethod @invokeArgs
+}
+
+function Grant-MutPermissionSet {
+    <#
+        .SYNOPSIS
+        Grants a permission set (role) to every user of the environment via the Automation API,
+        idempotently: a user already holding a `userPermissions` row for that permission set
+        (matched by BC's `roleId` field, verified live against mut-spike-01 — the field is NOT
+        called `permissionSetId` in the actual `userPermissions` entity, despite that name being
+        used loosely in the spec's prose; see docs/issues.md) is skipped.
+
+        .OUTPUTS
+        @{ Granted = [string[]] userNames just granted; AlreadyHad = [string[]] userNames that
+        already held the set }
+    #>
+    param(
+        [Parameter(Mandatory = $true)]
+        $Env,
+        [Parameter(Mandatory = $true)]
+        [string]$PermissionSetId,
+        [Parameter(Mandatory = $true)]
+        [string]$AppId
+    )
+
+    Assert-MutEnvironmentAllowed $Env
+
+    $apiBase = Get-MutApiBase -Env $Env
+    $companyId = Get-MutCompanyId -Env $Env
+    $credential = Get-MutCredential -Env $Env
+    $headers = Get-MutBasicAuthHeader -Credential $credential
+
+    $automationBase = "$apiBase/api/microsoft/automation/v2.0/companies($companyId)"
+
+    $usersResponse = Invoke-RestMethod -Uri "$automationBase/users" -Method Get -Headers $headers
+    $users = @($usersResponse.value)
+
+    $granted = @()
+    $alreadyHad = @()
+
+    foreach ($user in $users) {
+        $permsUri = "$automationBase/users($($user.userSecurityId))/userPermissions"
+        $permsResponse = Invoke-RestMethod -Uri $permsUri -Method Get -Headers $headers
+        $rows = @($permsResponse.value)
+
+        $hasIt = $false
+        foreach ($row in $rows) {
+            if ($row.roleId -eq $PermissionSetId) {
+                $hasIt = $true
+                break
+            }
+        }
+
+        if ($hasIt) {
+            $alreadyHad += $user.userName
+            continue
+        }
+
+        $body = @{ roleId = $PermissionSetId; appId = $AppId; scope = 'System' }
+        Invoke-RestMethod -Uri $permsUri -Method Post -Headers $headers -Body ($body | ConvertTo-Json -Depth 10) -ContentType 'application/json' | Out-Null
+        $granted += $user.userName
+    }
+
+    return [pscustomobject]@{ Granted = $granted; AlreadyHad = $alreadyHad }
+}
+
+Export-ModuleMember -Function Get-MutEnvironment, New-MutEnvironment, Start-MutEnvironment, Remove-MutEnvironment, Reset-MutEnvironment, Assert-MutEnvironmentAllowed, Get-MutApiBase, Get-MutCompanyId, Grant-MutPermissionSet, Invoke-MutApi

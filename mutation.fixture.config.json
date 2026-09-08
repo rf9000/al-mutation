@@ -6,6 +6,7 @@
   "testApp": { "sourcePath": "./fixtures/fixture-test", "appId": "9c4a5f6d-be7b-4a8c-8d9e-0f1a2b3c4d5e", "testCodeunits": [50300] },
   "rulesets": null,
   "coreApp": { "path": "./core-app", "appId": "6f1d2c3a-8b4e-4d5f-9a6b-7c8d9e0f1a2b", "version": "1.0.0.0" },
+  "permissionSets": [ { "id": "MUT Core All", "appId": "6f1d2c3a-8b4e-4d5f-9a6b-7c8d9e0f1a2b" }, { "id": "MUT Fx All", "appId": "8b3f4e5c-ad6a-4f7b-9c8d-9e0f1a2b3c4d" } ],
   "workDir": "./out",
   "generator": { "maxMutants": 0, "onlyObjects": [], "seed": 1, "operators": ["REL", "BOOL", "NOT", "COND", "DEL", "INSFLAG"], "includeBreak": false },
   "schemata": { "publishStrategy": "same-version" },
