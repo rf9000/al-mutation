@@ -205,6 +205,20 @@ Describe 'Export-MutResults' {
         $summary | Should -Match 'Uncovered'
         $summary | Should -Match '\b1\b'
     }
+
+    It 'throws when a result row carries an unrecognized status, instead of silently exporting it' {
+        $mutants = @(
+            New-MutTestMutant -Id 1
+        )
+        $results = @(
+            [pscustomobject]@{ Id = 1; Status = 'Bogus'; KillingTest = $null; DurationMs = 10; CoveringTests = @() }
+        )
+
+        {
+            Export-MutResults -RunNo 5 -Config $script:Config -Env $script:EnvHandle -Mutants $mutants -Results $results `
+                -OutDir $script:OutDir -StartedUtc (Get-Date) -FinishedUtc (Get-Date) -CompileErrorIds @()
+        } | Should -Throw
+    }
 }
 
 Describe 'Compare-MutExpectedResults' {

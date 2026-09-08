@@ -6,6 +6,24 @@ $ErrorActionPreference = 'Stop'
 # Mutant status strings used throughout results/<RunNo>.json and results.jsonl (§7.3).
 $script:MutantStatuses = @('Pending', 'Killed', 'Survived', 'Equivalent', 'Timeout', 'CompileError', 'Uncovered', 'Error')
 
+function Assert-MutKnownStatus {
+    <#
+        .SYNOPSIS
+        Private. Throws unless $Status is one of the §7.3 mutant status strings
+        ($script:MutantStatuses). Guards against a typo'd or unrecognized status (most likely
+        arriving via a mutant loop result row) silently ending up in the exported
+        results/<RunNo>.json and summary.md.
+    #>
+    param(
+        [string]$Status,
+        [int]$MutantId
+    )
+
+    if ($script:MutantStatuses -notcontains $Status) {
+        throw "Export-MutResults: mutant $MutantId has unknown status '$Status'. Expected one of: $($script:MutantStatuses -join ', ')."
+    }
+}
+
 function Test-MutHasProperty {
     param($Object, [string]$Name)
 
@@ -97,6 +115,8 @@ function Get-MutMergedMutantRows {
             $durationMs = $null
             $coveringTests = @()
         }
+
+        Assert-MutKnownStatus -Status $status -MutantId $id
 
         $rows += [pscustomobject]@{
             id            = $id

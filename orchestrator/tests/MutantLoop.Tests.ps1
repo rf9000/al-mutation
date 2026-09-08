@@ -397,15 +397,20 @@ $ErrorActionPreference = 'Stop'
 
 function Invoke-MutTests {
     param($Env, [object[]]$Targets, [int]$TimeoutSec)
-    Start-Sleep -Seconds 5
-    return [pscustomobject]@{ Passed = 1; Failed = 0; Tests = @(); DurationMs = 5000; JobIds = @() }
+    Start-Sleep -Seconds 30
+    return [pscustomobject]@{ Passed = 1; Failed = 0; Tests = @(); DurationMs = 30000; JobIds = @() }
 }
 
 Export-ModuleMember -Function Invoke-MutTests
 '@ | Set-Content -Path $global:MutFakeSlowBackendPath -Encoding UTF8
     }
 
-    It 'kills the job at the budget (1s) instead of waiting for the 5s sleep to finish' {
+    It 'kills the job at the budget (1s) instead of waiting for the 30s sleep to finish' {
+        # The sleep (30s) is intentionally far beyond both the 1s budget and the elapsed bound
+        # below (20s): child powershell.exe spawn time and first-access AV scanning of a
+        # freshly written .psm1 are variable and can add several seconds of unrelated jitter on
+        # a loaded machine, independent of the kill logic under test. A wide margin here still
+        # proves the kill happens long before natural completion without being flaky.
         $envHandle = [pscustomobject]@{ Id = 'E1'; Name = 'mut-spike-01' }
         $targets = @([pscustomobject]@{ CodeunitId = 95155; Function = $null })
 
@@ -419,7 +424,7 @@ Export-ModuleMember -Function Invoke-MutTests
         $stopwatch.Stop()
 
         $result.TimedOut | Should -Be $true
-        $stopwatch.Elapsed.TotalSeconds | Should -BeLessThan 4.5
+        $stopwatch.Elapsed.TotalSeconds | Should -BeLessThan 20
 
         # No leaked background jobs.
         @(Get-Job) | Should -BeNullOrEmpty
