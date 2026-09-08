@@ -464,7 +464,10 @@ interface MutantCandidate {
   mutated: string;                     // replacement text; '' for DEL
   occurrence: number;                  // 0-based index among candidates with the same (procedure, operator, original, mutated)
 }
-interface Operator { name: OperatorName; kind: 'condition' | 'statement'; apply(ctx: { tokens: Token[]; span: ProcedureSpan; header: ObjectHeader }, target: Condition | SimpleStatement): MutantCandidate[]; }
+interface Operator { name: OperatorName; kind: 'condition' | 'statement'; apply(ctx: { tokens: Token[]; span: ProcedureSpan; header: ObjectHeader; source: string }, target: Condition | SimpleStatement): MutantCandidate[]; }
+// `source` is the original file text; `original`/`mutated` are built from source slices by token offsets so spacing is preserved.
+// Operators emit occurrence = 0; the pipeline calls assignOccurrences(candidatesOfOneProcedure) (src/operators/types.ts),
+// which fills `occurrence` per (operator|original|mutated) group in order.
 ```
 `OPERATOR_ORDER = ['REL','BOOL','NOT','COND','DEL','INSFLAG','BREAK']`.
 
