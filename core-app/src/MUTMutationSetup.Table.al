@@ -31,6 +31,16 @@ table 50000 "MUT Mutation Setup"
         }
     }
 
+    trigger OnInsert()
+    begin
+        MirrorToIsolatedStorage();
+    end;
+
+    trigger OnModify()
+    begin
+        MirrorToIsolatedStorage();
+    end;
+
     procedure GetOrCreate()
     begin
         if not Get(0) then begin
@@ -38,5 +48,11 @@ table 50000 "MUT Mutation Setup"
             "Primary Key" := 0;
             Insert();
         end;
+    end;
+
+    local procedure MirrorToIsolatedStorage()
+    begin
+        IsolatedStorage.Set('ActiveMutantId', Format("Active Mutant Id", 0, 9), DataScope::Module);
+        IsolatedStorage.Set('CurrentRunNo', Format("Current Run No.", 0, 9), DataScope::Module);
     end;
 }

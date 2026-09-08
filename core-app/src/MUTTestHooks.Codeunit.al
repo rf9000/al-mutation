@@ -56,10 +56,13 @@ codeunit 50001 "MUT Test Hooks"
     [TryFunction]
     local procedure TryReadActiveMutant(var ActiveMutantId: Integer; var RunNo: Integer)
     var
-        Setup: Record "MUT Mutation Setup";
+        Value: Text;
     begin
-        Setup.Get(0);
-        ActiveMutantId := Setup."Active Mutant Id";
-        RunNo := Setup."Current Run No.";
+        ActiveMutantId := 0;
+        RunNo := 0;
+        if IsolatedStorage.Get('ActiveMutantId', DataScope::Module, Value) then
+            Evaluate(ActiveMutantId, Value, 9);
+        if IsolatedStorage.Get('CurrentRunNo', DataScope::Module, Value) then
+            Evaluate(RunNo, Value, 9);
     end;
 }
