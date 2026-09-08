@@ -650,4 +650,416 @@ function Grant-MutPermissionSet {
     return [pscustomobject]@{ Granted = $granted; AlreadyHad = $alreadyHad }
 }
 
-Export-ModuleMember -Function Get-MutEnvironment, New-MutEnvironment, Start-MutEnvironment, Remove-MutEnvironment, Reset-MutEnvironment, Assert-MutEnvironmentAllowed, Get-MutApiBase, Get-MutCompanyId, Grant-MutPermissionSet, Invoke-MutApi
+function ConvertTo-MutDiagnosticList {
+    <#
+        .SYNOPSIS
+        Maps a `diagnostics[]` array from `continia compile`/`deploy` (lowercase
+        severity/code/file/line/column/message, F12) to
+        [pscustomobject]@{Severity;Code;File;Line;Column;Message}. Tolerates $null (no
+        diagnostics) and a single bare object (ConvertFrom-Json unwraps a one-element JSON
+        array to a scalar) by wrapping in @() first.
+    #>
+    param($Diagnostics)
+
+    $list = @()
+    foreach ($d in @($Diagnostics)) {
+        if ($null -eq $d) {
+            continue
+        }
+        $list += [pscustomobject]@{
+            Severity = $d.severity
+            Code     = $d.code
+            File     = $d.file
+            Line     = $d.line
+            Column   = $d.column
+            Message  = $d.message
+        }
+    }
+    # The unary comma forces $list itself (not each element) onto the output stream: a bare
+    # `return $list` would have PowerShell enumerate the array and, for the common case of
+    # exactly one diagnostic, silently unwrap it to a bare object instead of a 1-element array
+    # (verified by direct experiment in this task) -- corrupting every caller's `.Count`/foreach.
+    return , $list
+}
+
+function Install-MutDependencies {
+    <#
+        .SYNOPSIS
+        `deps install <envId> <AppPath> --json` (F11: installs an app's runtime dependencies,
+        e.g. the AUT's dependencies, onto the environment).
+        .OUTPUTS
+        The parsed JSON response, unmodified.
+    #>
+    param(
+        [Parameter(Mandatory = $true)]
+        $Env,
+        [Parameter(Mandatory = $true)]
+        [string]$AppPath
+    )
+
+    Assert-MutEnvironmentAllowed $Env
+
+    $script:CliPath = $Env.CliPath
+
+    return Invoke-Continia -Arguments @('deps', 'install', $Env.Id, $AppPath, '--json')
+}
+
+function Compile-MutApp {
+    <#
+        .SYNOPSIS
+        `compile <Path> --json [--ruleset <Ruleset>] --no-raw-output` (F12, §6.5.3). AppFile is
+        the newest *.app directly under Path after the compile (Get-ChildItem -Filter *.app |
+        Sort LastWriteTime -Desc | Select -First 1, per the task brief). Success requires both
+        diagnosticCounts.error -eq 0 and an app file being present.
+        .OUTPUTS
+        [pscustomobject]@{ Success; Diagnostics; AppFile; DurationSec }
+    #>
+    param(
+        [Parameter(Mandatory = $true)]
+        $Env,
+        [Parameter(Mandatory = $true)]
+        [string]$Path,
+        [string]$Ruleset
+    )
+
+    Assert-MutEnvironmentAllowed $Env
+
+    $script:CliPath = $Env.CliPath
+
+    $arguments = @('compile', $Path, '--json')
+    if ($PSBoundParameters.ContainsKey('Ruleset') -and $Ruleset) {
+        $arguments += @('--ruleset', $Ruleset)
+    }
+    $arguments += '--no-raw-output'
+
+    $start = Get-Date
+    $result = Invoke-Continia -Arguments $arguments
+    $durationSec = ((Get-Date) - $start).TotalSeconds
+
+    $diagnostics = ConvertTo-MutDiagnosticList -Diagnostics $result.diagnostics
+
+    $errorCount = 0
+    if ((Test-MutHasProperty $result 'diagnosticCounts') -and (Test-MutHasProperty $result.diagnosticCounts 'error')) {
+        $errorCount = $result.diagnosticCounts.error
+    }
+
+    $appFile = Get-ChildItem -Path $Path -Filter '*.app' | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+    $appFilePath = $null
+    if ($appFile) {
+        $appFilePath = $appFile.FullName
+    }
+
+    $success = ($errorCount -eq 0) -and ($null -ne $appFilePath)
+
+    return [pscustomobject]@{
+        Success     = $success
+        Diagnostics = $diagnostics
+        AppFile     = $appFilePath
+        DurationSec = $durationSec
+    }
+}
+
+function Publish-MutApp {
+    <#
+        .SYNOPSIS
+        `deploy <envId> <Path> --json [--ruleset <Ruleset>] [--allow-downgrade] [--sync-mode
+        <SyncMode>]` (§6.5.3). Reads the first row of the returned JSON array (one row per app
+        in the deploy run; this app is always the explicit target, so its row is first, per the
+        task brief).
+        .OUTPUTS
+        [pscustomobject]@{ Success; Code; Diagnostics; DurationSec }
+    #>
+    param(
+        [Parameter(Mandatory = $true)]
+        $Env,
+        [Parameter(Mandatory = $true)]
+        [string]$Path,
+        [string]$Ruleset,
+        [switch]$AllowDowngrade,
+        [string]$SyncMode
+    )
+
+    Assert-MutEnvironmentAllowed $Env
+
+    $script:CliPath = $Env.CliPath
+
+    $arguments = @('deploy', $Env.Id, $Path, '--json')
+    if ($PSBoundParameters.ContainsKey('Ruleset') -and $Ruleset) {
+        $arguments += @('--ruleset', $Ruleset)
+    }
+    if ($AllowDowngrade) {
+        $arguments += '--allow-downgrade'
+    }
+    if ($PSBoundParameters.ContainsKey('SyncMode') -and $SyncMode) {
+        $arguments += @('--sync-mode', $SyncMode)
+    }
+
+    $start = Get-Date
+    $result = Invoke-Continia -Arguments $arguments
+    $durationSec = ((Get-Date) - $start).TotalSeconds
+
+    $row = @($result) | Select-Object -First 1
+
+    $diagnostics = @()
+    if (Test-MutHasProperty $row 'diagnostics') {
+        $diagnostics = ConvertTo-MutDiagnosticList -Diagnostics $row.diagnostics
+    }
+
+    $code = $null
+    if (Test-MutHasProperty $row 'code') {
+        $code = $row.code
+    }
+
+    $success = (Test-MutHasProperty $row 'published') -and ($row.published -eq $true)
+
+    return [pscustomobject]@{
+        Success     = $success
+        Code        = $code
+        Diagnostics = $diagnostics
+        DurationSec = $durationSec
+    }
+}
+
+function Publish-MutAppFile {
+    <#
+        .SYNOPSIS
+        `publish <envId> <AppFile> [--sync-mode <SyncMode>] --json` (§6.5.3): publishes a
+        pre-built .app file directly (no compile step), e.g. the schemata build.
+        .OUTPUTS
+        [pscustomobject]@{ Success; DurationSec }
+    #>
+    param(
+        [Parameter(Mandatory = $true)]
+        $Env,
+        [Parameter(Mandatory = $true)]
+        [string]$AppFile,
+        [string]$SyncMode
+    )
+
+    Assert-MutEnvironmentAllowed $Env
+
+    $script:CliPath = $Env.CliPath
+
+    $arguments = @('publish', $Env.Id, $AppFile)
+    if ($PSBoundParameters.ContainsKey('SyncMode') -and $SyncMode) {
+        $arguments += @('--sync-mode', $SyncMode)
+    }
+    $arguments += '--json'
+
+    $start = Get-Date
+    $result = Invoke-Continia -Arguments $arguments
+    $durationSec = ((Get-Date) - $start).TotalSeconds
+
+    $success = (Test-MutHasProperty $result 'success') -and ($result.success -eq $true)
+
+    return [pscustomobject]@{
+        Success     = $success
+        DurationSec = $durationSec
+    }
+}
+
+function Unpublish-MutApp {
+    <#
+        .SYNOPSIS
+        `unpublish <envId> --app-id <AppId> [--app-version <Version>] --json` (§6.5.3), e.g. to
+        remove the test app before republishing it (schemata.publishStrategy
+        'unpublish-test-app', §6.5.4 step 5).
+        .OUTPUTS
+        [pscustomobject]@{ Success }
+    #>
+    param(
+        [Parameter(Mandatory = $true)]
+        $Env,
+        [Parameter(Mandatory = $true)]
+        [string]$AppId,
+        [string]$Version
+    )
+
+    Assert-MutEnvironmentAllowed $Env
+
+    $script:CliPath = $Env.CliPath
+
+    $arguments = @('unpublish', $Env.Id, '--app-id', $AppId)
+    if ($PSBoundParameters.ContainsKey('Version') -and $Version) {
+        $arguments += @('--app-version', $Version)
+    }
+    $arguments += '--json'
+
+    $result = Invoke-Continia -Arguments $arguments
+
+    $success = (Test-MutHasProperty $result 'success') -and ($result.success -eq $true)
+
+    return [pscustomobject]@{ Success = $success }
+}
+
+function ConvertTo-MutTestOutcome {
+    <#
+        .SYNOPSIS
+        Normalizes a `test run --json` per-test `result` string ('Pass'/'Fail'/'Skip', per the
+        continia-test skill) to the Tests[].Result values 'Pass'|'Fail'|'Skip'. Anything else
+        (an undocumented value) passes through unchanged rather than being silently coerced.
+    #>
+    param([string]$Raw)
+
+    switch ($Raw) {
+        'Pass' { return 'Pass' }
+        'Fail' { return 'Fail' }
+        'Skip' { return 'Skip' }
+        default { return $Raw }
+    }
+}
+
+function Invoke-MutTests {
+    <#
+        .SYNOPSIS
+        Runs one `test run <envId> <CodeunitId> [<Function>] --json --timeout <TimeoutSec>` per
+        DISTINCT (CodeunitId, Function) pair in $Targets (first-seen order), strictly
+        sequentially in a plain foreach (F7, F9, guardrail #8: never two DemoPortal test jobs at
+        once — no Start-Job/background job is used here). $TimeoutSec is passed to the CLI's
+        own `--timeout` and, with a 60s margin added, to Invoke-Continia's process-level
+        -TimeoutSec so the wrapper does not kill the process before the CLI's own client-side
+        wait would give up.
+
+        Per F18, `test run` exits 1 when tests fail while still emitting valid JSON on stdout;
+        Invoke-Continia's default -ExpectJson path never treats a non-zero exit code as failure
+        by itself, so a failing test run here does not throw.
+
+        A job id (U9: field name unconfirmed) is read from a `jobId` property first, then an
+        `id` property; a target whose response carries neither contributes nothing to JobIds.
+        .OUTPUTS
+        [pscustomobject]@{ Passed; Failed; Tests; DurationMs; JobIds }
+    #>
+    param(
+        [Parameter(Mandatory = $true)]
+        $Env,
+        [Parameter(Mandatory = $true)]
+        [object[]]$Targets,
+        [int]$TimeoutSec = 120,
+        [switch]$Coverage
+    )
+
+    Assert-MutEnvironmentAllowed $Env
+
+    $script:CliPath = $Env.CliPath
+
+    $seenKeys = New-Object System.Collections.Generic.HashSet[string]
+    $distinctTargets = @()
+    foreach ($target in $Targets) {
+        $function = $null
+        if ((Test-MutHasProperty $target 'Function') -and $target.Function) {
+            $function = $target.Function
+        }
+        $key = '{0}|{1}' -f $target.CodeunitId, $function
+        if ($seenKeys.Add($key)) {
+            $distinctTargets += [pscustomobject]@{ CodeunitId = $target.CodeunitId; Function = $function }
+        }
+    }
+
+    $totalPassed = 0
+    $totalFailed = 0
+    $totalDurationMs = 0
+    $tests = @()
+    $jobIds = @()
+
+    foreach ($target in $distinctTargets) {
+        $arguments = @('test', 'run', $Env.Id, $target.CodeunitId)
+        if ($target.Function) {
+            $arguments += $target.Function
+        }
+        $arguments += @('--json', '--timeout', $TimeoutSec)
+
+        $response = Invoke-Continia -Arguments $arguments -TimeoutSec ($TimeoutSec + 60)
+
+        $codeunitName = $null
+        if ((Test-MutHasProperty $response 'summary')) {
+            if (Test-MutHasProperty $response.summary 'codeunitName') {
+                $codeunitName = $response.summary.codeunitName
+            }
+            if (Test-MutHasProperty $response.summary 'passed') {
+                $totalPassed += $response.summary.passed
+            }
+            if (Test-MutHasProperty $response.summary 'failed') {
+                $totalFailed += $response.summary.failed
+            }
+            if (Test-MutHasProperty $response.summary 'durationSeconds') {
+                $totalDurationMs += [int][math]::Round($response.summary.durationSeconds * 1000)
+            }
+        }
+
+        foreach ($t in @($response.tests)) {
+            if ($null -eq $t) {
+                continue
+            }
+            $durationMs = 0
+            if (Test-MutHasProperty $t 'durationSeconds') {
+                $durationMs = [int][math]::Round($t.durationSeconds * 1000)
+            }
+            $errorMessage = $null
+            if (Test-MutHasProperty $t 'errorMessage') {
+                $errorMessage = $t.errorMessage
+            }
+            $tests += [pscustomobject]@{
+                Codeunit   = $codeunitName
+                Function   = $t.name
+                Result     = ConvertTo-MutTestOutcome -Raw $t.result
+                DurationMs = $durationMs
+                Error      = $errorMessage
+            }
+        }
+
+        if (Test-MutHasProperty $response 'jobId') {
+            $jobIds += $response.jobId
+        }
+        elseif (Test-MutHasProperty $response 'id') {
+            $jobIds += $response.id
+        }
+    }
+
+    return [pscustomobject]@{
+        Passed     = $totalPassed
+        Failed     = $totalFailed
+        Tests      = $tests
+        DurationMs = $totalDurationMs
+        JobIds     = $jobIds
+    }
+}
+
+function Get-MutCoverageRaw {
+    <#
+        .SYNOPSIS
+        `test coverage <envId> <jobId> --json` per job id (F8), sequentially. Job ids that are
+        null or empty are skipped (a target whose test run produced no job id, per Invoke-MutTests).
+        .OUTPUTS
+        [string[]] of the `csv` field from each response, one per non-empty job id, in order.
+        Parsing this CSV into structured rows is Get-MutCoverage / ConvertFrom-MutCoverageCsv,
+        added by T24 (not this task).
+    #>
+    param(
+        [Parameter(Mandatory = $true)]
+        $Env,
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyString()]
+        [AllowNull()]
+        [string[]]$JobIds
+    )
+
+    Assert-MutEnvironmentAllowed $Env
+
+    $script:CliPath = $Env.CliPath
+
+    $csvDocuments = @()
+    foreach ($jobId in $JobIds) {
+        if ([string]::IsNullOrEmpty($jobId)) {
+            continue
+        }
+        $response = Invoke-Continia -Arguments @('test', 'coverage', $Env.Id, $jobId, '--json')
+        $csvDocuments += [string]$response.csv
+    }
+
+    # See the comment on ConvertTo-MutDiagnosticList: a bare `return [string[]]$csvDocuments`
+    # would unwrap a 1-element array to a bare string via pipeline enumeration; the unary comma
+    # keeps it an array regardless of how many (non-skipped) job ids were passed.
+    return , [string[]]$csvDocuments
+}
+
+Export-ModuleMember -Function Get-MutEnvironment, New-MutEnvironment, Start-MutEnvironment, Remove-MutEnvironment, Reset-MutEnvironment, Assert-MutEnvironmentAllowed, Get-MutApiBase, Get-MutCompanyId, Grant-MutPermissionSet, Invoke-MutApi, Install-MutDependencies, Compile-MutApp, Publish-MutApp, Publish-MutAppFile, Unpublish-MutApp, Invoke-MutTests, Get-MutCoverageRaw
