@@ -1,6 +1,6 @@
 import type { Condition, ObjectHeader, ProcedureSpan, SimpleStatement, Token } from '../types.js';
 
-/** §6.4.4: the full catalog; only REL/BOOL/NOT/COND are registered until T18. */
+/** §6.4.4: the full catalog. */
 export type OperatorName = 'REL' | 'BOOL' | 'NOT' | 'COND' | 'DEL' | 'INSFLAG' | 'BREAK';
 
 /** §6.4.4, verbatim. */
@@ -99,6 +99,36 @@ export function conditionCandidateBase(
     line: ctx.tokens[cond.startIdx]!.line,
     target: { kind: 'condition', cond },
     original: conditionText(ctx, cond),
+    mutated,
+    occurrence: 0,
+  };
+}
+
+/** The original source slice of a statement, excluding its terminator. */
+export function statementText(ctx: OperatorContext, stmt: SimpleStatement): string {
+  return ctx.source.slice(ctx.tokens[stmt.startIdx]!.start, ctx.tokens[stmt.endIdx]!.end);
+}
+
+/**
+ * Builds the fields common to every statement-operator candidate (§6.4.4).
+ * `occurrence` is always 0 here — apply() cannot see sibling candidates from
+ * other targets in the same procedure; assignOccurrences fills it in later.
+ */
+export function statementCandidateBase(
+  ctx: OperatorContext,
+  stmt: SimpleStatement,
+  operator: OperatorName,
+  mutated: string,
+): MutantCandidate {
+  return {
+    operator,
+    objectType: ctx.header.objectType,
+    objectId: ctx.header.objectId,
+    objectName: ctx.header.objectName,
+    procedureName: ctx.span.name,
+    line: ctx.tokens[stmt.startIdx]!.line,
+    target: { kind: 'statement', stmt },
+    original: statementText(ctx, stmt),
     mutated,
     occurrence: 0,
   };
