@@ -725,7 +725,9 @@ function Compile-MutApp {
         `compile <Path> --json [--ruleset <Ruleset>] --no-raw-output` (F12, §6.5.3). AppFile is
         the newest *.app directly under Path after the compile (Get-ChildItem -Filter *.app |
         Sort LastWriteTime -Desc | Select -First 1, per the task brief). Success requires both
-        diagnosticCounts.error -eq 0 and an app file being present.
+        diagnosticCounts.error -eq 0 and an app file being present. TimeoutSec (default 900,
+        T25) is forwarded to Invoke-Continia's own process-level timeout: the real AUT compiles
+        in ~70s, but the schemata build (many more mutated files) needs headroom.
         .OUTPUTS
         [pscustomobject]@{ Success; Diagnostics; AppFile; DurationSec }
     #>
@@ -734,7 +736,8 @@ function Compile-MutApp {
         $Env,
         [Parameter(Mandatory = $true)]
         [string]$Path,
-        [string]$Ruleset
+        [string]$Ruleset,
+        [int]$TimeoutSec = 900
     )
 
     Assert-MutEnvironmentAllowed $Env
@@ -748,7 +751,7 @@ function Compile-MutApp {
     $arguments += '--no-raw-output'
 
     $start = Get-Date
-    $result = Invoke-Continia -Arguments $arguments
+    $result = Invoke-Continia -Arguments $arguments -TimeoutSec $TimeoutSec
     $durationSec = ((Get-Date) - $start).TotalSeconds
 
     $diagnostics = ConvertTo-MutDiagnosticList -Diagnostics $result.diagnostics
@@ -780,7 +783,8 @@ function Publish-MutApp {
         `deploy <envId> <Path> --json [--ruleset <Ruleset>] [--allow-downgrade] [--sync-mode
         <SyncMode>]` (§6.5.3). Reads the first row of the returned JSON array (one row per app
         in the deploy run; this app is always the explicit target, so its row is first, per the
-        task brief).
+        task brief). TimeoutSec (default 900, T25) is forwarded to Invoke-Continia's own
+        process-level timeout, same rationale as Compile-MutApp.
         .OUTPUTS
         [pscustomobject]@{ Success; Code; Diagnostics; DurationSec }
     #>
@@ -791,7 +795,8 @@ function Publish-MutApp {
         [string]$Path,
         [string]$Ruleset,
         [switch]$AllowDowngrade,
-        [string]$SyncMode
+        [string]$SyncMode,
+        [int]$TimeoutSec = 900
     )
 
     Assert-MutEnvironmentAllowed $Env
@@ -810,7 +815,7 @@ function Publish-MutApp {
     }
 
     $start = Get-Date
-    $result = Invoke-Continia -Arguments $arguments
+    $result = Invoke-Continia -Arguments $arguments -TimeoutSec $TimeoutSec
     $durationSec = ((Get-Date) - $start).TotalSeconds
 
     $row = @($result) | Select-Object -First 1

@@ -126,7 +126,8 @@ function Compile-MutApp {
         $Env,
         [Parameter(Mandatory = $true)]
         [string]$Path,
-        [string]$Ruleset
+        [string]$Ruleset,
+        [int]$TimeoutSec = 900
     )
 
     throw [System.NotImplementedException]::new('Docker backend is not implemented in v1')
@@ -140,7 +141,8 @@ function Publish-MutApp {
         [string]$Path,
         [string]$Ruleset,
         [switch]$AllowDowngrade,
-        [string]$SyncMode
+        [string]$SyncMode,
+        [int]$TimeoutSec = 900
     )
 
     throw [System.NotImplementedException]::new('Docker backend is not implemented in v1')

@@ -137,6 +137,38 @@ Describe 'Compile-MutApp' {
 
         { Compile-MutApp -Env $badEnv -Path "$TestDrive/whatever" } | Should -Throw
     }
+
+    It 'forwards TimeoutSec to Invoke-Continia, defaulting to 900' {
+        $dir = "$TestDrive/compile-timeout-default"
+        New-Item -ItemType Directory -Path $dir | Out-Null
+        New-MutTestAppFile -Dir $dir -Name 'x.app' -LastWriteTime (Get-Date) | Out-Null
+
+        Mock -ModuleName DemoPortal Invoke-Continia {
+            [pscustomobject]@{ diagnosticCounts = [pscustomobject]@{ error = 0 }; diagnostics = @() }
+        }
+
+        Compile-MutApp -Env $envHandle -Path $dir | Out-Null
+
+        Should -Invoke -ModuleName DemoPortal Invoke-Continia -ParameterFilter {
+            $TimeoutSec -eq 900
+        } -Times 1
+    }
+
+    It 'forwards an explicit TimeoutSec to Invoke-Continia' {
+        $dir = "$TestDrive/compile-timeout-explicit"
+        New-Item -ItemType Directory -Path $dir | Out-Null
+        New-MutTestAppFile -Dir $dir -Name 'x.app' -LastWriteTime (Get-Date) | Out-Null
+
+        Mock -ModuleName DemoPortal Invoke-Continia {
+            [pscustomobject]@{ diagnosticCounts = [pscustomobject]@{ error = 0 }; diagnostics = @() }
+        }
+
+        Compile-MutApp -Env $envHandle -Path $dir -TimeoutSec 120 | Out-Null
+
+        Should -Invoke -ModuleName DemoPortal Invoke-Continia -ParameterFilter {
+            $TimeoutSec -eq 120
+        } -Times 1
+    }
 }
 
 Describe 'Publish-MutApp' {
@@ -212,6 +244,30 @@ Describe 'Publish-MutApp' {
         Mock -ModuleName DemoPortal Invoke-Continia { throw 'must not be called' }
 
         { Publish-MutApp -Env $badEnv -Path $script:dir } | Should -Throw
+    }
+
+    It 'forwards TimeoutSec to Invoke-Continia, defaulting to 900' {
+        Mock -ModuleName DemoPortal Invoke-Continia {
+            @([pscustomobject]@{ app = 'X'; compiled = $true; published = $true; code = $null })
+        }
+
+        Publish-MutApp -Env $envHandle -Path $script:dir | Out-Null
+
+        Should -Invoke -ModuleName DemoPortal Invoke-Continia -ParameterFilter {
+            $TimeoutSec -eq 900
+        } -Times 1
+    }
+
+    It 'forwards an explicit TimeoutSec to Invoke-Continia' {
+        Mock -ModuleName DemoPortal Invoke-Continia {
+            @([pscustomobject]@{ app = 'X'; compiled = $true; published = $true; code = $null })
+        }
+
+        Publish-MutApp -Env $envHandle -Path $script:dir -TimeoutSec 300 | Out-Null
+
+        Should -Invoke -ModuleName DemoPortal Invoke-Continia -ParameterFilter {
+            $TimeoutSec -eq 300
+        } -Times 1
     }
 }
 
