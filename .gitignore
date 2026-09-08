@@ -7,6 +7,9 @@
 out/
 *.app
 !fixtures/**/*.app
+fixtures/fixture-aut/*.app
+fixtures/fixture-test/*.app
+fixtures/**/.alpackages/
 
 # Node
 node_modules/
