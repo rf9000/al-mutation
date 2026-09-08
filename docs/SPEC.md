@@ -125,7 +125,7 @@ name and the date.
 3. **No short-circuit guards.** Never emit `MutationCore.Active(<id>)` on either side of `and`/`or`/`xor`, nor as a procedure argument (F1, F3). `generator lint` enforces this; it runs in the generator test suite and in `Build-Schemata`.
 4. **Do not invent AL syntax.** If a construct is not documented under `learn.microsoft.com/…/dev-itpro/developer/`, do not emit it. The only emitted constructs are: `case true of … else … end;`, `begin end;`, local variable declarations, and copies of existing statements/conditions.
 5. **History lives in files.** Every run exports `results/<run>.json` and `results/<run>-summary.md`. BC tables are a cache.
-6. **Backend isolation.** `orchestrator/Invoke-MutationRun.ps1` and `orchestrator/lib/*.psm1` MUST NOT contain the strings `continia`, `BcContainerHelper`, or `docker`. Only `orchestrator/backends/*.psm1` may.
+6. **Backend isolation.** `orchestrator/Invoke-MutationRun.ps1` and `orchestrator/lib/*.psm1` MUST NOT contain the strings `continia`, `BcContainerHelper`, or `docker`. Only `orchestrator/backends/*.psm1` may. One exemption: the line in `lib/Config.psm1` that defines the allowed backend names carries the marker comment `# isolation-lint: allow`, and the isolation test (§8 item 3) skips lines with that marker.
 7. **Mutation Core never depends on the AUT** and errors on install unless `EnvironmentInformation.IsSandbox()` is true (§6.1.5).
 8. **Sequential test jobs.** Never start a DemoPortal test job while another is running.
 9. **Diagnostic, not a gate.** The mutation score is reported; it is never wired into CI as a pass/fail gate in v1.
