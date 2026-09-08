@@ -1,7 +1,7 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-# Backend-agnostic (§6.5.5): no continia/docker/BcContainerHelper strings in this module.
+# Backend-agnostic: no CLI or container-tool names in this module (see spec §4 item 6).
 
 # Recognized AL object types for the coverage CSV's ObjectType column. PowerShell's -eq / -contains
 # operators are case-insensitive for strings by default, matching the "case-insensitive" ruling.
@@ -103,10 +103,13 @@ function Get-MutCoveringTests {
         The candidate test codeunit ids to check coverage rows for.
 
         .DESCRIPTION
-        Prefers coverage: any test codeunit in $TestCodeunits whose Coverage rows include one
-        with ObjectId -eq $Mutant.objectId, LineNo -eq $Mutant.line, and Hits -gt 0 is a
-        covering test. If none qualify, falls back to $References[$Mutant.objectId]. If that is
-        also absent, returns an empty array.
+        Prefers coverage: any test codeunit in $TestCodeunits whose Coverage rows include a
+        `LineType -eq 'Code'` row (case-insensitive) with ObjectId -eq $Mutant.objectId,
+        LineNo -eq $Mutant.line, and Hits -gt 0 is a covering test -- per §6.5.5, "only
+        LineType = Code rows carry meaningful Hits; selection uses those rows", so a non-Code
+        row is never treated as covering even if it happens to carry Hits -gt 0. If none
+        qualify, falls back to $References[$Mutant.objectId]. If that is also absent, returns
+        an empty array.
 
         .OUTPUTS
         [int[]] test codeunit ids. Always an array, even for a single result (unary comma).
@@ -137,7 +140,7 @@ function Get-MutCoveringTests {
             if ($null -eq $row) {
                 continue
             }
-            if ($row.ObjectId -eq $objectId -and $row.LineNo -eq $line -and $row.Hits -gt 0) {
+            if ($row.LineType -eq 'Code' -and $row.ObjectId -eq $objectId -and $row.LineNo -eq $line -and $row.Hits -gt 0) {
                 $isCovering = $true
                 break
             }

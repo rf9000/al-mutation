@@ -92,6 +92,52 @@ Describe 'Get-MutCoveringTests' {
         $result | Should -Be @(95155)
     }
 
+    It 'ignores a non-Code row with Hits > 0 at the mutant''s ObjectId/LineNo (falls back to references)' {
+        $coverage = @{
+            byTestCodeunit = @{
+                '95155' = @(
+                    [pscustomobject]@{ ObjectType = 'Codeunit'; ObjectId = 50000; LineType = 'Trigger/Function'; LineNo = 12; Hits = 5 }
+                )
+            }
+        }
+        $references = @{ 50000 = @(50301) }
+
+        $result = Get-MutCoveringTests -Mutant $script:mutant -Coverage $coverage -References $references -TestCodeunits @(95155)
+
+        $result | Should -Be @(50301)
+    }
+
+    It 'ignores a non-Code row with Hits > 0 and returns empty when references also has no match' {
+        $coverage = @{
+            byTestCodeunit = @{
+                '95155' = @(
+                    [pscustomobject]@{ ObjectType = 'Codeunit'; ObjectId = 50000; LineType = 'Empty'; LineNo = 12; Hits = 5 }
+                )
+            }
+        }
+        $references = @{}
+
+        $result = Get-MutCoveringTests -Mutant $script:mutant -Coverage $coverage -References $references -TestCodeunits @(95155)
+
+        @($result).Count | Should -Be 0
+    }
+
+    It 'still uses a Code row with Hits = 1 as covering (contrast case for the non-Code exclusion above)' {
+        $coverage = @{
+            byTestCodeunit = @{
+                '95155' = @(
+                    [pscustomobject]@{ ObjectType = 'Codeunit'; ObjectId = 50000; LineType = 'Trigger/Function'; LineNo = 12; Hits = 5 }
+                    [pscustomobject]@{ ObjectType = 'Codeunit'; ObjectId = 50000; LineType = 'Code'; LineNo = 12; Hits = 1 }
+                )
+            }
+        }
+        $references = @{}
+
+        $result = Get-MutCoveringTests -Mutant $script:mutant -Coverage $coverage -References $references -TestCodeunits @(95155)
+
+        $result | Should -Be @(95155)
+    }
+
     It 'ignores a coverage row for the right line but Hits = 0' {
         $coverage = @{
             byTestCodeunit = @{

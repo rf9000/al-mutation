@@ -1,7 +1,7 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-# Backend-agnostic (§6.5.5): no continia/docker/BcContainerHelper strings in this module.
+# Backend-agnostic: no CLI or container-tool names in this module (see spec §4 item 6).
 
 # First non-comment line of an AL object file: `<type> <id> <quoted-or-bare-name>` (§6.5.5).
 $script:ObjectHeaderPattern = '^(codeunit|table|page|report|enum|interface|query|xmlport)\s+(\d+)\s+("[^"]+"|\S+)'
