@@ -8,6 +8,28 @@ BeforeAll {
 
     $script:RepoRoot = (Resolve-Path "$PSScriptRoot/../..").Path
 
+    function Get-MutIsolationViolations {
+        <#
+            .SYNOPSIS
+            Returns the subset of $Lines that contain a forbidden isolation string
+            (continia, BcContainerHelper, docker; case-insensitive), skipping any line
+            carrying the '# isolation-lint: allow' marker. Shared by the real Config.psm1
+            check and the synthetic exemption-behavior test below.
+        #>
+        param([string[]]$Lines)
+
+        $violations = @()
+        foreach ($line in $Lines) {
+            if ($line -match '#\s*isolation-lint:\s*allow') {
+                continue
+            }
+            if ($line -match '(?i)continia|BcContainerHelper|docker') {
+                $violations += $line
+            }
+        }
+        return , $violations
+    }
+
     function New-MutTestConfigFile {
         param([hashtable]$Overrides = @{})
 
@@ -165,19 +187,24 @@ Describe 'Get-MutConfig' {
 }
 
 Describe 'Config.psm1 isolation' {
-    It 'contains none of the forbidden strings outside the marked allow-line' {
+    It 'contains none of the forbidden strings (continia, BcContainerHelper, docker) outside the marked allow-line' {
         $path = "$PSScriptRoot/../lib/Config.psm1"
         $lines = Get-Content -Path $path
-        $violations = @()
-        foreach ($line in $lines) {
-            if ($line -match '#\s*isolation-lint:\s*allow') {
-                continue
-            }
-            if ($line -match '(?i)continia|BcContainerHelper') {
-                $violations += $line
-            }
-        }
+        $violations = Get-MutIsolationViolations -Lines $lines
         $violations | Should -BeNullOrEmpty
+    }
+
+    It 'flags an unmarked line containing a forbidden string but not a line carrying the allow marker' {
+        $sample = @(
+            "Set-StrictMode -Version Latest",
+            "`$leak = 'docker is mentioned here with no marker'",
+            "`$script:AllowedBackends = @('DemoPortal', 'Docker')  # isolation-lint: allow"
+        )
+
+        $violations = Get-MutIsolationViolations -Lines $sample
+
+        $violations.Count | Should -Be 1
+        $violations[0] | Should -Match 'no marker'
     }
 }
 
