@@ -352,6 +352,38 @@ Describe 'Invoke-MutRunPipeline (fully mocked backend/lib boundary)' {
         Test-Path (Join-Path $runDir 'baseline.done') | Should -Be $true
     }
 
+    It '-SkipBaseline with an existing baseline.json: does not call Publish-MutBaseline at all, and the pipeline still completes (T27 fix round 1, finding 1)' {
+        $runDir = Join-Path $script:WorkDir 'runs/1'
+        New-Item -ItemType Directory -Path $runDir -Force | Out-Null
+
+        $baselineDoc = [pscustomobject]@{ tests = @(); durationsByCodeunit = @{ '50300' = 1000 } }
+        ($baselineDoc | ConvertTo-Json -Depth 10) | Set-Content -Path (Join-Path $runDir 'baseline.json') -Encoding UTF8
+        '{}' | Set-Content -Path (Join-Path $runDir 'coverage.json') -Encoding UTF8
+        '{}' | Set-Content -Path (Join-Path $runDir 'references.json') -Encoding UTF8
+
+        Mock -ModuleName Run Publish-MutBaseline { $script:CallLog.Add('Publish-MutBaseline'); throw 'must not be called' }
+
+        $result = Invoke-MutRunPipeline -Config $script:Config -RunNo 1 -SkipBaseline
+
+        Should -Invoke -ModuleName Run Publish-MutBaseline -Times 0
+        $result.ResultsPath | Should -Not -BeNullOrEmpty
+    }
+
+    It '-SkipBaseline with no existing baseline.json: warns and runs Publish-MutBaseline normally, once (T27 fix round 1, finding 1)' {
+        Mock -ModuleName Run Publish-MutBaseline {
+            $script:CallLog.Add('Publish-MutBaseline')
+            [pscustomobject]@{
+                Baseline   = [pscustomobject]@{ Tests = @(); DurationsByCodeunit = @{} }
+                Coverage   = [pscustomobject]@{ byTestCodeunit = @{} }
+                References = @{}
+            }
+        }
+
+        Invoke-MutRunPipeline -Config $script:Config -RunNo 1 -SkipBaseline -WarningAction SilentlyContinue | Out-Null
+
+        Should -Invoke -ModuleName Run Publish-MutBaseline -Times 1
+    }
+
     It 'Ensure-MutEnvironment throws when -SkipEnvironment is set and no environment exists' {
         Mock -ModuleName Run Get-MutEnvironment { $script:CallLog.Add('Get-MutEnvironment'); return $null }
 

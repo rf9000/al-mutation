@@ -292,7 +292,10 @@ Describe 'Invoke-MutMutantLoop' {
             $script:MutRealResultCallCount++
             [pscustomobject]@{
                 TimedOut = $false; ErrorMessage = $null
-                Result   = [pscustomobject]@{ Passed = 1; Failed = 0; DurationMs = 42; Tests = @() }
+                Result   = [pscustomobject]@{
+                    Passed = 1; Failed = 0; DurationMs = 42
+                    Tests  = @([pscustomobject]@{ Codeunit = 'C'; Function = 'F'; Result = 'Pass'; DurationMs = 42; Error = $null })
+                }
             }
         }
 
@@ -310,7 +313,10 @@ Describe 'Invoke-MutMutantLoop' {
             [pscustomobject]@{
                 TimedOut     = $false
                 ErrorMessage = $null
-                Result       = [pscustomobject]@{ Passed = 1; Failed = 0; DurationMs = 67; Tests = @() }
+                Result       = [pscustomobject]@{
+                    Passed = 1; Failed = 0; DurationMs = 67
+                    Tests  = @([pscustomobject]@{ Codeunit = 'C'; Function = 'F'; Result = 'Pass'; DurationMs = 67; Error = $null })
+                }
             }
         }
         Mock -ModuleName MutantLoop Invoke-MutApi {
@@ -347,7 +353,10 @@ Describe 'Invoke-MutMutantLoop' {
             [pscustomobject]@{
                 TimedOut     = $false
                 ErrorMessage = $null
-                Result       = [pscustomobject]@{ Passed = 1; Failed = 0; DurationMs = 67; Tests = @() }
+                Result       = [pscustomobject]@{
+                    Passed = 1; Failed = 0; DurationMs = 67
+                    Tests  = @([pscustomobject]@{ Codeunit = 'C'; Function = 'F'; Result = 'Pass'; DurationMs = 67; Error = $null })
+                }
             }
         }
         Mock -ModuleName MutantLoop Invoke-MutApi {
@@ -408,7 +417,10 @@ Describe 'Invoke-MutMutantLoop' {
             [pscustomobject]@{
                 TimedOut     = $false
                 ErrorMessage = $null
-                Result       = [pscustomobject]@{ Passed = 1; Failed = 0; DurationMs = 100; Tests = @() }
+                Result       = [pscustomobject]@{
+                    Passed = 1; Failed = 0; DurationMs = 100
+                    Tests  = @([pscustomobject]@{ Codeunit = 'C'; Function = 'F'; Result = 'Pass'; DurationMs = 100; Error = $null })
+                }
             }
         }
 
@@ -456,7 +468,10 @@ Describe 'Invoke-MutMutantLoop' {
             [pscustomobject]@{
                 TimedOut     = $false
                 ErrorMessage = $null
-                Result       = [pscustomobject]@{ Passed = 1; Failed = 0; DurationMs = 1; Tests = @() }
+                Result       = [pscustomobject]@{
+                    Passed = 1; Failed = 0; DurationMs = 1
+                    Tests  = @([pscustomobject]@{ Codeunit = 'C'; Function = 'F'; Result = 'Pass'; DurationMs = 1; Error = $null })
+                }
             }
         }
 
@@ -471,12 +486,66 @@ Describe 'Invoke-MutMutantLoop' {
         $results[1].Id | Should -Be 99
     }
 
+    It 'passes TimeoutSec = max(30, Budget - 30) to Invoke-MutTestsWithBudget, strictly less than BudgetSec (T27 fix round 1, finding 2)' {
+        # perTestFactor 100, one covering codeunit at 1000ms baseline -> raw = 100 * 1 = 100;
+        # max(minSeconds 5, 100) = 100. Inner TimeoutSec must be max(30, 100 - 30) = 70.
+        $script:Config = New-MutTestConfig -PerTestFactor 100 -MinSeconds 5 -JobOverheadSeconds 0
+
+        $script:CapturedTimeoutSec = $null
+        $script:CapturedBudgetSec = $null
+        Mock -ModuleName MutantLoop Invoke-MutTestsWithBudget {
+            param($Env, $Targets, $TimeoutSec, $BudgetSec, $BackendModulePath)
+            $script:CapturedTimeoutSec = $TimeoutSec
+            $script:CapturedBudgetSec = $BudgetSec
+            [pscustomobject]@{
+                TimedOut = $false; ErrorMessage = $null; ForcedKill = $false
+                Result   = [pscustomobject]@{
+                    Passed = 1; Failed = 0; DurationMs = 1
+                    Tests  = @([pscustomobject]@{ Codeunit = 'C'; Function = 'F'; Result = 'Pass'; DurationMs = 1; Error = $null })
+                }
+            }
+        }
+
+        $mutant = [pscustomobject]@{ id = 60; objectId = 50000; line = 4 }
+
+        Invoke-MutMutantLoop -Config $script:Config -Env $script:EnvHandle -Mutants @($mutant) `
+            -Baseline $script:Baseline -Coverage $script:Coverage -References $script:References `
+            -RunNo 11 -RunDir $script:RunDir -BackendModulePath 'unused.psm1' | Out-Null
+
+        $script:CapturedBudgetSec | Should -Be 100
+        $script:CapturedTimeoutSec | Should -Be 70
+        $script:CapturedTimeoutSec | Should -BeLessThan $script:CapturedBudgetSec
+    }
+
+    It 'records Status Error with text ''no tests discovered'' (never Survived) when the test run completes with zero Tests, even after the empty-result retry (T27 fix round 1, finding 4b)' {
+        Mock -ModuleName MutantLoop Invoke-MutTestsWithBudget {
+            [pscustomobject]@{
+                TimedOut = $false; ErrorMessage = $null; ForcedKill = $false
+                Result   = [pscustomobject]@{ Passed = 0; Failed = 0; DurationMs = 0; Tests = @() }
+            }
+        }
+
+        $mutant = [pscustomobject]@{ id = 61; objectId = 50000; line = 4 }
+
+        $results = Invoke-MutMutantLoop -Config $script:Config -Env $script:EnvHandle -Mutants @($mutant) `
+            -Baseline $script:Baseline -Coverage $script:Coverage -References $script:References `
+            -RunNo 12 -RunDir $script:RunDir -BackendModulePath 'unused.psm1'
+
+        $results[0].Status | Should -Be 'Error'
+        $results[0].Error | Should -Be 'no tests discovered'
+
+        Should -Invoke -ModuleName MutantLoop Invoke-MutApi -ParameterFilter { $Method -eq 'POST' } -Times 0
+    }
+
     It 'appends one JSON line per mutant to results.jsonl immediately' {
         Mock -ModuleName MutantLoop Invoke-MutTestsWithBudget {
             [pscustomobject]@{
                 TimedOut     = $false
                 ErrorMessage = $null
-                Result       = [pscustomobject]@{ Passed = 1; Failed = 0; DurationMs = 1; Tests = @() }
+                Result       = [pscustomobject]@{
+                    Passed = 1; Failed = 0; DurationMs = 1
+                    Tests  = @([pscustomobject]@{ Codeunit = 'C'; Function = 'F'; Result = 'Pass'; DurationMs = 1; Error = $null })
+                }
             }
         }
 
@@ -551,5 +620,68 @@ Export-ModuleMember -Function Invoke-MutTests
         # No leaked background jobs (the runspace-based implementation never creates any --
         # Get-Job is unrelated to it -- but this also still holds trivially true either way).
         @(Get-Job) | Should -BeNullOrEmpty
+    }
+
+    It 'returns TimedOut with no exception within the shortened grace, and force-kills any continia.exe child of this session, when the runspace does not cooperate with .Stop()' {
+        <#
+            T27 fix round 1, finding 2: a real hang inside the backend's Invoke-Continia is a
+            synchronous Process.WaitForExit call PowerShell cannot preempt -- `.Stop()` alone
+            does not guarantee the runspace's thread actually returns. This fake backend's
+            Invoke-MutTests blocks on a non-interruptible [System.Threading.Thread]::Sleep
+            (unlike the cooperative Start-Sleep fake above, whose runspace CAN be torn down
+            promptly), to prove the budget+grace+force-kill path still returns cleanly instead
+            of hanging or throwing. The module file is written directly in this It (not a second
+            top-level BeforeAll in this Describe) to keep this test's own TestDrive path/global
+            fully self-contained.
+        #>
+        $wedgedBackendPath = "$TestDrive/FakeWedgedBackend.psm1"
+        @'
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
+
+function Invoke-MutTests {
+    param($Env, [object[]]$Targets, [int]$TimeoutSec)
+    [System.Threading.Thread]::Sleep(200000)
+    return [pscustomobject]@{ Passed = 1; Failed = 0; Tests = @(); DurationMs = 200000; JobIds = @() }
+}
+
+Export-ModuleMember -Function Invoke-MutTests
+'@ | Set-Content -Path $wedgedBackendPath -Encoding UTF8
+
+        Mock -ModuleName MutantLoop Stop-MutBackendChildProcesses { $global:MutForcedKillCalled = $true; return 0 }
+        $global:MutForcedKillCalled = $false
+
+        $envHandle = [pscustomobject]@{ Id = 'E1'; Name = 'mut-spike-01' }
+        $targets = @([pscustomobject]@{ CodeunitId = 95155; Function = $null })
+
+        $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+
+        $result = $null
+        $threw = $false
+        try {
+            $result = InModuleScope MutantLoop {
+                param($EnvHandle, $Targets, $BackendModulePath)
+                Invoke-MutTestsWithBudget -Env $EnvHandle -Targets $Targets -TimeoutSec 1 -BudgetSec 1 -GraceSec 3 -BackendModulePath $BackendModulePath
+            } -Parameters @{ EnvHandle = $envHandle; Targets = $targets; BackendModulePath = $wedgedBackendPath }
+        }
+        catch {
+            $threw = $true
+        }
+
+        $stopwatch.Stop()
+
+        $threw | Should -Be $false
+        $result.TimedOut | Should -Be $true
+        $result.ForcedKill | Should -Be $true
+        $stopwatch.Elapsed.TotalSeconds | Should -BeLessThan 10
+
+        $global:MutForcedKillCalled | Should -Be $true
+
+        # No extra opened runspace leaked from this call (the underlying .NET thread may still
+        # be blocked inside Thread.Sleep -- that is the documented, accepted cost of a
+        # non-cooperative hang; only the RUNSPACE bookkeeping is asserted clean here).
+        @(Get-Runspace | Where-Object { $_.RunspaceStateInfo.State -eq 'Opened' -and $_.Id -ne 1 }) | Should -BeNullOrEmpty
+
+        Remove-Variable -Name MutForcedKillCalled -Scope Global -ErrorAction SilentlyContinue
     }
 }

@@ -190,6 +190,44 @@ function ConvertTo-MutReferencesHashtable {
     return $map
 }
 
+function Get-MutSkippedBaselineResult {
+    <#
+        .SYNOPSIS
+        Private. FIX (T27 fix round 1, finding 1 -- task review): the fast path for
+        -SkipBaseline, used only once the caller has already verified `baseline.json` exists
+        under $RunDir. Returns the same `@{ Baseline; Coverage; References }` shape
+        Publish-MutBaseline itself returns, without calling Publish-MutBaseline (and therefore
+        without touching the environment at all) -- unlike Publish-MutBaseline's OWN
+        marker-based skip (which additionally requires `baseline.done` AND coverage.json AND
+        references.json all present), this only requires baseline.json itself, since that is
+        the one artifact every later step actually needs and the one -SkipBaseline's caller
+        already checked. `coverage.json`/`references.json` are read too when present (the same
+        pass that writes baseline.json always writes them), each falling back to its own empty
+        shape -- mirroring Publish-MutBaseline's own "no job ids" warning path -- rather than
+        throwing, in case an earlier attempt crashed between writing baseline.json and the
+        other two.
+    #>
+    param([Parameter(Mandatory = $true)][string]$RunDir)
+
+    $baselinePath = Join-Path $RunDir 'baseline.json'
+    $coveragePath = Join-Path $RunDir 'coverage.json'
+    $referencesPath = Join-Path $RunDir 'references.json'
+
+    $baseline = ConvertTo-MutBaselineObject -Raw (Get-MutJsonContent -Path $baselinePath)
+
+    $coverage = [pscustomobject]@{ byTestCodeunit = @{} }
+    if (Test-Path -Path $coveragePath) {
+        $coverage = ConvertTo-MutCoverageObject -Raw (Get-MutJsonContent -Path $coveragePath)
+    }
+
+    $references = @{}
+    if (Test-Path -Path $referencesPath) {
+        $references = ConvertTo-MutReferencesHashtable -Raw (Get-MutJsonContent -Path $referencesPath)
+    }
+
+    return [pscustomobject]@{ Baseline = $baseline; Coverage = $coverage; References = $references }
+}
+
 function Initialize-MutRun {
     <#
         .SYNOPSIS
@@ -867,10 +905,13 @@ function Invoke-MutRunPipeline {
         -BackendModulePath, for its own Start-Job wrapper to import in a separate runspace).
 
         .PARAMETER SkipBaseline
-        Per §6.5.4/T27: skips step 3's real work only when `<RunDir>/baseline.json` already
-        exists (regardless of whether `baseline.done` was also written, covering a process that
-        died after saving baseline.json but before writing its marker); otherwise this switch
-        has no effect and the baseline step runs normally.
+        FIX (T27 fix round 1, finding 1 -- task review: the earlier implementation of this
+        switch only controlled a warning and Publish-MutBaseline was ALWAYS called, making the
+        switch inert). Per §6.5.4/T27: when set AND `<RunDir>/baseline.json` already exists,
+        Publish-MutBaseline is never called at all -- the baseline/coverage/references are
+        loaded straight from RunDir instead (Get-MutSkippedBaselineResult), since later steps
+        need them. When set and baseline.json does NOT exist yet, Write-Warning and run the
+        baseline step normally (same as omitting the switch).
 
         .OUTPUTS
         [pscustomobject]@{ ResultsPath; SummaryPath }.
@@ -895,10 +936,15 @@ function Invoke-MutRunPipeline {
     $env = Ensure-MutEnvironment -Config $Config -RunDir $runDir -SkipEnvironment:$SkipEnvironment
 
     $baselinePath = Join-Path $runDir 'baseline.json'
-    if ($SkipBaseline -and -not (Test-Path -Path $baselinePath)) {
-        Write-Warning "Invoke-MutRunPipeline: -SkipBaseline was specified but '$baselinePath' does not exist yet; running the baseline step normally."
+    if ($SkipBaseline -and (Test-Path -Path $baselinePath)) {
+        $baselineResult = Get-MutSkippedBaselineResult -RunDir $runDir
     }
-    $baselineResult = Publish-MutBaseline -Config $Config -Env $env -RunDir $runDir
+    else {
+        if ($SkipBaseline) {
+            Write-Warning "Invoke-MutRunPipeline: -SkipBaseline was specified but '$baselinePath' does not exist yet; running the baseline step normally."
+        }
+        $baselineResult = Publish-MutBaseline -Config $Config -Env $env -RunDir $runDir
+    }
 
     $schemata = Build-MutSchemataStep -Config $Config -Env $env -RunDir $runDir -RunNo $runNo
 

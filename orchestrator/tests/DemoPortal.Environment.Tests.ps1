@@ -91,6 +91,10 @@ Describe 'New-MutEnvironment' {
         Mock -ModuleName DemoPortal Invoke-Continia -ParameterFilter { $Arguments[1] -eq 'start' } { [pscustomobject]@{ ExitCode = 0; StdOut = ''; StdErr = 'Environment E1 start requested.' } }
         Mock -ModuleName DemoPortal Invoke-Continia -ParameterFilter { $Arguments[1] -eq 'install-by-id' } { [pscustomobject]@{ success = $true } }
         Mock -ModuleName DemoPortal Invoke-Continia -ParameterFilter { $Arguments[1] -eq 'use' } { [pscustomobject]@{ ExitCode = 0; StdOut = ''; StdErr = '' } }
+        # T27 fix round 1, finding 4a: Start-MutEnvironment now settles (env apps --all --json)
+        # after a real Draft/Stopped -> Running transition; return a non-empty list immediately
+        # so this test's own transition (Draft -> Running) does not need to poll more than once.
+        Mock -ModuleName DemoPortal Invoke-Continia -ParameterFilter { $Arguments[1] -eq 'apps' } { @([pscustomobject]@{ id = 'app1' }) }
 
         $h = New-MutEnvironment -Name 'mut-spike-01' -Config $cfg
         $h.Id | Should -Be 'E1'
@@ -142,14 +146,20 @@ Describe 'Start-MutEnvironment' {
         Mock -ModuleName DemoPortal Invoke-Continia -ParameterFilter { $Arguments[1] -eq 'start' } { [pscustomobject]@{ ExitCode = 0; StdOut = ''; StdErr = 'Environment E1 start requested.' } }
         Mock -ModuleName DemoPortal Invoke-Continia -ParameterFilter { $Arguments[1] -eq 'install-by-id' } { [pscustomobject]@{ success = $true } }
         Mock -ModuleName DemoPortal Invoke-Continia -ParameterFilter { $Arguments[1] -eq 'use' } { [pscustomobject]@{ ExitCode = 0; StdOut = ''; StdErr = '' } }
+        Mock -ModuleName DemoPortal Invoke-Continia -ParameterFilter { $Arguments[1] -eq 'apps' } { @([pscustomobject]@{ id = 'app1' }) }
 
         $h = Start-MutEnvironment -Env $env -Config $cfg
 
         $h.Status | Should -Be 'Running'
         $h.StartDurationSec | Should -Not -BeNullOrEmpty
+        $h.SettleDurationSec | Should -Not -BeNullOrEmpty
 
         Should -Invoke -ModuleName DemoPortal Invoke-Continia -ParameterFilter {
             $Arguments[0] -eq 'env' -and $Arguments[1] -eq 'start' -and $Arguments[2] -eq 'E1' -and $ExpectJson -eq $false
+        } -Times 1
+
+        Should -Invoke -ModuleName DemoPortal Invoke-Continia -ParameterFilter {
+            $Arguments[0] -eq 'env' -and $Arguments[1] -eq 'apps' -and $Arguments[2] -eq 'E1'
         } -Times 1
 
         Should -Invoke -ModuleName DemoPortal Invoke-Continia -ParameterFilter {
@@ -161,7 +171,37 @@ Describe 'Start-MutEnvironment' {
         } -Times 1
     }
 
-    It 'does not call env start or poll for an already-Running environment, but still installs the activation app and sets the workspace env' {
+    It 'settles (T27 fix round 1, finding 4a): polls env apps --all --json until non-empty (empty then non-empty -> 2 calls), then completes' {
+        $env = [pscustomobject]@{ Id = 'E1'; Name = 'mut-spike-01'; Url = 'https://x/E1'; Backend = 'DemoPortal'; Shared = $false; Status = 'Draft' }
+
+        $script:__settleGetCalls = 0
+        Mock -ModuleName DemoPortal Invoke-Continia -ParameterFilter { $Arguments[1] -eq 'get' } {
+            $script:__settleGetCalls++
+            if ($script:__settleGetCalls -eq 1) {
+                return [pscustomobject]@{ id = 'E1'; status = 'Draft'; description = 'mut-spike-01'; url = 'https://x/E1'; shared = $false }
+            }
+            return [pscustomobject]@{ id = 'E1'; status = 'Running'; description = 'mut-spike-01'; url = 'https://x/E1'; shared = $false }
+        }
+        Mock -ModuleName DemoPortal Invoke-Continia -ParameterFilter { $Arguments[1] -eq 'start' } { [pscustomobject]@{ ExitCode = 0; StdOut = ''; StdErr = 'Environment E1 start requested.' } }
+        Mock -ModuleName DemoPortal Invoke-Continia -ParameterFilter { $Arguments[1] -eq 'install-by-id' } { [pscustomobject]@{ success = $true } }
+        Mock -ModuleName DemoPortal Invoke-Continia -ParameterFilter { $Arguments[1] -eq 'use' } { [pscustomobject]@{ ExitCode = 0; StdOut = ''; StdErr = '' } }
+
+        $script:__settleAppsCalls = 0
+        Mock -ModuleName DemoPortal Invoke-Continia -ParameterFilter { $Arguments[1] -eq 'apps' } {
+            $script:__settleAppsCalls++
+            if ($script:__settleAppsCalls -eq 1) {
+                return @()
+            }
+            return @([pscustomobject]@{ id = 'app1' })
+        }
+
+        $h = Start-MutEnvironment -Env $env -Config $cfg
+
+        $h.SettleDurationSec | Should -Not -BeNullOrEmpty
+        Should -Invoke -ModuleName DemoPortal Invoke-Continia -ParameterFilter { $Arguments[1] -eq 'apps' } -Times 2
+    }
+
+    It 'does not call env start, poll, or settle for an already-Running environment, but still installs the activation app and sets the workspace env' {
         $env = [pscustomobject]@{ Id = 'E1'; Name = 'mut-spike-01'; Url = 'https://x/E1'; Backend = 'DemoPortal'; Shared = $false; Status = 'Running' }
 
         Mock -ModuleName DemoPortal Invoke-Continia -ParameterFilter { $Arguments[1] -eq 'get' } {
@@ -225,9 +265,14 @@ Describe 'Reset-MutEnvironment' {
             return [pscustomobject]@{ id = 'E1'; status = 'Running'; description = 'mut-spike-01'; url = 'https://x/E1'; shared = $false }
         }
 
+        # T27 fix round 1, finding 4a: Reset-MutEnvironment always settles after reaching
+        # Running; return a non-empty app list immediately so the settle poll needs only 1 call.
+        Mock -ModuleName DemoPortal Invoke-Continia -ParameterFilter { $Arguments[1] -eq 'apps' } { @([pscustomobject]@{ id = 'app1' }) }
+
         $result = Reset-MutEnvironment -Env $env
 
         $result.DurationSec | Should -Not -BeNullOrEmpty
+        $result.SettleDurationSec | Should -Not -BeNullOrEmpty
 
         Should -Invoke -ModuleName DemoPortal Invoke-Continia -ParameterFilter {
             $Arguments[0] -eq 'env' -and $Arguments[1] -eq 'stop' -and $Arguments[2] -eq 'E1'
@@ -236,6 +281,39 @@ Describe 'Reset-MutEnvironment' {
         Should -Invoke -ModuleName DemoPortal Invoke-Continia -ParameterFilter {
             $Arguments[0] -eq 'env' -and $Arguments[1] -eq 'start' -and $Arguments[2] -eq 'E1'
         } -Times 1
+
+        Should -Invoke -ModuleName DemoPortal Invoke-Continia -ParameterFilter {
+            $Arguments[0] -eq 'env' -and $Arguments[1] -eq 'apps' -and $Arguments[2] -eq 'E1'
+        } -Times 1
+    }
+
+    It 'settles (T27 fix round 1, finding 4a): polls env apps --all --json until non-empty (empty then non-empty -> 2 calls)' {
+        $env = [pscustomobject]@{ Id = 'E1'; Name = 'mut-spike-01'; Url = 'https://x/E1'; Backend = 'DemoPortal'; Shared = $false }
+
+        Mock -ModuleName DemoPortal Invoke-Continia -ParameterFilter { $Arguments[1] -eq 'stop' } { [pscustomobject]@{ success = $true } }
+        Mock -ModuleName DemoPortal Invoke-Continia -ParameterFilter { $Arguments[1] -eq 'start' } { [pscustomobject]@{ success = $true } }
+        $script:__resetSettleGetCalls = 0
+        Mock -ModuleName DemoPortal Invoke-Continia -ParameterFilter { $Arguments[1] -eq 'get' } {
+            $script:__resetSettleGetCalls++
+            if ($script:__resetSettleGetCalls -eq 1) {
+                return [pscustomobject]@{ id = 'E1'; status = 'Stopped'; description = 'mut-spike-01'; url = 'https://x/E1'; shared = $false }
+            }
+            return [pscustomobject]@{ id = 'E1'; status = 'Running'; description = 'mut-spike-01'; url = 'https://x/E1'; shared = $false }
+        }
+
+        $script:__resetSettleAppsCalls = 0
+        Mock -ModuleName DemoPortal Invoke-Continia -ParameterFilter { $Arguments[1] -eq 'apps' } {
+            $script:__resetSettleAppsCalls++
+            if ($script:__resetSettleAppsCalls -eq 1) {
+                return @()
+            }
+            return @([pscustomobject]@{ id = 'app1' })
+        }
+
+        $result = Reset-MutEnvironment -Env $env
+
+        $result.SettleDurationSec | Should -Not -BeNullOrEmpty
+        Should -Invoke -ModuleName DemoPortal Invoke-Continia -ParameterFilter { $Arguments[1] -eq 'apps' } -Times 2
     }
 
     It 'refuses an environment not named mut-*' {
@@ -244,6 +322,50 @@ Describe 'Reset-MutEnvironment' {
 
         { Reset-MutEnvironment -Env $env } | Should -Throw
         Should -Invoke -ModuleName DemoPortal Invoke-Continia -Times 0
+    }
+}
+
+Describe 'Stop-MutBackendChildProcesses' {
+    <#
+        T27 fix round 1, finding 2 (controller ruling): the child-process force-kill lives in
+        the backend, not lib/MutantLoop.psm1, so lib/ stays free of continia/docker/
+        BcContainerHelper. Get-CimInstance and Stop-Process are mocked -- this test proves the
+        filtering/call logic, not real process enumeration/termination.
+    #>
+    It 'refuses an environment not named mut-*' {
+        $env = [pscustomobject]@{ Id = 'E1'; Name = 'fix-auth-share-sibling-apply'; Url = 'https://x'; Backend = 'DemoPortal'; Shared = $false }
+        Mock -ModuleName DemoPortal Get-CimInstance { throw 'must not be called' }
+
+        { Stop-MutBackendChildProcesses -Env $env } | Should -Throw
+    }
+
+    It 'stops only continia.exe processes whose ParentProcessId is this session ($PID), and returns the count stopped' {
+        $env = [pscustomobject]@{ Id = 'E1'; Name = 'mut-spike-01'; Url = 'https://x/E1'; Backend = 'DemoPortal'; Shared = $false }
+
+        Mock -ModuleName DemoPortal Get-CimInstance -ParameterFilter { $Filter -eq "Name='continia.exe'" } {
+            @(
+                [pscustomobject]@{ ProcessId = 1111; ParentProcessId = $PID }
+                [pscustomobject]@{ ProcessId = 2222; ParentProcessId = 999999 }
+            )
+        }
+        $script:__stoppedIds = @()
+        Mock -ModuleName DemoPortal Stop-Process { param($Id) $script:__stoppedIds += $Id }
+
+        $stopped = Stop-MutBackendChildProcesses -Env $env
+
+        $stopped | Should -Be 1
+        $script:__stoppedIds | Should -Be @(1111)
+    }
+
+    It 'returns 0 without throwing when no matching continia.exe process is found' {
+        $env = [pscustomobject]@{ Id = 'E1'; Name = 'mut-spike-01'; Url = 'https://x/E1'; Backend = 'DemoPortal'; Shared = $false }
+
+        Mock -ModuleName DemoPortal Get-CimInstance { @() }
+        Mock -ModuleName DemoPortal Stop-Process { throw 'must not be called' }
+
+        $stopped = Stop-MutBackendChildProcesses -Env $env
+
+        $stopped | Should -Be 0
     }
 }
 

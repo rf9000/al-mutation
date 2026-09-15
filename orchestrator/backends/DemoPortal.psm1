@@ -279,6 +279,43 @@ function Wait-MutEnvironmentStatus {
     throw "Wait-MutEnvironmentStatus: environment '$Id' did not reach status '$Status' within $($script:MaxPollIterations * $script:PollIntervalSec) seconds. Last response: $lastJson"
 }
 
+function Wait-MutEnvironmentSettled {
+    <#
+        .SYNOPSIS
+        Private. FIX (T27 fix round 1, finding 4a -- spike T09): a test job issued immediately
+        after the environment's status became Running (via a real Stopped/Draft -> Running
+        transition) was observed live to return total 0 tests discovered/run for a codeunit
+        that DOES have tests -- "Running" alone does not guarantee the app/test-execution
+        service is actually ready. Polls `env apps <id> --all --json` every
+        $script:PollIntervalSec (10s) for up to 12 tries (120s) until it returns a non-empty app
+        list, then waits a further fixed 30s. Called by Start-MutEnvironment (only on a real
+        transition to Running) and by Reset-MutEnvironment (always, since it always
+        stops-then-starts).
+
+        .OUTPUTS
+        [double] total elapsed seconds (poll time + the fixed 30s), for SettleDurationSec.
+    #>
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Id
+    )
+
+    $start = Get-Date
+    $maxTries = 12
+
+    for ($i = 0; $i -lt $maxTries; $i++) {
+        $apps = Invoke-Continia -Arguments @('env', 'apps', $Id, '--all', '--json')
+        if (@($apps).Count -gt 0) {
+            break
+        }
+        Start-Sleep -Seconds $script:PollIntervalSec
+    }
+
+    Start-Sleep -Seconds 30
+
+    return ((Get-Date) - $start).TotalSeconds
+}
+
 function Wait-MutEnvironmentAppears {
     <#
         .SYNOPSIS
@@ -311,13 +348,15 @@ function Start-MutEnvironment {
         .SYNOPSIS
         Idempotently ensures the environment is started and ready: refreshes status via
         `env get`; if not already Running, issues `env start` (no --json; stdout is empty,
-        confirmation is on stderr, per T03 fix round 3) then polls to Running; then installs
-        the Continia Core Internal Activation App and sets the workspace default env
+        confirmation is on stderr, per T03 fix round 3) then polls to Running, then waits for
+        the environment to settle (Wait-MutEnvironmentSettled, T27 fix round 1 finding 4a --
+        only on this real transition, since only then is there anything to settle); then
+        installs the Continia Core Internal Activation App and sets the workspace default env
         (`env use`) unconditionally, since those are safe to repeat.
         .OUTPUTS
-        The handle with Status='Running', StartDurationSec, ActivationInstallDurationSec (0 for
-        StartDurationSec when the environment was already Running and env start/poll were
-        skipped).
+        The handle with Status='Running', StartDurationSec, ActivationInstallDurationSec,
+        SettleDurationSec (0 for StartDurationSec/SettleDurationSec when the environment was
+        already Running and env start/poll/settle were skipped).
     #>
     param(
         [Parameter(Mandatory = $true)]
@@ -333,6 +372,7 @@ function Start-MutEnvironment {
     $current = Invoke-Continia -Arguments @('env', 'get', $Env.Id, '--json')
 
     $startDurationSec = 0
+    $settleDurationSec = 0
     $running = $current
 
     if (-not ((Test-MutHasProperty $current 'status') -and $current.status -eq 'Running')) {
@@ -340,6 +380,8 @@ function Start-MutEnvironment {
         Invoke-Continia -Arguments @('env', 'start', $Env.Id) -ExpectJson:$false | Out-Null
         $running = Wait-MutEnvironmentStatus -Id $Env.Id -Status 'Running'
         $startDurationSec = ((Get-Date) - $startStart).TotalSeconds
+
+        $settleDurationSec = Wait-MutEnvironmentSettled -Id $Env.Id
     }
 
     $activationStart = Get-Date
@@ -352,6 +394,7 @@ function Start-MutEnvironment {
 
     Add-Member -InputObject $handle -NotePropertyName 'StartDurationSec' -NotePropertyValue $startDurationSec
     Add-Member -InputObject $handle -NotePropertyName 'ActivationInstallDurationSec' -NotePropertyValue $activationInstallDurationSec
+    Add-Member -InputObject $handle -NotePropertyName 'SettleDurationSec' -NotePropertyValue $settleDurationSec
 
     return $handle
 }
@@ -420,9 +463,12 @@ function Remove-MutEnvironment {
 function Reset-MutEnvironment {
     <#
         .SYNOPSIS
-        Stops then starts the environment, polling for the Stopped and Running states.
+        Stops then starts the environment, polling for the Stopped and Running states, then
+        waits for the environment to settle (Wait-MutEnvironmentSettled, T27 fix round 1 finding
+        4a) before returning -- Reset-MutEnvironment always performs a real stop/start, so it
+        always settles, unlike Start-MutEnvironment's own conditional check.
         .OUTPUTS
-        [pscustomobject]@{ DurationSec }
+        [pscustomobject]@{ DurationSec; SettleDurationSec }
     #>
     param(
         [Parameter(Mandatory = $true)]
@@ -439,9 +485,11 @@ function Reset-MutEnvironment {
     Invoke-Continia -Arguments @('env', 'start', $Env.Id) -ExpectJson:$false | Out-Null
     Wait-MutEnvironmentStatus -Id $Env.Id -Status 'Running' | Out-Null
 
+    $settleDurationSec = Wait-MutEnvironmentSettled -Id $Env.Id
+
     $durationSec = ((Get-Date) - $start).TotalSeconds
 
-    return [pscustomobject]@{ DurationSec = $durationSec }
+    return [pscustomobject]@{ DurationSec = $durationSec; SettleDurationSec = $settleDurationSec }
 }
 
 function Get-MutCredential {
@@ -1213,6 +1261,52 @@ function Get-MutCoverageRaw {
     return , [string[]]$csvDocuments
 }
 
+function Stop-MutBackendChildProcesses {
+    <#
+        .SYNOPSIS
+        FIX (T27 fix round 1, finding 2 -- task review, controller ruling): force-stops every
+        `continia.exe` process that is a direct child of THIS session (ParentProcessId -eq
+        $PID). Used by MutantLoop.psm1's Invoke-MutTestsWithBudget as the last resort after a
+        budget-plus-grace timeout, when the background runspace running Invoke-Continia's
+        synchronous Process.WaitForExit never got the chance to return on its own. Lives here
+        (in backends/, not lib/) so lib/*.psm1 stays free of the words
+        continia/docker/BcContainerHelper (§4 item 6); MutantLoop.psm1 calls this as a plain,
+        unqualified command.
+
+        .PARAMETER Env
+        Only used for Assert-MutEnvironmentAllowed's guard, matching every other exported
+        function in this module -- the process filter itself is by name and parent process id,
+        not per-environment (a wedged continia.exe child belongs to THIS process, not to any
+        particular environment id).
+
+        .OUTPUTS
+        [int] the number of processes stopped.
+    #>
+    param(
+        [Parameter(Mandatory = $true)]
+        $Env
+    )
+
+    Assert-MutEnvironmentAllowed $Env
+
+    $stopped = 0
+    $processes = @(Get-CimInstance -ClassName Win32_Process -Filter "Name='continia.exe'" -ErrorAction SilentlyContinue |
+        Where-Object { $_.ParentProcessId -eq $PID })
+
+    foreach ($process in $processes) {
+        try {
+            Stop-Process -Id $process.ProcessId -Force -ErrorAction Stop
+            $stopped++
+        }
+        catch {
+            # Best-effort: a process that already exited between the query and the stop is not
+            # an error condition here.
+        }
+    }
+
+    return $stopped
+}
+
 function Get-MutCoverage {
     <#
         .SYNOPSIS
@@ -1260,4 +1354,4 @@ function Get-MutCoverage {
     return , [pscustomobject[]]@($merged.Values)
 }
 
-Export-ModuleMember -Function Get-MutEnvironment, New-MutEnvironment, Start-MutEnvironment, Remove-MutEnvironment, Reset-MutEnvironment, Assert-MutEnvironmentAllowed, Get-MutApiBase, Get-MutCompanyId, Grant-MutPermissionSet, Invoke-MutApi, Install-MutDependencies, Compile-MutApp, Publish-MutApp, Publish-MutAppFile, Unpublish-MutApp, Invoke-MutTests, Get-MutCoverageRaw, Get-MutCoverage
+Export-ModuleMember -Function Get-MutEnvironment, New-MutEnvironment, Start-MutEnvironment, Remove-MutEnvironment, Reset-MutEnvironment, Assert-MutEnvironmentAllowed, Get-MutApiBase, Get-MutCompanyId, Grant-MutPermissionSet, Invoke-MutApi, Install-MutDependencies, Compile-MutApp, Publish-MutApp, Publish-MutAppFile, Unpublish-MutApp, Invoke-MutTests, Get-MutCoverageRaw, Get-MutCoverage, Stop-MutBackendChildProcesses

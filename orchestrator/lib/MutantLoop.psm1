@@ -31,6 +31,17 @@ if (-not (Get-Command -Name 'Reset-MutEnvironment' -ErrorAction SilentlyContinue
         throw 'Reset-MutEnvironment: no backend module has been imported into this session.'
     }
 }
+# FIX (T27 fix round 1, finding 2 -- task review): the controller's ruling put the backend
+# CLI's own wedged-child-process force-kill in the BACKEND (as Stop-MutBackendChildProcesses
+# -Env, with a matching stub on the container-based backend) rather than here, so this module --
+# and every other lib/*.psm1 -- stays free of any backend-tool-specific name (§4 item 6).
+# Called as a plain, unqualified command, same as Invoke-MutApi/Reset-MutEnvironment above.
+if (-not (Get-Command -Name 'Stop-MutBackendChildProcesses' -ErrorAction SilentlyContinue)) {
+    function global:Stop-MutBackendChildProcesses {
+        param($Env)
+        throw 'Stop-MutBackendChildProcesses: no backend module has been imported into this session.'
+    }
+}
 
 function Get-MutTimeoutBudget {
     <#
@@ -105,14 +116,55 @@ function Invoke-MutTestsWithBudget {
         tests of Invoke-MutMutantLoop) or call it directly via InModuleScope with a real, tiny
         fake backend module to prove the wall-clock kill actually happens.
 
+        FIX (T27 fix round 1, finding 2 -- task review): a real hang inside the backend's own
+        process-invocation helper is a synchronous Process.WaitForExit call PowerShell cannot
+        preempt, so stopping the pipeline alone does not guarantee this runspace's thread
+        actually returns at the budget -- a SYNCHRONOUS $powershell.Stop() (and, worse,
+        .Dispose()/$runspace.Close(), which internally re-invoke Stop()) all BLOCK the calling
+        thread until the pipeline's thread actually finishes, which for a truly wedged,
+        non-cooperative child process (blocked in a .NET call PowerShell cannot preempt) can
+        take arbitrarily long -- and (before this fix) a subsequent mutant's test job could
+        start while the previous one's backend CLI child process was still running (spec §4
+        item 8). Four changes close that gap:
+        1. The caller (Invoke-MutMutantLoop) now passes a $TimeoutSec strictly less than
+           $BudgetSec (max(30, BudgetSec - 30)), so the backend's OWN client-side timeout --
+           plus its own +60s process-level margin -- fires (at BudgetSec + 30 at the latest)
+           before a genuine hang would otherwise run past this wrapper's own budget with nothing
+           on the inside ever trying to stop it.
+        2. On budget expiry, `$powershell.BeginStop()` (async -- returns immediately, unlike the
+           blocking `.Stop()`) requests a stop, then this function waits an additional
+           -GraceSec (default 90s -- comfortably covers that BudgetSec + 30 inner kill) on the
+           SAME AsyncWaitHandle (itself always bounded, signaled the moment the pipeline
+           actually finishes, whichever comes first) for the runspace to actually finish.
+        3. If the runspace STILL has not finished after the grace period (the backend's own
+           process-invocation helper's WaitForExit call can genuinely never return on its own
+           for a truly wedged child process), every backend CLI child process of this session is
+           force-stopped via the backend's own Stop-MutBackendChildProcesses (called as a plain,
+           unqualified command -- see the guard block near the top of this file -- keeping this
+           module free of any backend-tool-specific name per §4 item 6), `ForcedKill = $true` is
+           set on the returned object, and the runspace is torn down via the async
+           `CloseAsync()` (moves it out of the 'Opened' state immediately; the actual teardown
+           finishes on its own background thread) rather than a synchronous Close()/Dispose()
+           that would block this call for exactly the same reason as step 2 -- $powershell
+           itself is left for the finalizer/GC in this one already-exceptional branch, an
+           accepted, documented cost.
+        4. Every path is wrapped in try/catch and this function must never throw from the
+           timeout path, whichever of the above it takes.
+
         .PARAMETER BudgetSec
         Wall-clock budget to wait for the background runspace to finish. May differ from
         $TimeoutSec (which is only the value forwarded to the backend's own -TimeoutSec) so a
         test can shrink the wrapper's patience independently of what is told to the backend.
 
+        .PARAMETER GraceSec
+        Extra wall-clock seconds to wait, after requesting a stop, for the background runspace
+        to actually finish once -BudgetSec has already elapsed, before force-killing any backend
+        CLI child process of this session (default 90). Exposed as a parameter so a test can
+        shrink it independently of the real production grace.
+
         .OUTPUTS
         [pscustomobject]@{ TimedOut (bool); Result (backend Invoke-MutTests result, or $null);
-        ErrorMessage (string, or $null) }.
+        ErrorMessage (string, or $null); ForcedKill (bool) }.
     #>
     param(
         [Parameter(Mandatory = $true)]
@@ -124,7 +176,8 @@ function Invoke-MutTestsWithBudget {
         [Parameter(Mandatory = $true)]
         [int]$BudgetSec,
         [Parameter(Mandatory = $true)]
-        [string]$BackendModulePath
+        [string]$BackendModulePath,
+        [int]$GraceSec = 90
     )
 
     $runspace = [runspacefactory]::CreateRunspace()
@@ -146,11 +199,48 @@ function Invoke-MutTestsWithBudget {
     $completed = $asyncResult.AsyncWaitHandle.WaitOne([TimeSpan]::FromSeconds($BudgetSec))
 
     if (-not $completed) {
-        try { $powershell.Stop() } catch { }
-        $powershell.Dispose()
-        $runspace.Close()
-        $runspace.Dispose()
-        return [pscustomobject]@{ TimedOut = $true; Result = $null; ErrorMessage = $null }
+        # FIX (T27 fix round 1, finding 2): $powershell.Stop()/.Dispose() and $runspace.Close()
+        # are all BLOCKING calls that wait for the pipeline's underlying thread to actually
+        # return -- fine for the cooperative case below (the thread responds to a stop request
+        # quickly), but for a truly wedged, non-cooperative child (blocked in a synchronous .NET
+        # call PowerShell cannot preempt) they would block THIS function for as long as that
+        # thread keeps running, defeating the whole point of a bounded wall-clock kill.
+        # BeginStop (async: returns immediately, requests the same stop) is used here instead of
+        # Stop() for exactly that reason.
+        try { $powershell.BeginStop($null, $null) | Out-Null } catch { }
+
+        $finishedDuringGrace = $asyncResult.AsyncWaitHandle.WaitOne([TimeSpan]::FromSeconds($GraceSec))
+
+        $forcedKill = $false
+        if (-not $finishedDuringGrace) {
+            try {
+                Stop-MutBackendChildProcesses -Env $Env | Out-Null
+            }
+            catch { }
+            $forcedKill = $true
+
+            # The pipeline is, by definition, still not finished here (WaitOne just timed out) --
+            # a synchronous Dispose()/Close() would block this call for as long as the wedged
+            # thread keeps running. Runspace.CloseAsync() moves it out of the 'Opened' state
+            # immediately and finishes the actual teardown on its own background thread;
+            # $powershell itself is left for the finalizer/GC rather than risking the same block
+            # inside its own Dispose() (which re-invokes Stop() internally) -- an accepted,
+            # documented resource-leak cost specific to this already-exceptional path (the
+            # underlying .NET thread may still be running; only this wrapper's own bounded
+            # return is guaranteed).
+            try { $runspace.CloseAsync() } catch { }
+
+            return [pscustomobject]@{ TimedOut = $true; Result = $null; ErrorMessage = $null; ForcedKill = $forcedKill }
+        }
+
+        # The pipeline finished on its own during the grace period (the cooperative case, e.g.
+        # a fake backend using Start-Sleep): safe to dispose/close synchronously here, since
+        # AsyncWaitHandle already signaled that it is done.
+        try { $powershell.Dispose() } catch { }
+        try { $runspace.Close() } catch { }
+        try { $runspace.Dispose() } catch { }
+
+        return [pscustomobject]@{ TimedOut = $true; Result = $null; ErrorMessage = $null; ForcedKill = $forcedKill }
     }
 
     try {
@@ -161,21 +251,21 @@ function Invoke-MutTestsWithBudget {
             $powershell.Dispose()
             $runspace.Close()
             $runspace.Dispose()
-            return [pscustomobject]@{ TimedOut = $false; Result = $null; ErrorMessage = $errorMessage }
+            return [pscustomobject]@{ TimedOut = $false; Result = $null; ErrorMessage = $errorMessage; ForcedKill = $false }
         }
 
         $result = @($resultCollection) | Select-Object -First 1
         $powershell.Dispose()
         $runspace.Close()
         $runspace.Dispose()
-        return [pscustomobject]@{ TimedOut = $false; Result = $result; ErrorMessage = $null }
+        return [pscustomobject]@{ TimedOut = $false; Result = $result; ErrorMessage = $null; ForcedKill = $false }
     }
     catch {
         $errorMessage = $_.Exception.Message
         $powershell.Dispose()
         $runspace.Close()
         $runspace.Dispose()
-        return [pscustomobject]@{ TimedOut = $false; Result = $null; ErrorMessage = $errorMessage }
+        return [pscustomobject]@{ TimedOut = $false; Result = $null; ErrorMessage = $errorMessage; ForcedKill = $false }
     }
 }
 
@@ -305,6 +395,14 @@ function Invoke-MutMutantLoop {
         Invoke-MutApi -Env $Env -Method 'PATCH' -Path 'mutationSetup(0)' -Body @{ activeMutantId = $mutant.id; currentRunNo = $RunNo } | Out-Null
 
         $budget = Get-MutTimeoutBudget -Config $Config -CoveringTests $covering -Baseline $Baseline
+        # FIX (T27 fix round 1, finding 2 -- task review): the timeout handed to the backend
+        # (and, inside it, to its own +60s process margin) must be strictly less
+        # than $budget -- otherwise a genuine hang would never be killed by the backend's own
+        # client-side timeout before Invoke-MutTestsWithBudget's own wall-clock budget already
+        # gave up waiting on it. max(30, budget - 30) leaves the backend's own timeout plus its
+        # +60s margin firing at budget + 30 at the latest, comfortably inside
+        # Invoke-MutTestsWithBudget's own (default 90s) post-budget grace period.
+        $innerTimeoutSec = [math]::Max(30, $budget - 30)
         $targets = @($covering | ForEach-Object { [pscustomobject]@{ CodeunitId = $_; Function = $null } })
 
         # FIX (T27, live run, 2026-09-09 -- see docs/issues.md): observed live, twice, that the
@@ -322,7 +420,7 @@ function Invoke-MutMutantLoop {
         $maxAttempts = 2
         do {
             $attempt++
-            $outcome = Invoke-MutTestsWithBudget -Env $Env -Targets $targets -TimeoutSec $budget -BudgetSec $budget -BackendModulePath $BackendModulePath
+            $outcome = Invoke-MutTestsWithBudget -Env $Env -Targets $targets -TimeoutSec $innerTimeoutSec -BudgetSec $budget -BackendModulePath $BackendModulePath
             $isEmptyResult = (-not $outcome.TimedOut) -and (-not $outcome.ErrorMessage) -and ($null -ne $outcome.Result) -and
                 (([int]$outcome.Result.Passed + [int]$outcome.Result.Failed) -eq 0)
         } while ($isEmptyResult -and $attempt -lt $maxAttempts)
@@ -345,7 +443,20 @@ function Invoke-MutMutantLoop {
             $result = $outcome.Result
             $durationMs = $result.DurationMs
 
-            if ($result.Failed -gt 0) {
+            if (@($result.Tests).Count -eq 0) {
+                # FIX (T27 fix round 1, finding 4b -- spike T09): a test job issued too soon
+                # after a DemoPortal environment (re)start can complete cleanly (no timeout, no
+                # error) with ZERO tests actually discovered/run for a codeunit that DOES have
+                # covering tests -- indistinguishable from a genuinely passing suite by
+                # Passed/Failed alone, and would otherwise be recorded as a false Survived (the
+                # mutant was never actually exercised). The retry above already tries once more
+                # when Passed + Failed = 0; if the result is STILL empty here, this is recorded
+                # as Error (never Survived) so it is visible and excluded from the score rather
+                # than silently counted as a kill-suppressing pass.
+                $status = 'Error'
+                $errorMessage = 'no tests discovered'
+            }
+            elseif ($result.Failed -gt 0) {
                 $status = 'Killed'
 
                 $firstFail = @($result.Tests) | Where-Object { $_.Result -eq 'Fail' } | Select-Object -First 1
