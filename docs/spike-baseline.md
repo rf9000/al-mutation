@@ -19,6 +19,12 @@ Numbers recorded by each spike task, per §7.6 of `docs/SPEC.md`.
 
 | Metric | Value | Backend | Date | Source task |
 |---|---|---|---|---|
+| compileSec | 25.99 (`spikes/u1-guard-bench/New-GuardBenchApp.ps1` generated app; `continia.exe compile spikes/u1-guard-bench/app --json --no-raw-output --env 30004698-209d-467c-96eb-9b412e9ee6ee` → `exitCode:0`, `errorCount:0`, `warningCount:0`, `diagnosticCounts.info:2`) | DemoPortal | 2026-09-16 | T10 |
+| publishSec | 39.90 (`continia.exe deploy 30004698-209d-467c-96eb-9b412e9ee6ee spikes/u1-guard-bench/app --json` → `compiled:true`, `published:true`, `readinessOutcome:"ready"`, 0 errors/0 warnings) | DemoPortal | 2026-09-16 | T10 |
+| guarded100kSec | 36.116 (`continia.exe test run 30004698-209d-467c-96eb-9b412e9ee6ee 50501 --json --timeout 900`, test `Guarded_100k`, `result:"Pass"`) | DemoPortal | 2026-09-16 | T10 |
+| unguarded100kSec | 1.61 (same job, test `Unguarded_100k`, `result:"Pass"`; job `summary.durationSeconds` 37.726 for both tests together) | DemoPortal | 2026-09-16 | T10 |
+| ratio | 22.43 (36.116 / 1.61) | DemoPortal | 2026-09-16 | T10 |
+| U3 verdict | **flag** — ratio 22.43 is far above the 2x threshold in §3's U3 mitigation ("If > 2x slowdown, `Active()` becomes a global-variable compare inside the AUT (id copied once per test)"); the 500-block `case true of MutationCore.Active(n)` guard as specified is not runtime-neutral and needs that mitigation before use at scale. Compile (25.99s) and publish (39.90s) for 500 guard blocks in one codeunit were both well within budget and produced 0 errors/0 warnings, so U1 (compiler/publish tolerance) is clean; only U3 (runtime overhead) is a concern. | DemoPortal | 2026-09-16 | T10 |
 
 ## U4
 
