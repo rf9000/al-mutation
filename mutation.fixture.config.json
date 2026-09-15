@@ -10,6 +10,6 @@
   "workDir": "./out",
   "generator": { "maxMutants": 0, "onlyObjects": [], "seed": 1, "operators": ["REL", "BOOL", "NOT", "COND", "DEL", "INSFLAG"], "includeBreak": false },
   "schemata": { "publishStrategy": "same-version" },
-  "timeouts": { "perTestFactor": 5, "minSeconds": 60, "jobOverheadSeconds": 0 },
+  "timeouts": { "perTestFactor": 5, "minSeconds": 120, "jobOverheadSeconds": 0 },
   "demoPortal": { "profileId": "cc557829-71df-40ee-9516-98ca954d4b2f", "activationAppId": "c3755ece-dab0-4d16-987d-040661f18522", "cliPath": "./.tools/continia.exe" }
 }

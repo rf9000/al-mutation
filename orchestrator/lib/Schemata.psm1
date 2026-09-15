@@ -293,6 +293,7 @@ function Build-MutSchemata {
 
     $compileErrorIds = @()
     $excludedStableKeys = @()
+    $excludedMutants = @()
     $excludeFileWritten = $null
     $lastDiagnostics = @()
 
@@ -329,6 +330,7 @@ function Build-MutSchemata {
                 AppFile         = $compileResult.AppFile
                 Mutants         = $mutants
                 CompileErrorIds = $compileErrorIds
+                ExcludedMutants = $excludedMutants
                 Iterations      = $iteration
                 ExcludeFile     = $excludeFileWritten
                 RunNo           = $RunNo
@@ -342,9 +344,18 @@ function Build-MutSchemata {
             $mutant = $mutants | Where-Object { $_.id -eq $id } | Select-Object -First 1
             if ($mutant) {
                 $excludedStableKeys += $mutant.stableKey
+                # Retained here (not just the stableKey) so the caller can still report this
+                # mutant's own id/procedure/original/mutated/etc. in the final results export
+                # (§7.3) even though it is about to be excluded from every later iteration's
+                # mutants.json -- a compile-error mutant (e.g. every BREAK candidate,
+                # §6.4.5/§8 acceptance item 2) never appears in the successful iteration's own
+                # $mutants at all, so without this it would have no row to be marked
+                # CompileError in at export time (T27, live run, 2026-09-09; docs/issues.md).
+                $excludedMutants += $mutant
             }
         }
         $excludedStableKeys = @($excludedStableKeys | Select-Object -Unique)
+        $excludedMutants = @($excludedMutants | Sort-Object -Property id -Unique)
 
         if (-not (Test-Path -Path $genDir)) {
             New-Item -ItemType Directory -Path $genDir -Force | Out-Null

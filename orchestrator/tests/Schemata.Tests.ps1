@@ -143,6 +143,14 @@ Describe 'Build-MutSchemata: compile-error loop' {
         $result.ExcludeFile | Should -Not -BeNullOrEmpty
         $result.RunNo | Should -Be 1
 
+        # Regression (T27, live run, 2026-09-09): a compile-error mutant (e.g. every BREAK
+        # candidate) never appears in $result.Mutants once excluded -- ExcludedMutants carries
+        # its full mutants.json-shaped record so a caller can still report it (as CompileError)
+        # in the final results export.
+        @($result.ExcludedMutants).Count | Should -Be 2
+        (@($result.ExcludedMutants) | Sort-Object -Property id | ForEach-Object { $_.id }) | Should -Be @(4, 5)
+        (@($result.ExcludedMutants) | Where-Object { $_.id -eq 4 }).stableKey | Should -Be 'key4'
+
         (Test-Path $result.ExcludeFile) | Should -Be $true
         $excludeContent = Get-Content -Path $result.ExcludeFile -Raw | ConvertFrom-Json
         @($excludeContent.stableKeys) | Sort-Object | Should -Be @('key4', 'key5')

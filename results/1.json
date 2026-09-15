@@ -1,0 +1,453 @@
+﻿{
+    "runNo":  1,
+    "backend":  "DemoPortal",
+    "environmentName":  "mut-spike-01",
+    "startedUtc":  "2026-09-08T23:22:01.3408802Z",
+    "finishedUtc":  "2026-09-08T23:46:23.5628922Z",
+    "autAppId":  "8b3f4e5c-ad6a-4f7b-9c8d-9e0f1a2b3c4d",
+    "autVersion":  "1.0.0.0",
+    "coreAppVersion":  "1.0.0.0",
+    "generator":  {
+                      "seed":  1,
+                      "maxMutants":  0,
+                      "onlyObjects":  [
+
+                                      ],
+                      "operators":  [
+                                        "REL",
+                                        "BOOL",
+                                        "NOT",
+                                        "COND",
+                                        "DEL",
+                                        "INSFLAG"
+                                    ]
+                  },
+    "totals":  {
+                   "total":  26,
+                   "killed":  18,
+                   "survived":  5,
+                   "timeout":  3,
+                   "compileError":  0,
+                   "uncovered":  0,
+                   "equivalent":  0
+               },
+    "score":  0.8077,
+    "mutants":  [
+                    {
+                        "id":  1,
+                        "stableKey":  "5e4da6ed7679e2c6",
+                        "objectId":  50200,
+                        "procedure":  "IsLargeOrder",
+                        "line":  7,
+                        "operator":  "REL",
+                        "original":  "Quantity \u003e= 10",
+                        "mutated":  "Quantity \u003e 10",
+                        "status":  "Survived",
+                        "killingTest":  null,
+                        "durationMs":  722,
+                        "coveringTests":  [
+                                              50300
+                                          ]
+                    },
+                    {
+                        "id":  2,
+                        "stableKey":  "7ebd513989167f28",
+                        "objectId":  50200,
+                        "procedure":  "IsLargeOrder",
+                        "line":  7,
+                        "operator":  "COND",
+                        "original":  "Quantity \u003e= 10",
+                        "mutated":  "true",
+                        "status":  "Killed",
+                        "killingTest":  "MUT Fx Order Tests:IsLargeOrder_Three_IsFalse",
+                        "durationMs":  88,
+                        "coveringTests":  [
+                                              50300
+                                          ]
+                    },
+                    {
+                        "id":  3,
+                        "stableKey":  "432d681309932918",
+                        "objectId":  50200,
+                        "procedure":  "IsLargeOrder",
+                        "line":  7,
+                        "operator":  "COND",
+                        "original":  "Quantity \u003e= 10",
+                        "mutated":  "false",
+                        "status":  "Killed",
+                        "killingTest":  "MUT Fx Order Tests:IsLargeOrder_Twelve_IsTrue",
+                        "durationMs":  76,
+                        "coveringTests":  [
+                                              50300
+                                          ]
+                    },
+                    {
+                        "id":  4,
+                        "stableKey":  "51b60f993c65c39f",
+                        "objectId":  50200,
+                        "procedure":  "IsLargeOrder",
+                        "line":  8,
+                        "operator":  "DEL",
+                        "original":  "exit(true)",
+                        "mutated":  "",
+                        "status":  "Killed",
+                        "killingTest":  "MUT Fx Order Tests:IsLargeOrder_Twelve_IsTrue",
+                        "durationMs":  71,
+                        "coveringTests":  [
+                                              50300
+                                          ]
+                    },
+                    {
+                        "id":  5,
+                        "stableKey":  "571d796517ddae36",
+                        "objectId":  50200,
+                        "procedure":  "IsLargeOrder",
+                        "line":  9,
+                        "operator":  "DEL",
+                        "original":  "exit(false)",
+                        "mutated":  "",
+                        "status":  "Survived",
+                        "killingTest":  null,
+                        "durationMs":  98,
+                        "coveringTests":  [
+                                              50300
+                                          ]
+                    },
+                    {
+                        "id":  6,
+                        "stableKey":  "5f02f36259685e3d",
+                        "objectId":  50200,
+                        "procedure":  "RequiresApproval",
+                        "line":  14,
+                        "operator":  "REL",
+                        "original":  "(Amount \u003e 1000) and (not IsTrusted)",
+                        "mutated":  "(Amount \u003e= 1000) and (not IsTrusted)",
+                        "status":  "Survived",
+                        "killingTest":  null,
+                        "durationMs":  74,
+                        "coveringTests":  [
+                                              50300
+                                          ]
+                    },
+                    {
+                        "id":  7,
+                        "stableKey":  "33e30cf6afd67296",
+                        "objectId":  50200,
+                        "procedure":  "RequiresApproval",
+                        "line":  14,
+                        "operator":  "BOOL",
+                        "original":  "(Amount \u003e 1000) and (not IsTrusted)",
+                        "mutated":  "(Amount \u003e 1000) or (not IsTrusted)",
+                        "status":  "Killed",
+                        "killingTest":  "MUT Fx Order Tests:RequiresApproval_SmallUntrusted_IsFalse",
+                        "durationMs":  73,
+                        "coveringTests":  [
+                                              50300
+                                          ]
+                    },
+                    {
+                        "id":  8,
+                        "stableKey":  "dcc140a82a47c708",
+                        "objectId":  50200,
+                        "procedure":  "RequiresApproval",
+                        "line":  14,
+                        "operator":  "NOT",
+                        "original":  "(Amount \u003e 1000) and (not IsTrusted)",
+                        "mutated":  "(Amount \u003e 1000) and (IsTrusted)",
+                        "status":  "Killed",
+                        "killingTest":  "MUT Fx Order Tests:RequiresApproval_LargeUntrusted_IsTrue",
+                        "durationMs":  81,
+                        "coveringTests":  [
+                                              50300
+                                          ]
+                    },
+                    {
+                        "id":  9,
+                        "stableKey":  "21d2326eb80748d3",
+                        "objectId":  50200,
+                        "procedure":  "RequiresApproval",
+                        "line":  14,
+                        "operator":  "COND",
+                        "original":  "(Amount \u003e 1000) and (not IsTrusted)",
+                        "mutated":  "true",
+                        "status":  "Killed",
+                        "killingTest":  "MUT Fx Order Tests:RequiresApproval_SmallUntrusted_IsFalse",
+                        "durationMs":  66,
+                        "coveringTests":  [
+                                              50300
+                                          ]
+                    },
+                    {
+                        "id":  10,
+                        "stableKey":  "a6d5f43cfa7c2a92",
+                        "objectId":  50200,
+                        "procedure":  "RequiresApproval",
+                        "line":  14,
+                        "operator":  "COND",
+                        "original":  "(Amount \u003e 1000) and (not IsTrusted)",
+                        "mutated":  "false",
+                        "status":  "Killed",
+                        "killingTest":  "MUT Fx Order Tests:RequiresApproval_LargeUntrusted_IsTrue",
+                        "durationMs":  65,
+                        "coveringTests":  [
+                                              50300
+                                          ]
+                    },
+                    {
+                        "id":  11,
+                        "stableKey":  "5e9fd98aef66d5ae",
+                        "objectId":  50200,
+                        "procedure":  "RequiresApproval",
+                        "line":  15,
+                        "operator":  "DEL",
+                        "original":  "exit(true)",
+                        "mutated":  "",
+                        "status":  "Killed",
+                        "killingTest":  "MUT Fx Order Tests:RequiresApproval_LargeUntrusted_IsTrue",
+                        "durationMs":  74,
+                        "coveringTests":  [
+                                              50300
+                                          ]
+                    },
+                    {
+                        "id":  12,
+                        "stableKey":  "e638f2fe27d4c1d5",
+                        "objectId":  50200,
+                        "procedure":  "RequiresApproval",
+                        "line":  16,
+                        "operator":  "DEL",
+                        "original":  "exit(false)",
+                        "mutated":  "",
+                        "status":  "Survived",
+                        "killingTest":  null,
+                        "durationMs":  76,
+                        "coveringTests":  [
+                                              50300
+                                          ]
+                    },
+                    {
+                        "id":  13,
+                        "stableKey":  "df01293a24163bd2",
+                        "objectId":  50200,
+                        "procedure":  "PostOrder",
+                        "line":  23,
+                        "operator":  "REL",
+                        "original":  "FxOrder.Quantity \u003c= 0",
+                        "mutated":  "FxOrder.Quantity \u003c 0",
+                        "status":  "Killed",
+                        "killingTest":  "MUT Fx Order Tests:PostOrder_ZeroQty_Errors",
+                        "durationMs":  86,
+                        "coveringTests":  [
+                                              50300
+                                          ]
+                    },
+                    {
+                        "id":  14,
+                        "stableKey":  "22eb2889667a783b",
+                        "objectId":  50200,
+                        "procedure":  "PostOrder",
+                        "line":  23,
+                        "operator":  "COND",
+                        "original":  "FxOrder.Quantity \u003c= 0",
+                        "mutated":  "true",
+                        "status":  "Killed",
+                        "killingTest":  "MUT Fx Order Tests:PostOrder_PositiveQty_SetsPosted",
+                        "durationMs":  78,
+                        "coveringTests":  [
+                                              50300
+                                          ]
+                    },
+                    {
+                        "id":  15,
+                        "stableKey":  "4493be97c994e6bb",
+                        "objectId":  50200,
+                        "procedure":  "PostOrder",
+                        "line":  23,
+                        "operator":  "COND",
+                        "original":  "FxOrder.Quantity \u003c= 0",
+                        "mutated":  "false",
+                        "status":  "Killed",
+                        "killingTest":  "MUT Fx Order Tests:PostOrder_ZeroQty_Errors",
+                        "durationMs":  76,
+                        "coveringTests":  [
+                                              50300
+                                          ]
+                    },
+                    {
+                        "id":  16,
+                        "stableKey":  "ba00d69480e1fc52",
+                        "objectId":  50200,
+                        "procedure":  "PostOrder",
+                        "line":  24,
+                        "operator":  "DEL",
+                        "original":  "Error(QtyErr)",
+                        "mutated":  "",
+                        "status":  "Killed",
+                        "killingTest":  "MUT Fx Order Tests:PostOrder_ZeroQty_Errors",
+                        "durationMs":  96,
+                        "coveringTests":  [
+                                              50300
+                                          ]
+                    },
+                    {
+                        "id":  17,
+                        "stableKey":  "390b99654ab71a89",
+                        "objectId":  50200,
+                        "procedure":  "PostOrder",
+                        "line":  26,
+                        "operator":  "DEL",
+                        "original":  "FxOrder.Modify(true)",
+                        "mutated":  "",
+                        "status":  "Killed",
+                        "killingTest":  "MUT Fx Order Tests:PostOrder_PositiveQty_SetsPosted",
+                        "durationMs":  75,
+                        "coveringTests":  [
+                                              50300
+                                          ]
+                    },
+                    {
+                        "id":  18,
+                        "stableKey":  "f4fddaf2e01e2615",
+                        "objectId":  50200,
+                        "procedure":  "PostOrder",
+                        "line":  26,
+                        "operator":  "INSFLAG",
+                        "original":  "FxOrder.Modify(true)",
+                        "mutated":  "FxOrder.Modify(false)",
+                        "status":  "Survived",
+                        "killingTest":  null,
+                        "durationMs":  77,
+                        "coveringTests":  [
+                                              50300
+                                          ]
+                    },
+                    {
+                        "id":  19,
+                        "stableKey":  "e981ccafe5abda0b",
+                        "objectId":  50200,
+                        "procedure":  "CountBatches",
+                        "line":  39,
+                        "operator":  "REL",
+                        "original":  "Remaining \u003c= 0",
+                        "mutated":  "Remaining \u003c 0",
+                        "status":  "Killed",
+                        "killingTest":  "MUT Fx Order Tests:CountBatches_NineByThree_IsThree",
+                        "durationMs":  94,
+                        "coveringTests":  [
+                                              50300
+                                          ]
+                    },
+                    {
+                        "id":  20,
+                        "stableKey":  "bd3c794f7c314ce7",
+                        "objectId":  50200,
+                        "procedure":  "CountBatches",
+                        "line":  39,
+                        "operator":  "COND",
+                        "original":  "Remaining \u003c= 0",
+                        "mutated":  "true",
+                        "status":  "Killed",
+                        "killingTest":  "MUT Fx Order Tests:CountBatches_TenByThree_IsFour",
+                        "durationMs":  70,
+                        "coveringTests":  [
+                                              50300
+                                          ]
+                    },
+                    {
+                        "id":  21,
+                        "stableKey":  "158c53f544492b77",
+                        "objectId":  50200,
+                        "procedure":  "CountBatches",
+                        "line":  39,
+                        "operator":  "COND",
+                        "original":  "Remaining \u003c= 0",
+                        "mutated":  "false",
+                        "status":  "Timeout",
+                        "killingTest":  null,
+                        "durationMs":  null,
+                        "coveringTests":  [
+                                              50300
+                                          ]
+                    },
+                    {
+                        "id":  22,
+                        "stableKey":  "add33599bc7aba73",
+                        "objectId":  50200,
+                        "procedure":  "CountBatches",
+                        "line":  40,
+                        "operator":  "DEL",
+                        "original":  "exit(Batches)",
+                        "mutated":  "",
+                        "status":  "Killed",
+                        "killingTest":  "MUT Fx Order Tests:CountBatches_TenByThree_IsFour",
+                        "durationMs":  701,
+                        "coveringTests":  [
+                                              50300
+                                          ]
+                    },
+                    {
+                        "id":  23,
+                        "stableKey":  "71c4dc1239d52c75",
+                        "objectId":  50200,
+                        "procedure":  "FirstMultipleAbove",
+                        "line":  50,
+                        "operator":  "REL",
+                        "original":  "Candidate \u003e Threshold",
+                        "mutated":  "Candidate \u003e= Threshold",
+                        "status":  "Killed",
+                        "killingTest":  "MUT Fx Order Tests:FirstMultipleAbove_Base3_Threshold9_IsTwelve",
+                        "durationMs":  104,
+                        "coveringTests":  [
+                                              50300
+                                          ]
+                    },
+                    {
+                        "id":  24,
+                        "stableKey":  "d76576933cf523e5",
+                        "objectId":  50200,
+                        "procedure":  "FirstMultipleAbove",
+                        "line":  50,
+                        "operator":  "COND",
+                        "original":  "Candidate \u003e Threshold",
+                        "mutated":  "true",
+                        "status":  "Killed",
+                        "killingTest":  "MUT Fx Order Tests:FirstMultipleAbove_Base3_Threshold9_IsTwelve",
+                        "durationMs":  89,
+                        "coveringTests":  [
+                                              50300
+                                          ]
+                    },
+                    {
+                        "id":  25,
+                        "stableKey":  "613ee3e9a43a8af9",
+                        "objectId":  50200,
+                        "procedure":  "FirstMultipleAbove",
+                        "line":  50,
+                        "operator":  "COND",
+                        "original":  "Candidate \u003e Threshold",
+                        "mutated":  "false",
+                        "status":  "Timeout",
+                        "killingTest":  null,
+                        "durationMs":  null,
+                        "coveringTests":  [
+                                              50300
+                                          ]
+                    },
+                    {
+                        "id":  26,
+                        "stableKey":  "b5f9639db750c530",
+                        "objectId":  50200,
+                        "procedure":  "FirstMultipleAbove",
+                        "line":  51,
+                        "operator":  "DEL",
+                        "original":  "exit(Candidate)",
+                        "mutated":  "",
+                        "status":  "Timeout",
+                        "killingTest":  null,
+                        "durationMs":  null,
+                        "coveringTests":  [
+                                              50300
+                                          ]
+                    }
+                ]
+}

@@ -189,3 +189,45 @@ test('sample is stable by seed: same seed and maxMutants yield the same ids acro
   );
   assert.equal(run1.mutants.length, 5);
 });
+
+test('includeBreak: true produces BREAK mutants even when --operators lists only the six non-BREAK operators (regression, T27 live-run fix)', () => {
+  // Reproduces mutation.fixture.config.json's own generator.operators list verbatim (§6.5.1:
+  // ["REL","BOOL","NOT","COND","DEL","INSFLAG"], no "BREAK") with includeBreak flipped to true --
+  // exactly what T27's brief instructs for the BREAK acceptance run (flip only includeBreak,
+  // leave the operators list as-is). Before the fix, BREAK candidates were gated by BOTH
+  // includeBreak AND membership in the --operators list, so a config like this one silently
+  // produced zero BREAK mutants.
+  const caseDir = path.join(FIXTURES_ROOT, '05-fixture-aut');
+  const autDir = path.join(caseDir, 'input');
+
+  const result = generate({
+    ...baseOptions(autDir, tmpDir()),
+    operators: ['REL', 'BOOL', 'NOT', 'COND', 'DEL', 'INSFLAG'],
+    includeBreak: true,
+  });
+
+  const breakMutants = result.mutants.filter((m) => m.operator === 'BREAK');
+  assert.ok(breakMutants.length > 0, 'expected at least one BREAK mutant with includeBreak: true');
+  assert.ok(
+    breakMutants.every((m) => m.mutated === 'MutBreak_ThisDoesNotCompile();' || m.mutated === 'MutBreak_ThisDoesNotCompile()'),
+    'every BREAK mutant should mutate to a call to the deliberately-undefined MutBreak_ThisDoesNotCompile',
+  );
+
+  // The six normal operators must still be present and unaffected -- exactly the 26 mutants of
+  // §6.3.3, unchanged by BREAK being added.
+  const nonBreakMutants = result.mutants.filter((m) => m.operator !== 'BREAK');
+  assert.equal(nonBreakMutants.length, 26);
+});
+
+test('includeBreak: false still produces zero BREAK mutants regardless of the --operators list (no regression the other way)', () => {
+  const caseDir = path.join(FIXTURES_ROOT, '05-fixture-aut');
+  const autDir = path.join(caseDir, 'input');
+
+  const result = generate({
+    ...baseOptions(autDir, tmpDir()),
+    operators: [...OPERATOR_ORDER],
+    includeBreak: false,
+  });
+
+  assert.equal(result.mutants.filter((m) => m.operator === 'BREAK').length, 0);
+});

@@ -1,0 +1,32 @@
+[
+  { "procedure": "IsLargeOrder", "operator": "REL", "mutated": "Quantity > 10", "expected": "Survived" },
+  { "procedure": "IsLargeOrder", "operator": "COND", "mutated": "true", "expected": "Killed" },
+  { "procedure": "IsLargeOrder", "operator": "COND", "mutated": "false", "expected": "Killed" },
+  { "procedure": "IsLargeOrder", "operator": "DEL", "mutated": "", "original": "exit(true)", "expected": "Killed" },
+  { "procedure": "IsLargeOrder", "operator": "DEL", "mutated": "", "original": "exit(false)", "expected": "Survived" },
+
+  { "procedure": "RequiresApproval", "operator": "REL", "mutated": "(Amount >= 1000) and (not IsTrusted)", "expected": "Survived" },
+  { "procedure": "RequiresApproval", "operator": "BOOL", "mutated": "(Amount > 1000) or (not IsTrusted)", "expected": "Killed" },
+  { "procedure": "RequiresApproval", "operator": "NOT", "mutated": "(Amount > 1000) and (IsTrusted)", "expected": "Killed" },
+  { "procedure": "RequiresApproval", "operator": "COND", "mutated": "true", "expected": "Killed" },
+  { "procedure": "RequiresApproval", "operator": "COND", "mutated": "false", "expected": "Killed" },
+  { "procedure": "RequiresApproval", "operator": "DEL", "mutated": "", "original": "exit(true)", "expected": "Killed" },
+  { "procedure": "RequiresApproval", "operator": "DEL", "mutated": "", "original": "exit(false)", "expected": "Survived" },
+
+  { "procedure": "PostOrder", "operator": "REL", "mutated": "FxOrder.Quantity < 0", "expected": "Killed" },
+  { "procedure": "PostOrder", "operator": "COND", "mutated": "true", "expected": "Killed" },
+  { "procedure": "PostOrder", "operator": "COND", "mutated": "false", "expected": "Killed" },
+  { "procedure": "PostOrder", "operator": "DEL", "mutated": "", "original": "Error(QtyErr)", "expected": "Killed" },
+  { "procedure": "PostOrder", "operator": "DEL", "mutated": "", "original": "FxOrder.Modify(true)", "expected": "Killed" },
+  { "procedure": "PostOrder", "operator": "INSFLAG", "mutated": "FxOrder.Modify(false)", "expected": "Survived" },
+
+  { "procedure": "CountBatches", "operator": "REL", "mutated": "Remaining < 0", "expected": "Killed" },
+  { "procedure": "CountBatches", "operator": "COND", "mutated": "true", "expected": "Killed" },
+  { "procedure": "CountBatches", "operator": "COND", "mutated": "false", "expected": "Timeout" },
+  { "procedure": "CountBatches", "operator": "DEL", "mutated": "", "original": "exit(Batches)", "expected": "Killed" },
+
+  { "procedure": "FirstMultipleAbove", "operator": "REL", "mutated": "Candidate >= Threshold", "expected": "Killed" },
+  { "procedure": "FirstMultipleAbove", "operator": "COND", "mutated": "true", "expected": "Killed" },
+  { "procedure": "FirstMultipleAbove", "operator": "COND", "mutated": "false", "expected": "Timeout" },
+  { "procedure": "FirstMultipleAbove", "operator": "DEL", "mutated": "", "original": "exit(Candidate)", "expected": "Timeout" }
+]

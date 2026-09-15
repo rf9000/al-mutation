@@ -111,6 +111,12 @@ Describe 'Invoke-MutMutantLoop' {
             return [pscustomobject]@{ DurationSec = 1 }
         }
 
+        # Mocked so the (real, live-run-motivated) post-reset settle delay never actually sleeps
+        # in this fast, deterministic unit test.
+        Mock -ModuleName MutantLoop Start-MutPostResetSettle {
+            $global:MutCallLog += 'SETTLE'
+        }
+
         $script:Config = New-MutTestConfig -PerTestFactor 1 -MinSeconds 5 -JobOverheadSeconds 0
         $script:Baseline = [pscustomobject]@{
             Tests               = @()
@@ -250,6 +256,115 @@ Describe 'Invoke-MutMutantLoop' {
         Should -Invoke -ModuleName MutantLoop Invoke-MutApi -ParameterFilter { $Method -eq 'GET' } -Times 0
     }
 
+    It 'retries once when the test run comes back with zero total tests (Passed=0, Failed=0), then uses the retry''s real result (regression, T27 live-run fix)' {
+        $script:MutEmptyResultCallCount = 0
+        Mock -ModuleName MutantLoop Invoke-MutTestsWithBudget {
+            $script:MutEmptyResultCallCount++
+            if ($script:MutEmptyResultCallCount -eq 1) {
+                return [pscustomobject]@{
+                    TimedOut = $false; ErrorMessage = $null
+                    Result   = [pscustomobject]@{ Passed = 0; Failed = 0; DurationMs = 0; Tests = @() }
+                }
+            }
+            return [pscustomobject]@{
+                TimedOut = $false; ErrorMessage = $null
+                Result   = [pscustomobject]@{
+                    Passed = 0; Failed = 1; DurationMs = 55
+                    Tests  = @([pscustomobject]@{ Codeunit = 'C'; Function = 'F'; Result = 'Fail'; DurationMs = 55; Error = 'boom' })
+                }
+            }
+        }
+
+        $mutant = [pscustomobject]@{ id = 50; objectId = 50000; line = 4 }
+
+        $results = Invoke-MutMutantLoop -Config $script:Config -Env $script:EnvHandle -Mutants @($mutant) `
+            -Baseline $script:Baseline -Coverage $script:Coverage -References $script:References `
+            -RunNo 10 -RunDir $script:RunDir -BackendModulePath 'unused.psm1'
+
+        $script:MutEmptyResultCallCount | Should -Be 2
+        $results[0].Status | Should -Be 'Killed'
+        $results[0].DurationMs | Should -Be 55
+    }
+
+    It 'does not retry when the first test run already has a non-zero Passed/Failed count' {
+        $script:MutRealResultCallCount = 0
+        Mock -ModuleName MutantLoop Invoke-MutTestsWithBudget {
+            $script:MutRealResultCallCount++
+            [pscustomobject]@{
+                TimedOut = $false; ErrorMessage = $null
+                Result   = [pscustomobject]@{ Passed = 1; Failed = 0; DurationMs = 42; Tests = @() }
+            }
+        }
+
+        $mutant = [pscustomobject]@{ id = 51; objectId = 50000; line = 4 }
+
+        Invoke-MutMutantLoop -Config $script:Config -Env $script:EnvHandle -Mutants @($mutant) `
+            -Baseline $script:Baseline -Coverage $script:Coverage -References $script:References `
+            -RunNo 10 -RunDir $script:RunDir -BackendModulePath 'unused.psm1' | Out-Null
+
+        $script:MutRealResultCallCount | Should -Be 1
+    }
+
+    It 'still records Status Survived (not an error) when the POST for a Survived result hits a duplicate-key conflict, e.g. from a resumed run (regression, T27 live-run fix)' {
+        Mock -ModuleName MutantLoop Invoke-MutTestsWithBudget {
+            [pscustomobject]@{
+                TimedOut     = $false
+                ErrorMessage = $null
+                Result       = [pscustomobject]@{ Passed = 1; Failed = 0; DurationMs = 67; Tests = @() }
+            }
+        }
+        Mock -ModuleName MutantLoop Invoke-MutApi {
+            param($Env, $Method, $Path, $Body)
+            $global:MutCallLog += "API:$Method`:$Path"
+            if ($Method -eq 'POST' -and $Path -eq 'mutantResults') {
+                $errorRecord = [System.Management.Automation.ErrorRecord]::new(
+                    [System.Exception]::new('The remote server returned an error: (400) Bad Request.'),
+                    'DuplicateKey', [System.Management.Automation.ErrorCategory]::InvalidOperation, $null)
+                $errorRecord.ErrorDetails = [System.Management.Automation.ErrorDetails]::new(
+                    '{"error":{"code":"Internal_EntityWithSameKeyExists","message":"The record in table MUT Mutant Result already exists."}}')
+                throw $errorRecord
+            }
+            return $null
+        }
+
+        $mutant = [pscustomobject]@{ id = 1; objectId = 50000; line = 4 }
+
+        $results = Invoke-MutMutantLoop -Config $script:Config -Env $script:EnvHandle -Mutants @($mutant) `
+            -Baseline $script:Baseline -Coverage $script:Coverage -References $script:References `
+            -RunNo 1 -RunDir $script:RunDir -BackendModulePath 'unused.psm1'
+
+        $results[0].Status | Should -Be 'Survived'
+
+        # The loop must still PATCH activeMutantId back to 0 afterward despite the swallowed
+        # POST conflict.
+        Should -Invoke -ModuleName MutantLoop Invoke-MutApi -ParameterFilter {
+            $Method -eq 'PATCH' -and $Body.activeMutantId -eq 0
+        } -Times 1
+    }
+
+    It 'still throws when a Survived POST fails for a reason other than a duplicate-key conflict' {
+        Mock -ModuleName MutantLoop Invoke-MutTestsWithBudget {
+            [pscustomobject]@{
+                TimedOut     = $false
+                ErrorMessage = $null
+                Result       = [pscustomobject]@{ Passed = 1; Failed = 0; DurationMs = 67; Tests = @() }
+            }
+        }
+        Mock -ModuleName MutantLoop Invoke-MutApi {
+            param($Env, $Method, $Path, $Body)
+            if ($Method -eq 'POST' -and $Path -eq 'mutantResults') {
+                throw 'Some other, unrelated server error'
+            }
+            return $null
+        }
+
+        $mutant = [pscustomobject]@{ id = 1; objectId = 50000; line = 4 }
+
+        { Invoke-MutMutantLoop -Config $script:Config -Env $script:EnvHandle -Mutants @($mutant) `
+                -Baseline $script:Baseline -Coverage $script:Coverage -References $script:References `
+                -RunNo 1 -RunDir $script:RunDir -BackendModulePath 'unused.psm1' } | Should -Throw '*unrelated server error*'
+    }
+
     It 'on timeout: resets the environment once, records Timeout, and never POSTs a result' {
         Mock -ModuleName MutantLoop Invoke-MutTestsWithBudget {
             $global:MutCallLog += 'TESTS'
@@ -328,8 +443,8 @@ Describe 'Invoke-MutMutantLoop' {
             -Baseline $script:Baseline -Coverage $script:Coverage -References $script:References `
             -RunNo 7 -RunDir $script:RunDir -BackendModulePath 'unused.psm1' | Out-Null
 
-        # order: PATCH(id) -> TESTS -> RESET -> PATCH(0)
-        $global:MutCallLog | Should -Be @('API:PATCH:mutationSetup(0)', 'TESTS', 'RESET', 'API:PATCH:mutationSetup(0)')
+        # order: PATCH(id) -> TESTS -> RESET -> SETTLE -> PATCH(0)
+        $global:MutCallLog | Should -Be @('API:PATCH:mutationSetup(0)', 'TESTS', 'RESET', 'SETTLE', 'API:PATCH:mutationSetup(0)')
 
         Should -Invoke -ModuleName MutantLoop Invoke-MutApi -ParameterFilter {
             $Method -eq 'PATCH' -and $Body.activeMutantId -eq 0
@@ -388,7 +503,14 @@ Describe 'Invoke-MutMutantLoop' {
     }
 }
 
-Describe 'Invoke-MutTestsWithBudget (real Start-Job wall-clock kill)' {
+Describe 'Invoke-MutTestsWithBudget (real background-runspace wall-clock kill)' {
+    <#
+        Fix round 1 (T27, live DemoPortal run, 2026-09-08/09; docs/issues.md): the transport
+        under test switched from Start-Job (a separate OS process) to a background runspace
+        hosted in this same process, after every live mutant activation hung indefinitely inside
+        a Start-Job the moment it tried to spawn continia.exe as a further child process. The
+        public contract (TimedOut/Result/ErrorMessage) and this test's assertions are unchanged.
+    #>
     BeforeAll {
         $global:MutFakeSlowBackendPath = "$TestDrive/FakeSlowBackend.psm1"
         @'
@@ -405,9 +527,9 @@ Export-ModuleMember -Function Invoke-MutTests
 '@ | Set-Content -Path $global:MutFakeSlowBackendPath -Encoding UTF8
     }
 
-    It 'kills the job at the budget (1s) instead of waiting for the 30s sleep to finish' {
+    It 'kills the background runspace at the budget (1s) instead of waiting for the 30s sleep to finish' {
         # The sleep (30s) is intentionally far beyond both the 1s budget and the elapsed bound
-        # below (20s): child powershell.exe spawn time and first-access AV scanning of a
+        # below (20s): runspace/module-import overhead and first-access AV scanning of a
         # freshly written .psm1 are variable and can add several seconds of unrelated jitter on
         # a loaded machine, independent of the kill logic under test. A wide margin here still
         # proves the kill happens long before natural completion without being flaky.
@@ -426,7 +548,8 @@ Export-ModuleMember -Function Invoke-MutTests
         $result.TimedOut | Should -Be $true
         $stopwatch.Elapsed.TotalSeconds | Should -BeLessThan 20
 
-        # No leaked background jobs.
+        # No leaked background jobs (the runspace-based implementation never creates any --
+        # Get-Job is unrelated to it -- but this also still holds trivially true either way).
         @(Get-Job) | Should -BeNullOrEmpty
     }
 }

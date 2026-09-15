@@ -81,20 +81,34 @@ function Get-MutTimeoutBudget {
 function Invoke-MutTestsWithBudget {
     <#
         .SYNOPSIS
-        Private. Runs the backend's Invoke-MutTests inside a Start-Job so a hung test run can
-        be killed on the wall clock (§6.5.6 step 3), rather than blocking the orchestrator
-        forever. The job imports the backend module by path (so it works in a separate
-        process/runspace with no access to the caller's already-imported modules) and calls
-        Invoke-MutTests with $Env/$Targets/$TimeoutSec.
+        Private. Runs the backend's Invoke-MutTests on a background runspace (a PowerShell
+        instance hosted on another thread of THIS SAME process) so a hung test run can be killed
+        on the wall clock (§6.5.6 step 3), rather than blocking the orchestrator forever. Imports
+        the backend module by path inside that runspace (a fresh runspace starts with no modules
+        loaded) and calls Invoke-MutTests with $Env/$Targets/$TimeoutSec.
+
+        FIX (T27, live DemoPortal run, 2026-09-08/09 -- see docs/issues.md): the original
+        implementation ran this inside a `Start-Job` background job instead. Every live mutant
+        activation against the real DemoPortal backend hung -- not merely slower, but
+        unresponsive past 400+ seconds of wall clock, confirmed by direct reproduction outside
+        the orchestrator -- the moment that job's own (separate-process) instance of PowerShell
+        tried to spawn the backend's own CLI tool as a further child process via
+        System.Diagnostics.Process (the backend module's private process-invocation helper),
+        even though the exact same call, made directly from an interactive-context process,
+        completed normally in ~37 seconds. A background runspace hosted in the SAME process (no
+        additional OS-process boundary for that grandchild process to cross) reproduced the
+        direct call's normal completion. `Invoke-MutMutantLoop` and the rest of this module are
+        unchanged; only this function's transport mechanism was replaced, and its public
+        signature/contract are identical to the previous `Start-Job`-based implementation.
 
         Exposed (not exported) so tests can either mock it wholesale (fast, deterministic unit
         tests of Invoke-MutMutantLoop) or call it directly via InModuleScope with a real, tiny
         fake backend module to prove the wall-clock kill actually happens.
 
         .PARAMETER BudgetSec
-        Wall-clock budget for Wait-Job. May differ from $TimeoutSec (which is only the value
-        forwarded to the backend's own -TimeoutSec) so a test can shrink the wrapper's patience
-        independently of what is told to the backend.
+        Wall-clock budget to wait for the background runspace to finish. May differ from
+        $TimeoutSec (which is only the value forwarded to the backend's own -TimeoutSec) so a
+        test can shrink the wrapper's patience independently of what is told to the backend.
 
         .OUTPUTS
         [pscustomobject]@{ TimedOut (bool); Result (backend Invoke-MutTests result, or $null);
@@ -113,29 +127,79 @@ function Invoke-MutTestsWithBudget {
         [string]$BackendModulePath
     )
 
-    $job = Start-Job -ScriptBlock {
-        param($JobModulePath, $JobEnv, $JobTargets, $JobTimeoutSec)
-        Import-Module $JobModulePath -Force
-        Invoke-MutTests -Env $JobEnv -Targets $JobTargets -TimeoutSec $JobTimeoutSec
-    } -ArgumentList $BackendModulePath, $Env, $Targets, $TimeoutSec
+    $runspace = [runspacefactory]::CreateRunspace()
+    $runspace.Open()
+    $powershell = [System.Management.Automation.PowerShell]::Create()
+    $powershell.Runspace = $runspace
 
-    Wait-Job -Job $job -Timeout $BudgetSec | Out-Null
+    [void]$powershell.AddScript({
+            param($JobModulePath, $JobEnv, $JobTargets, $JobTimeoutSec)
+            Import-Module $JobModulePath -Force
+            Invoke-MutTests -Env $JobEnv -Targets $JobTargets -TimeoutSec $JobTimeoutSec
+        })
+    [void]$powershell.AddArgument($BackendModulePath)
+    [void]$powershell.AddArgument($Env)
+    [void]$powershell.AddArgument($Targets)
+    [void]$powershell.AddArgument($TimeoutSec)
 
-    if ($job.State -eq 'Running' -or $job.State -eq 'NotStarted') {
-        Stop-Job -Job $job | Out-Null
-        Remove-Job -Job $job -Force | Out-Null
+    $asyncResult = $powershell.BeginInvoke()
+    $completed = $asyncResult.AsyncWaitHandle.WaitOne([TimeSpan]::FromSeconds($BudgetSec))
+
+    if (-not $completed) {
+        try { $powershell.Stop() } catch { }
+        $powershell.Dispose()
+        $runspace.Close()
+        $runspace.Dispose()
         return [pscustomobject]@{ TimedOut = $true; Result = $null; ErrorMessage = $null }
     }
 
     try {
-        $result = Receive-Job -Job $job -ErrorAction Stop
-        Remove-Job -Job $job -Force | Out-Null
+        $resultCollection = $powershell.EndInvoke($asyncResult)
+
+        if ($powershell.HadErrors -and @($powershell.Streams.Error).Count -gt 0) {
+            $errorMessage = (@($powershell.Streams.Error) | ForEach-Object { $_.ToString() }) -join '; '
+            $powershell.Dispose()
+            $runspace.Close()
+            $runspace.Dispose()
+            return [pscustomobject]@{ TimedOut = $false; Result = $null; ErrorMessage = $errorMessage }
+        }
+
+        $result = @($resultCollection) | Select-Object -First 1
+        $powershell.Dispose()
+        $runspace.Close()
+        $runspace.Dispose()
         return [pscustomobject]@{ TimedOut = $false; Result = $result; ErrorMessage = $null }
     }
     catch {
-        Remove-Job -Job $job -Force | Out-Null
-        return [pscustomobject]@{ TimedOut = $false; Result = $null; ErrorMessage = $_.Exception.Message }
+        $errorMessage = $_.Exception.Message
+        $powershell.Dispose()
+        $runspace.Close()
+        $runspace.Dispose()
+        return [pscustomobject]@{ TimedOut = $false; Result = $null; ErrorMessage = $errorMessage }
     }
+}
+
+function Start-MutPostResetSettle {
+    <#
+        .SYNOPSIS
+        Private. Waits a short settle period after Reset-MutEnvironment (§6.5.6 step 3), before
+        the loop's next test run.
+
+        FIX (T27, live DemoPortal run, 2026-09-09 -- see docs/issues.md): observed live, twice,
+        immediately after Reset-MutEnvironment's poll reported the environment back to Running:
+        the very next mutant's test run returned instantly (0 ms) with Failed = 0 and no tests
+        actually executed, which the loop then recorded as a false Survived (or, for the mutant
+        that was itself supposed to genuinely time out, a false non-Timeout) rather than the
+        correct outcome -- the backend's own "Running" status evidently does not yet guarantee
+        the test-execution service is ready to accept a job. A fixed settle delay after every
+        reset is a coarse, minimal mitigation (not a guarantee for a slower environment) chosen
+        over a more invasive change (e.g. retrying on an empty result, or teaching this
+        backend-agnostic module a backend-specific readiness probe) to keep this fix narrowly
+        scoped. Exposed (not exported) so a test can mock it away instead of genuinely sleeping.
+    #>
+    param([int]$Seconds = 45)
+
+    Start-Sleep -Seconds $Seconds
 }
 
 function Write-MutResultsJsonLine {
@@ -243,7 +307,25 @@ function Invoke-MutMutantLoop {
         $budget = Get-MutTimeoutBudget -Config $Config -CoveringTests $covering -Baseline $Baseline
         $targets = @($covering | ForEach-Object { [pscustomobject]@{ CodeunitId = $_; Function = $null } })
 
-        $outcome = Invoke-MutTestsWithBudget -Env $Env -Targets $targets -TimeoutSec $budget -BudgetSec $budget -BackendModulePath $BackendModulePath
+        # FIX (T27, live run, 2026-09-09 -- see docs/issues.md): observed live, twice, that the
+        # very next test run after Reset-MutEnvironment (§6.5.6 step 3, immediately below) came
+        # back as a clean completion (no timeout, no error) reporting ZERO tests actually
+        # executed (Passed = 0, Failed = 0) rather than genuinely running the covering
+        # codeunit's suite -- silently recorded as a false Survived. A fixed post-reset settle
+        # delay (Start-MutPostResetSettle, below) alone was not sufficient to prevent this on
+        # its own (confirmed live: the same empty-result pattern recurred even after it). Instead
+        # of guessing at a longer delay, this retries the SAME test invocation once when it
+        # completes with zero total tests -- directly targeting the observed symptom (an
+        # apparently-transient "not yet truly ready" response) rather than a specific wait
+        # duration this environment has not confirmed is ever long enough.
+        $attempt = 0
+        $maxAttempts = 2
+        do {
+            $attempt++
+            $outcome = Invoke-MutTestsWithBudget -Env $Env -Targets $targets -TimeoutSec $budget -BudgetSec $budget -BackendModulePath $BackendModulePath
+            $isEmptyResult = (-not $outcome.TimedOut) -and (-not $outcome.ErrorMessage) -and ($null -ne $outcome.Result) -and
+                (([int]$outcome.Result.Passed + [int]$outcome.Result.Failed) -eq 0)
+        } while ($isEmptyResult -and $attempt -lt $maxAttempts)
 
         $status = $null
         $killingTest = $null
@@ -252,6 +334,7 @@ function Invoke-MutMutantLoop {
 
         if ($outcome.TimedOut) {
             Reset-MutEnvironment -Env $Env | Out-Null
+            Start-MutPostResetSettle
             $status = 'Timeout'
         }
         elseif ($outcome.ErrorMessage) {
@@ -285,12 +368,36 @@ function Invoke-MutMutantLoop {
             }
             else {
                 $status = 'Survived'
-                Invoke-MutApi -Env $Env -Method 'POST' -Path 'mutantResults' -Body @{
-                    runNo      = $RunNo
-                    mutantId   = $mutant.id
-                    status     = 'Survived'
-                    durationMs = $durationMs
-                } | Out-Null
+                # FIX (T27, live run, 2026-09-09 -- see docs/issues.md): unlike the Killed branch
+                # above (which GETs first and only POSTs when no row exists yet), this always
+                # POSTed unconditionally -- fine on a genuinely fresh run, but a run resumed at
+                # this step for the same RunNo (a step earlier in the pipeline was re-run after
+                # a crash, or, live, this loop was re-run to pick up a fix) re-processes a
+                # mutant that already has a Survived row from the earlier attempt, and the POST
+                # then fails with the table's (runNo, mutantId) key already existing --
+                # previously an unhandled, run-ending error. Swallowed here as an idempotent
+                # no-op (matching the Killed branch's own idempotency), while any other POST
+                # failure still propagates normally.
+                try {
+                    Invoke-MutApi -Env $Env -Method 'POST' -Path 'mutantResults' -Body @{
+                        runNo      = $RunNo
+                        mutantId   = $mutant.id
+                        status     = 'Survived'
+                        durationMs = $durationMs
+                    } | Out-Null
+                }
+                catch {
+                    $duplicateKeyText = ''
+                    if ($_.ErrorDetails -and $_.ErrorDetails.Message) {
+                        $duplicateKeyText = $_.ErrorDetails.Message
+                    }
+                    if (-not $duplicateKeyText) {
+                        $duplicateKeyText = $_.Exception.Message
+                    }
+                    if ($duplicateKeyText -notmatch 'EntityWithSameKeyExists') {
+                        throw
+                    }
+                }
             }
         }
 

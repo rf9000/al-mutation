@@ -166,8 +166,18 @@ function generateCandidatesForFile(
         for (const name of OPERATOR_ORDER) {
           const operator = OPERATORS[name];
           if (operator.kind !== 'statement') continue;
-          if (name === 'BREAK' && !options.includeBreak) continue;
-          if (!allowedOperators.has(name)) continue;
+          if (name === 'BREAK') {
+            // BREAK is gated solely by --include-break (§6.4.5: "Only with --include-break"),
+            // independent of --operators (which selects among the six normal operators). Fix
+            // (T27, live run, 2026-09-09 -- see docs/issues.md): this used to also require
+            // 'BREAK' to be listed in --operators, so a config that sets includeBreak = true
+            // without also adding 'BREAK' to its operators list (exactly what this task's own
+            // fixture config does, per the brief's instruction to flip only includeBreak)
+            // silently generated zero BREAK mutants.
+            if (!options.includeBreak) continue;
+          } else if (!allowedOperators.has(name)) {
+            continue;
+          }
           procCandidates.push(...operator.apply(ctx, stmt));
         }
       }
