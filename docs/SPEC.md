@@ -644,7 +644,7 @@ end;
 Preconditions: Mutation Core, fixture AUT, fixture test deployed. PATCH setup `activeMutantId = 999`, `currentRunNo = 1`. `Invoke-MutTests` on codeunit 50301. Then GET `mutantResults`. Expected: exactly one row `{ runNo 1, mutantId 999, status Killed, killingTest 'MUT Fx U4 Spike Tests:U4_Failing' }`. Record: events fired (yes/no), row present after failed test (yes/no). Reset setup to 0.
 
 #### 6.6.4 `spikes/u5-u6/` (U5, U6)
-`Invoke-U5Spike.ps1`: start `test run <env> 50302 --timeout 30` in a `Start-Job`; after the client timeout, check `continia env sessions <id> --json` for the session; try `env stop` and time `Reset-MutEnvironment`. Record whether the job was cancelled and the reset duration.
+`Invoke-U5Spike.ps1`: start `test run <env> 50302 --timeout 30` as a child process (`Start-Process` with redirected output; `Start-Job` + stderr redirection trips NativeCommandError under PS 5.1); after the client timeout, check `continia env sessions <id> --json` for the session; try `env stop` and time `Reset-MutEnvironment`. Record whether the job was cancelled and the reset duration.
 `Invoke-U6Spike.ps1`: with fixture AUT + fixture test installed, try in order and record success/duration per option: (a) `Publish-MutAppFile` of a rebuilt fixture AUT with the same version; (b) same with version `1.0.0.1`; (c) `Unpublish-MutApp` fixture test → publish → `Publish-MutApp` fixture test. After each, run codeunit 50300 to confirm the test app still works.
 
 #### 6.6.5 `spikes/hand-mutants/` (Tier B kill-rate sample)
