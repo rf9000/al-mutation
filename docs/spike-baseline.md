@@ -391,9 +391,13 @@ in test quality for this slice of the app, not evidence either way about the res
 
 | Cost | Number | Note |
 |---|---|---|
-| Guard overhead, tight loop | 22.4× (36.1s guarded vs 1.6s unguarded / 100k iterations) | Exceeds the §3 2× flag threshold; mitigation (cache `Active()` locally per procedure entry) exists but is unapplied — the pilot's real tests showed no observable slowdown, since they are not hot loops |
+| Guard overhead, synthetic tight loop | 22.4× (36.1s guarded vs 1.6s unguarded / 100k iterations) | Exceeds the §3 2× flag threshold. This is a 100,000-iteration hot loop with no test-job overhead diluting it — a worst case for code that is itself hot, not a general prediction. Mitigation (cache `Active()` locally per procedure entry) exists but is unapplied. |
+| Guard overhead, real test suite | 0.97× (31.59s instrumented/inactive vs 32.59s plain, same 3 codeunits, 51 tests, same session — task M7) | The number that matters for this project's actual workload: no measurable slowdown. The gap between this and the 22.4× row above is real, not a contradiction — a BC test job's wall clock is dominated by fixed per-job overhead (U7: ~9–11s/job), which swamps a per-guard cost that only shows up when the guarded code itself runs a hot loop. Keep both: 22.4× still matters if a mutated procedure turns out to be hot. |
 | Guard compile/publish (500 blocks, synthetic) | 26s / 40s | Comfortably inside budget |
-| Real-AUT schemata compile (157 guards, 1,072 files) | ~11s, 0 errors | The only compile measurement at real-app file-count scale; not at whole-project guard count |
+| Real-AUT schemata compile (157 guards, one codeunit, 1,072 files) | ~11s, 0 errors | Real-app file-count scale, pilot codeunit's guard count |
+| Real-AUT schemata compile (1,364 / 5,000 mutants, whole app scanned) | 24s / 22s, 0 errors, ~4.6 MB `.app` both times (task M7) | Compile time is flat across this range, not proportional to mutant count |
+| Real-AUT schemata compile, concentrated (1,918 mutants in 5 objects, up to 53 in one procedure) | 29s, 0 errors, 4.53 MB (task M7) | Probed for a per-method/IL ceiling; none found |
+| Real-AUT schemata compile, whole project (15,012 mutants, all files) | 20.5s, 0 errors, 73 warnings, 4.68 MB `.app` (task M8) | The full-scale number; see "Full-scale build" below for how the one failure at this scale (M7) was diagnosed and fixed |
 | Environment reset (mid-run recovery) | ~5 minutes (219–288s reset + 32–106s settle) | Paid every time a job times out or is force-reset in a long run |
 | Environment create+start (fresh) | ~10 minutes | One-time per new environment, not per run |
 | Full-suite baseline (all 181 test codeunits) | **Not yet measured** — Gate G1, blocked until a human writes `go` here | Unknown scaling risk; U2's median-savings figure also waits on this |
@@ -401,10 +405,14 @@ in test quality for this slice of the app, not evidence either way about the res
 
 ### Not proven
 
-- **Schemata compile/publish at whole-project scale** — only 157 guards (one codeunit) have been compiled against the real 1,072-file tree; the 15,058-mutant whole-project schemata was never compiled or published (stopped by the user; see "Whole-app generation" above).
+Schemata compile at whole-project scale, and publish at that size, were open questions in earlier drafts of
+this section; both are now answered (tasks M7/M8, see "Schemata scaling curve" and "Full-scale build" below)
+and have been removed from this list. What remains genuinely open:
+
 - **Coverage-based selection beyond one codeunit** — U2 is provisional, measured on one AUT codeunit against a 3-test-codeunit scope only.
 - **The Docker backend** — interface-only stub, throws `NotImplemented`.
-- **Any second AUT codeunit, or a genuinely multi-codeunit run** — everything measured here is codeunit 72918635 alone.
+- **A genuinely multi-codeunit mutant *run*, or any second AUT codeunit taken through the full loop** — compile is now proven at whole-project scale (M7/M8), and the pilot proved the full generate→compile→publish→test→record loop end to end, but only for one codeunit (72918635) at a time. Running that full loop across many codeunits, or the whole project, at once has never been attempted — only its compile step has.
+- **The full 181-codeunit baseline (Gate G1)** — unmeasured; blocked until a human writes `go`.
 
 ### DRAFT recommendation
 
@@ -415,14 +423,38 @@ is roughly twenty times the 200/day floor. The pilot's mechanism has been proven
 reproducibly (run 4 and run 6, identical outcome on all 157 mutants across a real orchestrator fix) and once
 independently by hand (13 of 14 non-drift hand mutants agree with the generator, with the one disagreement
 being a known, bounded, and now-documented operator gap rather than a defect) — and it found a real, sizeable
-gap in the existing test suite (a 0.3949 score on real code). Weighed against that: guard overhead is more
-than ten times the project's own flag threshold in a tight loop (mitigated in design, not yet applied), the
-AUT changed shape three times in ten days in ways that broke the pipeline every time it touched real code
-rather than the fixture, and nothing here demonstrates the mechanism survives at whole-project scale — mutant
-generation does, at 15,058 mutants in 90 seconds, but the compile, publish, and coverage-selection steps that
-would need to run against that many guards have not been exercised even once. The human reader weighs the
-proven, reproducible mutation-score signal and the throughput headroom against the drift risk and the
-unproven scale-up, and writes `go` or `no-go` into this section themselves.
+gap in the existing test suite (a 0.3949 score on real code).
+
+The previous draft of this recommendation named whole-project scaling as the biggest open technical risk:
+mutant generation was proven at 15,058 mutants in 90 seconds, but nothing said the schemata would compile,
+publish, or run without a measurable slowdown at that size. That risk is now retired by measurement, not by
+argument. Tasks M7 and M8 compiled 1,364, 5,000, and 15,012-mutant schemata against the real 1,070-file AUT —
+compile time is flat (~20–24s) across that whole range, not proportional to mutant count; concentrating 1,918
+mutants into 5 objects (53 in one procedure) still compiled clean in 29s with no per-method or IL limit found;
+the one failure the curve did surface, at the unsampled 15,012-mutant extreme, was traced to a specific
+generator rewriter defect (guard indentation copying preceding source text instead of whitespace, for a
+statement sharing its line with its own un-blocked `if...then`) and fixed, with the identical scope then
+compiling clean. And the guard-overhead number that mattered most for real use — not the 22.4× synthetic
+tight-loop figure, but the actual 3-codeunit test suite running against an instrumented, inactive schemata —
+came back at 0.97×: no measurable slowdown. Publish at the 4.56 MB / 1,364-mutant size class was also proven
+live, with the environment restored cleanly afterward; the 4.68 MB whole-project build is the same size class,
+though it was not itself separately published in this project.
+
+What is left is honestly smaller, and different in kind. It is not architectural — nothing found says the
+schemata mechanism breaks down at scale. It is operational and scope-related. Operationally, the AUT changed
+shape three times in ten days in ways that broke the pipeline every time it touched real code rather than the
+fixture (objects deleted, a BC major-version move, a mid-run dependent-recompile failure — see Chronology
+above); a longer or less-supervised run is exposed to more of this, not less, and nothing in M7/M8 changes
+that risk. On scope: every end-to-end run of the full generate→compile→publish→test→record loop — the pilot,
+the hand mutants, the reproducibility check — was against one codeunit (72918635) at a time. M7/M8 prove the
+*compile* step at whole-project scale; they do not prove a whole-project (or even multi-codeunit) mutant *run*,
+since no such run has been executed. Coverage-based test selection (U2) is likewise proven only on that one
+codeunit against a 3-test-codeunit scope, and the full 181-codeunit baseline (Gate G1) remains unmeasured.
+
+The human reader weighs the proven, reproducible mutation-score signal, the throughput headroom, and the
+now-retired scaling risk against the remaining operational (AUT drift) and scope (one codeunit run end to end,
+whole-project loop untested, G1 baseline unmeasured) risk, and writes `go` or `no-go` into this section
+themselves.
 
 ## Schemata scaling curve
 
@@ -495,4 +527,29 @@ was sampling luck that neither production-realistic sample (1364, 5000) happened
 exposes it. What would have to change: the Shape-A rewrite in §6.4.7 needs to insert the guard block once,
 after the un-blocked `if...then` prefix, not once per output line — a generator fix, paired with a survey of
 how many other candidates share this code shape before whole-app generation is trusted again.
+
+## Full-scale build
+
+*Date: 2026-09-18. Source task: M8, commit 1b9a5ef. Fixes the one failure the scaling curve above found; closes
+the question the previous section left open.*
+
+| Metric | Value |
+|---|---|
+| Root cause | `lineIndent()` (`generator/src/schemata.ts`) returned everything between the previous newline and the anchor token, not just whitespace — correct only when the anchor is the first token on its physical line. For a statement candidate sharing its line with its own un-blocked `if … then` (mutant id 1898, `PaymentMethodMapper.Codeunit.al`), it captured the literal `if <cond> then ` prefix, which the guard template then repeated on every line of the multi-line replacement — exactly the 36-error failure recorded above. |
+| Fix | `lineIndent` now walks forward from the physical line's start counting only space/tab characters, applied uniformly to condition guards, statement guards, and declaration insertion. |
+| TDD evidence | 3 new unit tests, confirmed red against the pre-fix code, green after; new golden case `fixtures/generator/06-shared-line-if-then/` added |
+| Existing goldens | All 5 pre-existing golden cases stayed byte-identical |
+| Generator suite | 113/113 green (109 pre-existing + 4 net new) |
+| Full-project generation (seed 1, `--max-mutants 0`, same scope as the w-all run above) | 15,012 mutants (skipped 1,423), 15.2s — matches the scaling curve's w-all count exactly |
+| Full-project compile | 20.5s, **0 errors**, 73 warnings, 0 info, `.app` produced, 4.68 MB |
+| Mutant 1898 spot-check | Renders with the `if … then` prefix exactly once, correctly indented; compiles clean |
+
+**Finding.** The failure was a rewriter defect specific to one code shape, not a scale limit: the identical
+15,012-mutant scope that failed fast with 36 syntax errors at 15s now compiles clean at the same generation
+time (15.2s) and a comparable compile time (20.5s vs. the earlier attempt's 15s-to-fail). Combined with the
+scaling curve above, the schemata mechanism is now shown to generate and compile at true whole-project scale
+with 0 errors. This build was not itself re-published — no publish or test job was run in this task — but it
+is the same size class as w-1364 (4.68 MB vs. 4.56 MB), which was published to `mut-spike-02` and restored
+cleanly in the scaling-curve task; nothing in the size difference between the two builds suggests publish
+would behave differently.
 
