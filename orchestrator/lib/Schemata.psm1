@@ -234,6 +234,34 @@ function Write-MutSchemataRuleset {
     return $schemataRulesetFile
 }
 
+function Write-MutSchemataAnalyzerSettings {
+    <#
+        .SYNOPSIS
+        Writes `<SchemataDir>/.vscode/settings.json` (BOM-less UTF-8) with exactly
+        `{ "al.codeAnalyzers": [] }`, creating `.vscode` if absent and overwriting any file the
+        generator copied there. The backend CLI's compile command loads its analyzer list from
+        this file (F12), so an empty list disables every CodeCop/UICop-style analyzer for the
+        compile -- only genuine compiler errors can fail it. This ends the
+        rule-by-rule whack-a-mole (AA0072, AA0137, AA0021, ...): the schemata app is generated,
+        compiled once, never read by a human and never shipped, so no style analyzer should run
+        against it at all (§6.5.4 step 4, §6.4.7). Called on every compile-loop iteration
+        because the generator recreates the whole tree (including `.vscode/`, if any) each time.
+        .PARAMETER SchemataDir
+        Full path to the generated schemata app directory (`<RunDir>/gen/aut-schemata`).
+    #>
+    param([Parameter(Mandatory = $true)][string]$SchemataDir)
+
+    $vscodeDir = Join-Path $SchemataDir '.vscode'
+    if (-not (Test-Path -Path $vscodeDir)) {
+        New-Item -ItemType Directory -Path $vscodeDir -Force | Out-Null
+    }
+
+    $settingsFile = Join-Path $vscodeDir 'settings.json'
+    $json = [pscustomobject]@{ 'al.codeAnalyzers' = @() } | ConvertTo-Json -Depth 10
+    $noBomUtf8 = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::WriteAllText($settingsFile, $json, $noBomUtf8)
+}
+
 function Get-MutLineMapEntries {
     <#
         .SYNOPSIS
@@ -363,10 +391,12 @@ function Build-MutSchemata {
     }
 
     # The schemata compile must never be gated by the AUT's own human-code style rules: the
-    # generator's injected guard declarations (§6.4.7) do not follow them by design (live
-    # finding, first Tier B run: AA0072 on `MutationCore`). Compile the generated copy under a
-    # sibling ruleset that includes the configured one and downgrades just those rules to Info,
-    # instead of the configured ruleset directly.
+    # generator's injected guard declarations (§6.4.7) do not follow them by design, and after
+    # four different CodeCop rules tripped one at a time (AA0072, AA0021, ... -- docs/issues.md),
+    # downgrading rules one at a time turned out to be the wrong shape. The compile loop writes
+    # an empty `al.codeAnalyzers` list into the schemata tree (Write-MutSchemataAnalyzerSettings)
+    # so NO style analyzer runs against it at all; the sibling ruleset below (still written and
+    # still passed to -Ruleset) is kept only as a harmless second line of defence.
     $schemataRulesetFile = $null
     if ($rulesetFile) {
         $schemataRulesetFile = Write-MutSchemataRuleset -RulesetFile $rulesetFile
@@ -393,6 +423,10 @@ function Build-MutSchemata {
         # task), so it is deliberately NOT re-wrapped here.
         $mutants = Get-Content -Path (Join-Path $genDir 'mutants.json') -Raw | ConvertFrom-Json
         $lineMap = Get-Content -Path (Join-Path $genDir 'linemap.json') -Raw | ConvertFrom-Json
+
+        # No style analyzer may gate the schemata compile at all (see Write-MutSchemataAnalyzerSettings);
+        # the generator recreates the whole tree every iteration, so this is re-written every time too.
+        Write-MutSchemataAnalyzerSettings -SchemataDir $schemataDir
 
         $compileParams = @{
             Env  = $Env

@@ -164,6 +164,47 @@ Describe 'Build-MutSchemata: compile-error loop' {
         Should -Invoke -ModuleName Schemata Compile-MutApp -Times 2
     }
 
+    It 'writes an empty al.codeAnalyzers settings file into the generated schemata tree on every compile iteration' {
+        $script:callCount = 0
+        $script:settingsSnapshots = @()
+        $settingsFile = Join-Path $script:runDir 'gen/aut-schemata/.vscode/settings.json'
+        Mock -ModuleName Schemata Compile-MutApp {
+            $script:callCount++
+            $script:settingsSnapshots += , (Get-Content -Path $settingsFile -Raw)
+            if ($script:callCount -eq 1) {
+                return [pscustomobject]@{
+                    Success     = $false
+                    Diagnostics = @(
+                        [pscustomobject]@{ Severity = 'Error'; Code = 'AL0'; File = 'F.Codeunit.al'; Line = 12; Column = 1; Message = 'boom' }
+                    )
+                    AppFile     = $null
+                    DurationSec = 1.0
+                }
+            }
+            return [pscustomobject]@{
+                Success     = $true
+                Diagnostics = @()
+                AppFile     = 'C:/fake/schemata.app'
+                DurationSec = 1.0
+            }
+        }
+
+        Build-MutSchemata -Config $script:config -Env $script:envHandle -RunDir $script:runDir -RunNo 1 | Out-Null
+
+        (Test-Path $settingsFile) | Should -Be $true
+        $script:settingsSnapshots.Count | Should -Be 2
+
+        # BOM-less UTF-8: the first byte must not be the UTF-8 BOM (0xEF).
+        $firstByte = [System.IO.File]::ReadAllBytes($settingsFile)[0]
+        $firstByte | Should -Not -Be 0xEF
+
+        foreach ($snapshot in $script:settingsSnapshots) {
+            $settingsJson = $snapshot | ConvertFrom-Json
+            ($settingsJson.PSObject.Properties.Name | Sort-Object) | Should -Be @('al.codeAnalyzers')
+            @($settingsJson.'al.codeAnalyzers').Count | Should -Be 0
+        }
+    }
+
     It 'throws when a compile diagnostic does not map to any linemap block' {
         Mock -ModuleName Schemata Compile-MutApp {
             [pscustomobject]@{
