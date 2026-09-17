@@ -424,3 +424,75 @@ would need to run against that many guards have not been exercised even once. Th
 proven, reproducible mutation-score signal and the throughput headroom against the drift risk and the
 unproven scale-up, and writes `go` or `no-go` into this section themselves.
 
+## Schemata scaling curve
+
+*Date: 2026-09-18. Backend: DemoPortal. Environment: `mut-spike-02` (65eb4296-df3c-4ceb-a189-c3d029d701d0, BC 29).
+Source task: M7. All compiles read-only against the environment (symbol fetch only); `out/aut-original`
+(1,070 files, 120,203 lines — matches the figure recorded above) used unchanged throughout. AUT repo
+read-only verification: `git -C "Continia Banking" status --short` identical before and after (7 pre-existing
+modified lines + 3 untracked entries, none touched by this task).*
+
+**Wide curve** (`--max-mutants N`, whole app, no `--only-objects`):
+
+| label | mutants generated | compile sec | errors | warnings/info | `.app` produced | app size | `.al` lines (Δ) | lines/mutant |
+|---|---|---|---|---|---|---|---|---|
+| w-1364 | 1364 | 24 | 0 | 73 / 0 | yes | 4.56 MB | 129,994 (+9,791) | 7.18 |
+| w-5000 | 5000 | 22 | 0 | 73 / 0 | yes | 4.61 MB | 151,282 (+31,079) | 6.22 |
+| w-all (`--max-mutants 0`) | 15,012 | 15 (fails fast) | **36** | 0 / 0 | **no** | — | 191,616 (+71,413) | 4.76 |
+
+(15,012 vs the 15,058 recorded above under "Whole-app generation" is a ~0.3% drift from small AUT source
+changes between the two measurement dates, not investigated further.)
+
+w-1364 and w-5000 — the sampling default and well above it — compile barely slower than the 157-mutant pilot's
+11s, with a near-flat ~4.6 MB app. **w-all does not fail on size or an IL/method limit.** It fails fast (15s)
+on 36 real syntax errors — `AL0104` ("Syntax error, ':' expected", 15), `AL0224` ("Expression expected...",
+12), `AL0111` ("Semicolon expected...", 8), `AL0110` ("Orphaned ELSE statement...", 1) — all 36 in exactly one
+file, `PaymentMethodMapper.Codeunit.al`. Root cause, confirmed by reading the generated source: mutant id 1898
+(`DEL` on the `exit;` statement of `PopulatePaymentMethodsWithConflictCheck`, codeunit 72282417) sits inside a
+nested `if MutCond_2 then\n    if ConflictDetectSvc.DetectAllConflicts(...) then exit;` — an inner `if...then`
+**without `begin…end`** whose condition and statement share one physical source line. The generator's Shape-A
+statement-guard rewrite (§6.4.7) duplicated the full `if ConflictDetectSvc.DetectAllConflicts(...) then` prefix
+onto **every line** of the multi-line `case true of … end` replacement instead of inserting it once — a
+rewrite-offset bug in the generator for this specific nested-if code shape, not a compiler resource ceiling.
+Mutant id 1898 is confirmed absent from both `w-1364`'s and `w-5000`'s `mutants.json` (grep, zero matches) —
+neither smaller sample happened to draw it; its absence there is sampling luck, not evidence the bug is
+scale-gated, and nothing here rules out the same shape recurring elsewhere in the app.
+
+**Deep probe** (`--only-objects <top5 by mutant count from w-all> --max-mutants 0`):
+
+| rank | objectId | objectName | mutant count | largest single-procedure count |
+|---|---|---|---|---|
+| 1 | 71553638 | CTS-CB Payment Entry Mgt. | 521 | **53** (`SetQRInvoice`) |
+| 2 | 71553671 | CTS-CB Authentication | 476 | 29 (`CopyPmtMthMapToAccount`) |
+| 3 | 71553836 | CTS-CB Payment Allocation Mgt. | 349 | 33 (`CheckPaymentAllocationModificationAllowed`) |
+| 4 | 71553593 | CTS-CB Yapily Export | 322 | 37 (`SendPaymentFromRegister`) |
+| 5 | 71553697 | CTS-CB Bank Acc. Com. Setup | 250 | 33 (`SetDefaultCommunicationForAccount`) |
+
+d-top5: **1918 mutants**, 128,735 lines (+8,532, 4.45 lines/mutant — closest of any label to the pilot's 4.4),
+compile **29s, 0 errors, 73 warnings**, `.app` produced at 4.53 MB. **No per-method/IL limit was hit** at the
+densest concentration tested (53 mutants, and 53 added `MutCond_<n>: Boolean` locals plus nested `case true of`
+guard blocks, in one procedure).
+
+**Guard overhead (optional final step, run because w-1364 compiled with 0 errors).** Published w-1364's `.app`
+to `mut-spike-02`, PATCHed `mutationSetup(0)` to `activeMutantId = 0`, and ran codeunits 95155/95179/95191 once
+via `Invoke-MutTests`: 51/51 passed, wall clock **31.59s**. Restored the plain AUT (`out/aut-original`'s
+existing 29.0.0.0 `.app`) and re-ran the identical call: 51/51 passed, wall clock **32.59s**. Same-session,
+apples-to-apples ratio: **31.59 / 32.59 ≈ 0.97×** — no measurable slowdown, consistent with the guard-overhead
+finding above (22.4× only shows up in a synthetic tight loop, not in this suite). Note: this doc has no
+recorded combined-3-codeunit uninstrumented baseline to compare against — only a single-codeunit figure
+(`mut-spike-02 baseline (codeunit 95155)`: 13.4s) exists above; this task's own same-session plain-AUT
+measurement (32.59s, 51 tests) is the only true 3-codeunit uninstrumented figure available and is what the
+ratio uses. Environment restored: plain AUT published, 51/51 pass, `activeMutantId = 0` confirmed by a
+follow-up GET.
+
+**Finding.** The schemata approach scales cleanly through and beyond the production sampling default: 1364
+and 5000 mutants both compile in ~22–24s with 0 errors and a stable ~4.6 MB app, and concentrating up to 1918
+mutants into 5 objects (53 in one procedure) still compiles cleanly in 29s — the deep, per-method IL-limit
+failure mode this task set out to find was not observed at any tested concentration. It breaks only at the
+unsampled whole-app extreme, and not from size: it fails fast on a real generator rewrite bug in the
+statement-guard shape for a nested, un-blocked `if...then` sharing a line with its mutated statement, and it
+was sampling luck that neither production-realistic sample (1364, 5000) happened to draw the one mutant that
+exposes it. What would have to change: the Shape-A rewrite in §6.4.7 needs to insert the guard block once,
+after the un-blocked `if...then` prefix, not once per output line — a generator fix, paired with a survey of
+how many other candidates share this code shape before whole-app generation is trusted again.
+
