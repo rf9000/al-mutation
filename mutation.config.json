@@ -8,7 +8,7 @@
   "coreApp": { "path": "./core-app", "appId": "6f1d2c3a-8b4e-4d5f-9a6b-7c8d9e0f1a2b", "version": "1.0.0.0" },
   "permissionSets": [ { "id": "MUT Core All", "appId": "6f1d2c3a-8b4e-4d5f-9a6b-7c8d9e0f1a2b" } ],
   "workDir": "./out",
-  "generator": { "maxMutants": 0, "onlyObjects": [72918635], "seed": 1, "operators": ["REL", "BOOL", "NOT", "COND", "DEL", "INSFLAG"], "includeBreak": false },
+  "generator": { "maxMutants": 1364, "onlyObjects": [72918635], "seed": 1, "operators": ["REL", "BOOL", "NOT", "COND", "DEL", "INSFLAG"], "includeBreak": false },
   "schemata": { "publishStrategy": "same-version" },
   "timeouts": { "perTestFactor": 5, "minSeconds": 60, "jobOverheadSeconds": 0 },
   "demoPortal": { "profileId": "ff24b00b-ea9b-4311-8191-81b8370f0a0a", "activationAppId": "c3755ece-dab0-4d16-987d-040661f18522", "cliPath": "./.tools/continia.exe", "settleProbe": { "codeunitId": 95155, "functionName": "UpdatePlaceholderRows_EmptyInputs_BecomesNoMatchingAccounts" } }

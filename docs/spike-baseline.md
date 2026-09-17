@@ -1,8 +1,51 @@
 # Spike baseline
 
-Numbers recorded by each spike task, per §7.6 of `docs/SPEC.md`.
+Numbers recorded by each spike task, per §7.6 of `docs/SPEC.md`. This file is reorganised by T14 to open
+with a Summary a human can read once; every number recorded by earlier tasks is kept below, unmoved in
+substance, only reordered and annotated with its backend/environment.
+
+## Summary
+
+| Unknown | Answer | Detail |
+|---|---|---|
+| U1 (guard compile/publish cost) | 500 `case true of MutationCore.Active(n)` blocks compile in 26s and publish in 40s, 0 errors/0 warnings — fine at this scale. A real-AUT schemata compile (1,072 files, 157 guards for one codeunit, analyzers disabled) also compiled clean in ~11s. | §U1/U3 |
+| U2 (covering-test selection value) | **Provisional.** Measured on one AUT codeunit against a 3-test-codeunit scope only: in the pilot run, 73% of mutants (115/157) were selected from real baseline coverage rows and 27% (42/157) via the static reference-map fallback — both correctly confined to the configured scope after the M1 fix. Not validated across multiple codeunits or at Gate G1 scale. | §U7, Pilot run (run 6) |
+| U3 (guard runtime overhead) | 22.4× slowdown in a tight 100k-iteration loop — well above the 2× flag threshold in §3. A mitigation exists (cache `Active()` into a local Boolean) but was not applied: the pilot's real test run showed no observable slowdown, since tests are not hot loops. | §U1/U3 |
+| U4 (runner hooks fire, kills recorded) | **Yes.** `OnBeforeTestMethodRun`/`OnAfterTestMethodRun` fire under the DemoPortal test job; kills are recorded via an IsolatedStorage channel (the test session cannot read Mutation Core's own tables, even for a SUPER user). | §U4 |
+| U5 (job cancel / reset cost) | The CLI reliably exits on its own client-side timeout even when the underlying BC job never returns; a full `env stop`+`env start` reset costs ~219–288s plus a 32–106s settle/test-readiness probe — roughly 5 minutes end to end. | §U5 |
+| U6 (schemata replaces installed AUT) | `same-version` republish (CLI auto-unpublishes and reinstalls at the same id+version) works and is what ships. The only failure mode found (downgrade after an in-session upgrade) cannot occur under `same-version`. | §U6 |
+| U7 (fixed job cost, sampling input) | A single-method job costs ~9.3s; the whole 13-test codeunit costs 10.7s — too close to decompose "job overhead" from "test time" by subtraction. See Throughput below for how this feeds the sampling default. | §U7, Throughput and sampling |
+| U8 (API base / credentials) | The environment's own `url` (no `/BC` suffix) is the API base; the Automation API's permission-set field is `roleId`, not `permissionSetId` as SPEC originally assumed. | §U8 |
+| U9 (job id, CSV columns) | `test run --json` never exposes a job id; the CLI's non-JSON `--raw` mode prints `Test job started: N` instead. `test coverage`'s CSV has no header row and 5 positional columns, not the assumed 4. | §U9 |
+| Gate G0 | See the **Recommendation (DRAFT)** section at the end of this document — none of §8's three explicit no-go triggers fire, which is evidence for continuing, not a verdict. | Recommendation (DRAFT) |
+
+## Chronology
+
+The app under test changed three times during this project, and each time broke something that had never
+broken against the fixture. On **2026-09-08** the AUT's daily merge deleted the codeunits and test codeunit
+(72918690, 72918691, 95913) SPEC §1.1 had originally targeted, forcing Tier B onto codeunit 72918635/95155
+instead (T12). On **2026-09-16** the whole app moved from BC 28 to BC 29 (platform/application 29.0.0.0),
+which a BC 28.1 sandbox cannot compile against at all — this forced a second environment, `mut-spike-02`
+(T13/T13b), and blocked all 20 hand mutants until it existed. On **2026-09-17**, mid-project, an upstream
+deletion of codeunit "CTS-CB Req. Header Log Search" left the *installed* test suite referencing a codeunit
+no longer in source, producing an AL0185 dependent-recompile failure that aborted pilot run 5; the fix was
+to unpublish the stale test suite and start a fresh run (run 6). Separately, running the real generator against
+the real 1,072-file AUT (not the fixture) surfaced four distinct defects that never appeared against the
+fixture and were found one at a time, each blocking the next attempt: the tokenizer rejected the AL filter-OR
+operator `|` and the ternary operator `?` (T28 first attempt, fixed T21b); the schemata's injected
+`MutationCore` variable tripped the AUT's own strict CodeCop naming rule AA0072 (T28 second attempt); the
+generated ruleset meant to downgrade that rule was itself invalid per the AL compiler's ruleset schema, missing
+a required `name` property (T28 third attempt); and a third CodeCop rule, AA0021 (variable-declaration
+ordering), fired on the same injected variable once the first two were fixed (T28 fourth attempt). The
+whack-a-mole ended only when T25c disabled AL style analyzers entirely for the generated schemata tree,
+compiling it with the real AL compiler's error checks alone. The lesson: a fixture, however carefully built,
+cannot stand in for the real app's syntax variety or its style ruleset, and a project whose target keeps
+moving needs its pipeline to tolerate drift, not just prove a mechanism once against a fixed snapshot.
 
 ## Environment
+
+*Backend: DemoPortal throughout. Two environments: `mut-spike-01` (BC 28.1, Tier A fixture) and
+`mut-spike-02` (BC 29, Tier B real AUT, created 2026-09-17 after the BC-version move above).*
 
 | Metric | Value | Backend | Date | Source task |
 |---|---|---|---|---|
@@ -27,6 +70,9 @@ Numbers recorded by each spike task, per §7.6 of `docs/SPEC.md`.
 
 ## U1/U3
 
+*Backend: DemoPortal, environment `mut-spike-01` (BC 28.1, Tier A fixture) — `spikes/u1-guard-bench`, a
+synthetic 500-guard-block app, not the real AUT.*
+
 | Metric | Value | Backend | Date | Source task |
 |---|---|---|---|---|
 | compileSec | 25.99 (`spikes/u1-guard-bench/New-GuardBenchApp.ps1` generated app; `continia.exe compile spikes/u1-guard-bench/app --json --no-raw-output --env 30004698-209d-467c-96eb-9b412e9ee6ee` → `exitCode:0`, `errorCount:0`, `warningCount:0`, `diagnosticCounts.info:2`) | DemoPortal | 2026-09-16 | T10 |
@@ -37,6 +83,8 @@ Numbers recorded by each spike task, per §7.6 of `docs/SPEC.md`.
 | U3 verdict | **flag** — ratio 22.43 is far above the 2x threshold in §3's U3 mitigation ("If > 2x slowdown, `Active()` becomes a global-variable compare inside the AUT (id copied once per test)"); the 500-block `case true of MutationCore.Active(n)` guard as specified is not runtime-neutral and needs that mitigation before use at scale. Compile (25.99s) and publish (39.90s) for 500 guard blocks in one codeunit were both well within budget and produced 0 errors/0 warnings, so U1 (compiler/publish tolerance) is clean; only U3 (runtime overhead) is a concern. | DemoPortal | 2026-09-16 | T10 |
 
 ## U4
+
+*Backend: DemoPortal, environment `mut-spike-01` (BC 28.1, Tier A fixture) — `spikes/u4-runner-events`.*
 
 | Metric | Value | Backend | Date | Source task |
 |---|---|---|---|---|
@@ -51,6 +99,8 @@ Numbers recorded by each spike task, per §7.6 of `docs/SPEC.md`.
 
 ## U5
 
+*Backend: DemoPortal, environment `mut-spike-01` (BC 28.1, Tier A fixture) — `spikes/u5-u6`.*
+
 | Metric | Value | Backend | Date | Source task |
 |---|---|---|---|---|
 | cliExitedOnClientTimeout | yes — `spikes/u5-u6/Invoke-U5Spike.ps1` started `.tools/continia.exe test run 30004698-209d-467c-96eb-9b412e9ee6ee 50302 --timeout 30` (codeunit 50302 "MUT Fx U5 Spike Tests", `U5_InfiniteLoop`: `while true do Sleep(1000);`) via `Start-Process`; the CLI printed `Starting test: codeunit 50302` / `Test job started: 186` on stderr, then exited on its own after 36.9 s (within the 60 s outer wait budget; no `Stop-Process` was needed) printing `TIMEOUT: Test job timed out waiting for results` on stdout. Confirms F9: the CLI's `--timeout` is a real, working client-side wait that reliably ends the CLI process even though the underlying BC test job (with a true infinite loop) never itself completes — the CLI does not hang. | DemoPortal | 2026-09-15 | T11 |
@@ -64,6 +114,8 @@ Numbers recorded by each spike task, per §7.6 of `docs/SPEC.md`.
 | suiteAfterResetWithProbe | 9/9 pass, 0 failed, 246 ms — a full, non-probe `Invoke-MutTests` call on codeunit 50300 run immediately after the reset above (no retry needed this time): the test-readiness probe already confirmed the environment was accepting real test jobs before this call was made, unlike the bare `suiteAfterReset` row from T11 which needed a manual retry. | DemoPortal | 2026-09-17 | T11b |
 
 ## U6
+
+*Backend: DemoPortal, environment `mut-spike-01` (BC 28.1, Tier A fixture) — `spikes/u5-u6` and T22.*
 
 | Metric | Value | Backend | Date | Source task |
 |---|---|---|---|---|
@@ -80,6 +132,9 @@ Numbers recorded by each spike task, per §7.6 of `docs/SPEC.md`.
 
 ## U7
 
+*Backend: DemoPortal, environment `mut-spike-01` (BC 28.1) — Tier B baseline against the real AUT's
+codeunit 95155, run before `mut-spike-02` existed.*
+
 | Metric | Value | Backend | Date | Source task |
 |---|---|---|---|---|
 | single-method job s | 9.3 (codeunit 95155, procedure `UpdatePlaceholderRows_EmptyInputs_BecomesNoMatchingAccounts`; substituted for the brief's codeunit 95913 / `TestAuthGrantedAcc.Codeunit.al`, which does not exist in the current AUT checkout — see `docs/issues.md` T12 entry) | DemoPortal | 2026-09-08 | T12 |
@@ -88,6 +143,8 @@ Numbers recorded by each spike task, per §7.6 of `docs/SPEC.md`.
 | per-test median s | not computed (only 2 of the 2 target codeunits attempted; 95913 has 0 tests) — deferred to Gate G1 per §7.6 | DemoPortal | 2026-09-08 | T12 |
 
 ## U8
+
+*Backend: DemoPortal, environment `mut-spike-01` (BC 28.1).*
 
 | Metric | Value | Backend | Date | Source task |
 |---|---|---|---|---|
@@ -99,12 +156,17 @@ Numbers recorded by each spike task, per §7.6 of `docs/SPEC.md`.
 
 ## U9
 
+*Backend: DemoPortal, environment `mut-spike-01` (BC 28.1) — Tier B baseline (codeunit 95155).*
+
 | Metric | Value | Backend | Date | Source task |
 |---|---|---|---|---|
 | job id field name | not exposed by `test run --json` (top-level properties are exactly `status, passed, summary, tests`, confirming F18); exposed only in the CLI's human-mode (non-`--json`) text output as `Test job started: N` — `test coverage <envId> <N> --json` accepts that plain integer and returns `{envId, jobId, csv}` correctly. Static reference selection is therefore the only covering-test selector available from `test run --json` alone; a job id is still obtainable per test run via one extra human-mode CLI call if the orchestrator needs it live. | DemoPortal | 2026-09-08 | T12 |
 | CSV header line | **no header row** — every line of `test coverage --json`'s `csv` field, including the first, is a data row: `"Codeunit","50000","Object","0","0"`. 5 positional columns, not 4: `ObjectType` (`"Codeunit"` only, observed), `ObjectId`, a line-classification string (`"Object"`/`"Trigger/Function"`/`"Empty"`/`"Code"`, undocumented), `LineNo`, `Hits`. Full finding (columns, object ids observed, impact on §6.5.5's planned `ConvertFrom-MutCoverageCsv`) in `docs/issues.md`. `fixtures/coverage/sample.csv` is the first 200 raw lines of job 41's 1691-line CSV, verbatim. | DemoPortal | 2026-09-08 | T12 |
 
 ## Tier B baseline
+
+*Backend: DemoPortal, environment `mut-spike-01` (BC 28.1) — a real-AUT baseline taken before the BC 29
+move; superseded by `mut-spike-02`'s own baseline used in the Hand mutants and Pilot run sections below.*
 
 | Metric | Value | Backend | Date | Source task |
 |---|---|---|---|---|
@@ -150,6 +212,9 @@ Numbers recorded by each spike task, per §7.6 of `docs/SPEC.md`.
 
 ## Fixture run
 
+*Backend: DemoPortal, environment `mut-spike-01` (BC 28.1, Tier A fixture) — the §8 orchestrator-acceptance
+run, not Tier B.*
+
 `Invoke-MutationRun.ps1 -ConfigPath mutation.fixture.config.json -RunNo 1` (§8 orchestrator acceptance) against `mut-spike-01`. First attempts hit five live-only defects across the orchestrator and one in the generator (all fixed under this task, full detail in `docs/issues.md`); the numbers below are the final, clean run.
 
 | Metric | Value | Backend | Date | Source task |
@@ -167,6 +232,8 @@ Numbers recorded by each spike task, per §7.6 of `docs/SPEC.md`.
 | Live defects found and fixed (see `docs/issues.md` for full detail) | (1) `timeouts.minSeconds` too tight for the fixture's fast baseline (60→120s, precautionary); (2) `MutantLoop.psm1`'s `Invoke-MutTestsWithBudget` used `Start-Job`, which hung indefinitely spawning the backend CLI as a further child process — replaced with a background runspace; (3) a test run immediately after `Reset-MutEnvironment` twice returned an empty (0-test) result recorded as a false `Survived`/non-`Timeout` — fixed with a settle delay plus a retry-on-empty-result; (4) `Run.psm1`'s own `Build-MutSchemataStep` corrupted its `schemata.json` cache (a `ConvertFrom-Json`-sourced array re-serializes as `{"value":[...],"Count":N}` once nested) — fixed by rebuilding the array via `ForEach-Object` before caching; (5) `MutantLoop.psm1`'s `Survived` POST path was not idempotent across a resumed run (unlike `Killed`) — fixed by swallowing only an `EntityWithSameKeyExists` conflict; (6) `Run.psm1`'s `Ensure-MutEnvironment` skip path never primed the backend's own module-scoped CLI-path state, crashing the first `Invoke-MutApi` call of a run resumed past that step — fixed by always re-checking the environment cheaply; (7) `generator/src/generate.ts` gated BREAK candidates by BOTH `includeBreak` and membership in `--operators`, silently producing zero BREAK mutants for this task's own fixture-break config — fixed to gate BREAK by `includeBreak` alone; (8) `Run.psm1` never gave a compile-error mutant (e.g. BREAK) any row to report in the final export at all — fixed by threading `Schemata.psm1`'s new `ExcludedMutants` list through to `Export-MutResultsStep`; (9) `Run.psm1`'s `Push-MutManifest` checked only `id`, not the `MUT Mutant` table's actual unique index on `stableKey`, and crashed posting RunNo 2's differently-numbered manifest against an environment that already had RunNo 1's — fixed to also skip on an existing stableKey. All fixes covered by new/updated Pester or `node:test` unit tests; 194 orchestrator Pester tests and 105 generator tests green at the end | DemoPortal | 2026-09-09 | T27 |
 
 ## Pilot run (run 4, superseded — pre covering-test-scope fix)
+
+*Backend: DemoPortal, environment `mut-spike-02` (BC 29, Tier B real AUT) — codeunit 72918635.*
 
 **Superseded measurement.** Run 4 was measured before `afe9c6a` (`fix(orchestrator): reference-map fallback stays inside the configured test scope`) landed. It is kept here for the record and for the explicit before/after comparison in the run 6 section below, not as the current baseline.
 
@@ -223,5 +290,137 @@ Of the 20 hand mutants in `spikes/hand-mutants/results.json`, 6 are `Drift` (HM0
 | HM19 | 309 | DEL | Survived | id 220, statement deleted, Survived | Agree |
 | HM20 | 275 | BOOL | Survived | id 204, `(...) or (...)`, Survived | Agree |
 
-**13 of 14 agree exactly** (same status, equivalent mutated text). **HM06 disagrees**, but not on outcome — the generator never produced a candidate at line 403 (`if MismatchCount > 0 then begin`) at all. Confirmed by the generator's own id sequence in `results/6.json`: ids 238–240 cover line 399's `if ExactMatchCount > 0 then begin` (the first arm of the `if ... then begin ... end else if ... then begin` chain), and the very next ids, 241–243, jump straight to line 412's unrelated `if TotalFailed > 0 then` — no ids exist for line 403 at all, even though `MismatchCount` is real, undrifted source (verified by reading the live file) and structurally identical to the line-399 condition the generator did mutate. Root cause: the generator's candidate detector does not recognize a condition inside an AL `end else if <cond> then begin` (elsif-chain) arm as a mutable `if` condition — only the chain's first `if` gets mutated. This is a real, reproducible generator coverage gap (not a scope, drift, or flakiness issue) and worth a follow-up task to extend the AST candidate detector to elsif arms; not fixed under this task.
+**13 of 14 agree exactly** (same status, equivalent mutated text). **HM06 disagrees**, but not on outcome — the generator never produced a candidate at line 403 (`if MismatchCount > 0 then begin`) at all. Confirmed by the generator's own id sequence in `results/6.json`: ids 238–240 cover line 399's `if ExactMatchCount > 0 then begin` (the first arm of the `if ... then begin ... end else if ... then begin` chain), and the very next ids, 241–243, jump straight to line 412's unrelated `if TotalFailed > 0 then` — no ids exist for line 403 at all, even though `MismatchCount` is real, undrifted source (verified by reading the live file) and structurally identical to the line-399 condition the generator did mutate.
+
+**This is not a defect — it is the deliberate deferral recorded in SPEC §1.2** ("Mutating `if` conditions in `else if`, `then if`, `do if`, or case-branch position" — requires wrapping the whole `if` statement in `begin…end`, which needs compound-statement end detection not built in v1), implemented exactly as designed by the `position = statementList` rule in §6.4.3 (a condition is only mutated when the token before its `if` is `begin`, `;`, or `repeat`; an `else if` arm's condition has `position: other` and is excluded via `condition-position` in §6.4.6). The hand mutants independently found and quantified the size of this known operator-coverage gap: 1 of the 14 applicable hand mutants (≈7%) landed in an `else if` arm and had no generator counterpart. This belongs in the Recommendation below as a known, bounded gap, not as a generator bug to fix before Gate G0.
+
+## Whole-app generation (scale, measurement only)
+
+*Backend: none (local generator CLI only, no environment touched). Not part of the pilot; recorded because
+the number was captured live before the user directed the project to stay scoped to the one Tier B codeunit
+(see the ledger's M2 entry, 2026-09-17).*
+
+Running the generator with no `--only-objects` filter over the entire real AUT (1,072 `.al` files) produced
+**15,058 mutants in ≈90 seconds**. This shows mutant *generation* scales to the whole app without difficulty.
+It does **not** show that compiling or publishing a schemata of that size works: the whole-app schemata compile
+was started and then deliberately stopped by the user before completion, and its scratch output was removed.
+The only compile measurement that exists at any real-AUT scale is the pilot's own 157-guard schemata (one
+codeunit, 11s, 0 errors, analyzers disabled — see the Fixture/Pilot sections above and T25c in
+`docs/issues.md`). Compiling and publishing ~100× that many guards in one schemata build is untested.
+
+## Throughput and sampling
+
+*Backend: DemoPortal, environment `mut-spike-02` (BC 29, Tier B) — derived from the Pilot run (run 6)
+numbers above. Assumption throughout: sequential test jobs, one environment (§4 guardrail 8 forbids
+concurrent jobs; nothing in this project has measured parallel environments).*
+
+**Throughput.** Run 6 (the corrected-scope, current measurement) took 55m18s for 157 mutants: **21.1
+seconds/mutant** (21.14 precisely). At that rate, one environment running mutant jobs back-to-back manages:
+
+| Window | Mutants |
+|---|---|
+| 24 hours (informational only — nothing in this project runs unattended around the clock) | 86,400 / 21.1 ≈ **4,095 mutants/day** |
+| 8 working hours | 28,800 / 21.1 ≈ **1,365 mutants** |
+
+This 21.1 s/mutant figure is the *pilot's* per-mutant cost on a 1–3-test covering set; it does not include the
+one-time per-run costs (baseline, schemata compile/publish, environment settle) which are amortised over
+however many mutants a run covers, nor does it reflect a wider, unmeasured covering-test set on a different
+codeunit (U2 is provisional — see Summary).
+
+**Sampling default.** A whole-project run is far beyond one workday at this rate: the entire app generates
+15,058 mutants (see above); at 21.1 s/mutant that is 15,058 × 21.1s ≈ 317,724s ≈ **88 hours (≈3.7 days)** of
+continuous single-environment sequential execution — before even accounting for the unmeasured compile/publish
+cost at that scale. To keep one run inside an 8-hour window at the measured rate, `generator.maxMutants` is
+set to:
+
+```
+generator.maxMutants = 1364
+```
+
+(`floor(28800 / 21.1) = 1364`, in `mutation.config.json` — the only config change this task makes.)
+
+This is **9.1%** of the 15,058 mutants a whole-project generation produces (1364 / 15058). It has **no effect
+on the pilot's own scope**: codeunit 72918635 alone generates only 157 mutants, well under the 1,364 cap, so a
+single-codeunit run like the pilot is never sampled by this default — the cap only activates once a run's
+scope (via `onlyObjects`, or its absence) covers more than ~1,364 mutants' worth of code, e.g. several
+codeunits at once or the whole project. Whether 1,364 mutants drawn from across many codeunits behaves the
+same way the pilot's 157 mutants from one codeunit did (same score stability, same covering-set-size mix) is
+untested — this default only bounds wall-clock time, it does not validate sampling quality at scale.
+
+**`timeouts.jobOverheadSeconds`.** Left at its current value of **0** — not changed by this task. §U7's two
+numbers (a single-method job: 9.3s; the whole 13-test codeunit: 10.7s) are too close together to support a
+positive, safely-derived "job overhead" by subtraction: if the fixed per-job overhead were, say, 9s, the
+remaining ~0.3s would have to cover all 13 tests' actual execution time, which is implausibly low and would
+turn negative for a slower codeunit — the measurement does not decompose cleanly into "overhead" plus
+"test time." §6.5.6's `perTestFactor` (5×) and `minSeconds` (120, raised from 60 after the fixture-run
+timeout defect in `docs/issues.md`) already carry the safety margin for the timeout budget; adding an
+unproven subtracted constant on top would only remove margin, not add accuracy.
+
+## Recommendation (DRAFT — a human decides)
+
+**This section is a DRAFT.** It evaluates §8's Gate G0 rule against the recorded numbers and lays out the
+costs and unknowns a human should weigh. It does not itself say `go` or `no-go`; that verdict belongs to the
+human reader, written into this section.
+
+### §8 Gate G0, evaluated
+
+SPEC §8 states G0 is `no-go` if any of three conditions hold. None of the three fire:
+
+| # | No-go condition | Measured | Fires? |
+|---|---|---|---|
+| 1 | U4 shows events do not fire under the DemoPortal runner | Events fire; kills are recorded (§U4, live evidence: a deliberately-failing fixture test produced exactly one `Killed` row) | **No** |
+| 2 | ≥ 18 of the 20 hand mutants are killed (suite already strong → scale down to periodic manual audit) | 6 of 20 killed (30%); 6 of 14 applicable, non-drift mutants (43%) | **No** — far below 18/20 |
+| 3 | U7 implies fewer than ~200 mutants/day | ≈4,095 mutants/day at the measured 21.1 s/mutant, one environment, sequential jobs | **No** — ≈20× the floor |
+
+None of the three explicit triggers hold. That is evidence the project should not be stopped on the letter of
+§8's rule; it is not, by itself, proof the project should scale up, since §8 is a floor, not a target, and the
+costs and unproven items below are not part of the rule's own text.
+
+### Tier B mutation score, and what it says about the suite
+
+Run 6 (the current, reproducible measurement — 0 of 157 mutants changed status vs. the pre-scope-fix run 4):
+157 mutants, 62 Killed, 95 Survived, 0 Timeout/CompileError/Uncovered, **score 0.3949**. The hand-mutant
+cross-check (13 of 14 non-drift hand mutants agree with the generator's outcome at the same line) says this
+score is a trustworthy measurement of the real suite, not an artifact of how mutants happen to be generated —
+the one disagreement (HM06) is the known, deliberate `else if` operator-coverage gap from SPEC §1.2, not a
+defect (see the Hand-mutant cross-check section above). A 39% kill rate means the existing tests for this one
+codeunit (95155/95179/95191) let roughly 6 in 10 injected faults through undetected — a real, quantified gap
+in test quality for this slice of the app, not evidence either way about the rest of the 451-codeunit AUT.
+
+### Costs to weigh
+
+| Cost | Number | Note |
+|---|---|---|
+| Guard overhead, tight loop | 22.4× (36.1s guarded vs 1.6s unguarded / 100k iterations) | Exceeds the §3 2× flag threshold; mitigation (cache `Active()` locally per procedure entry) exists but is unapplied — the pilot's real tests showed no observable slowdown, since they are not hot loops |
+| Guard compile/publish (500 blocks, synthetic) | 26s / 40s | Comfortably inside budget |
+| Real-AUT schemata compile (157 guards, 1,072 files) | ~11s, 0 errors | The only compile measurement at real-app file-count scale; not at whole-project guard count |
+| Environment reset (mid-run recovery) | ~5 minutes (219–288s reset + 32–106s settle) | Paid every time a job times out or is force-reset in a long run |
+| Environment create+start (fresh) | ~10 minutes | One-time per new environment, not per run |
+| Full-suite baseline (all 181 test codeunits) | **Not yet measured** — Gate G1, blocked until a human writes `go` here | Unknown scaling risk; U2's median-savings figure also waits on this |
+| AUT-drift risk | See Chronology above | The AUT changed under this project 3 times in ~10 days (objects deleted, BC28→29, a mid-run dependent-recompile failure) and real code exercised syntax/style rules the fixture never had, surfacing 4 distinct defects only against real code. A longer, less-supervised run is more exposed to this kind of drift, not less. |
+
+### Not proven
+
+- **Schemata compile/publish at whole-project scale** — only 157 guards (one codeunit) have been compiled against the real 1,072-file tree; the 15,058-mutant whole-project schemata was never compiled or published (stopped by the user; see "Whole-app generation" above).
+- **Coverage-based selection beyond one codeunit** — U2 is provisional, measured on one AUT codeunit against a 3-test-codeunit scope only.
+- **The Docker backend** — interface-only stub, throws `NotImplemented`.
+- **Any second AUT codeunit, or a genuinely multi-codeunit run** — everything measured here is codeunit 72918635 alone.
+
+### DRAFT recommendation
+
+**DRAFT.** None of §8's three explicit no-go conditions fire: the runner hooks work and kills are recorded,
+the hand mutants show this suite is nowhere near already-adequate (6 of 20 killed, far under the 18-of-20
+"scale down" threshold), and the measured throughput (~4,095 mutants/day on one environment, sequential jobs)
+is roughly twenty times the 200/day floor. The pilot's mechanism has been proven twice over on real code — once
+reproducibly (run 4 and run 6, identical outcome on all 157 mutants across a real orchestrator fix) and once
+independently by hand (13 of 14 non-drift hand mutants agree with the generator, with the one disagreement
+being a known, bounded, and now-documented operator gap rather than a defect) — and it found a real, sizeable
+gap in the existing test suite (a 0.3949 score on real code). Weighed against that: guard overhead is more
+than ten times the project's own flag threshold in a tight loop (mitigated in design, not yet applied), the
+AUT changed shape three times in ten days in ways that broke the pipeline every time it touched real code
+rather than the fixture, and nothing here demonstrates the mechanism survives at whole-project scale — mutant
+generation does, at 15,058 mutants in 90 seconds, but the compile, publish, and coverage-selection steps that
+would need to run against that many guards have not been exercised even once. The human reader weighs the
+proven, reproducible mutation-score signal and the throughput headroom against the drift risk and the
+unproven scale-up, and writes `go` or `no-go` into this section themselves.
 
