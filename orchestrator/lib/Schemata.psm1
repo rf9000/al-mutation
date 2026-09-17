@@ -163,6 +163,72 @@ function New-MutGeneratorArguments {
     return , $arguments
 }
 
+function New-MutSchemataRulesetJson {
+    <#
+        .SYNOPSIS
+        Builds the JSON text (BOM-less UTF-8 target; the write itself happens in
+        Write-MutSchemataRuleset) for the generated schemata ruleset (§6.5.4 step 4, §6.5.1):
+        it includes the app's own configured ruleset by relative path (mirroring F12's
+        `.cli-ruleset-localdeploy.json` -> `./.cli-ruleset.json` style) and downgrades to Info
+        the two rules the generator's injected guard declarations (§6.4.7) would otherwise
+        trip: AA0072 (the `MutationCore` name does not follow the type-suffix naming
+        convention) and AA0137 (a `MutCond_<n>` declaration can be left unused once every
+        mutant of its condition is excluded by the compile-error loop).
+        .PARAMETER RulesetFileName
+        The bare file name (e.g. `.cli-ruleset-localdeploy.json`) of the configured ruleset --
+        this becomes `./<RulesetFileName>` in `includedRuleSets`.
+    #>
+    param([Parameter(Mandatory = $true)][string]$RulesetFileName)
+
+    $ruleset = [pscustomobject]@{
+        includedRuleSets = @(
+            [pscustomobject]@{ action = 'Default'; path = "./$RulesetFileName" }
+        )
+        rules            = @(
+            [pscustomobject]@{
+                id            = 'AA0072'
+                action        = 'Info'
+                justification = 'The generated guard declaration MutationCore: Codeunit "MUT Mut" (SPEC 6.4.7) intentionally does not follow the type-suffix naming convention.'
+            },
+            [pscustomobject]@{
+                id            = 'AA0137'
+                action        = 'Info'
+                justification = 'When the compile-error loop excludes every mutant of a condition, its MutCond_<n>: Boolean declaration can be left unused in the regenerated schemata; the app''s own code is unaffected because only the generated copy is compiled with this ruleset.'
+            }
+        )
+    }
+    return ($ruleset | ConvertTo-Json -Depth 10)
+}
+
+function Write-MutSchemataRuleset {
+    <#
+        .SYNOPSIS
+        Writes `<rulesets dir>/.cli-ruleset-schemata.json` (BOM-less UTF-8) next to the
+        configured ruleset file, so its `./<file>` relative include resolves exactly like the
+        AUT's own `.cli-ruleset-localdeploy.json` does (F12). Regenerating on every run is
+        deliberate (idempotent) rather than checking for an existing file first.
+        .PARAMETER RulesetFile
+        Full path to the configured ruleset (e.g. `<workDir>/rulesets/.cli-ruleset-localdeploy.json`).
+        .OUTPUTS
+        The full path to the generated schemata ruleset file.
+    #>
+    param([Parameter(Mandatory = $true)][string]$RulesetFile)
+
+    $rulesetDir = Split-Path -Path $RulesetFile -Parent
+    $rulesetFileName = Split-Path -Path $RulesetFile -Leaf
+    $schemataRulesetFile = Join-Path $rulesetDir '.cli-ruleset-schemata.json'
+
+    if (-not (Test-Path -Path $rulesetDir)) {
+        New-Item -ItemType Directory -Path $rulesetDir -Force | Out-Null
+    }
+
+    $json = New-MutSchemataRulesetJson -RulesetFileName $rulesetFileName
+    $noBomUtf8 = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::WriteAllText($schemataRulesetFile, $json, $noBomUtf8)
+
+    return $schemataRulesetFile
+}
+
 function Get-MutLineMapEntries {
     <#
         .SYNOPSIS
@@ -291,6 +357,16 @@ function Build-MutSchemata {
         $rulesetFile = Join-Path (Join-Path $Config.workDir 'rulesets') $Config.rulesets.file
     }
 
+    # The schemata compile must never be gated by the AUT's own human-code style rules: the
+    # generator's injected guard declarations (§6.4.7) do not follow them by design (live
+    # finding, first Tier B run: AA0072 on `MutationCore`). Compile the generated copy under a
+    # sibling ruleset that includes the configured one and downgrades just those rules to Info,
+    # instead of the configured ruleset directly.
+    $schemataRulesetFile = $null
+    if ($rulesetFile) {
+        $schemataRulesetFile = Write-MutSchemataRuleset -RulesetFile $rulesetFile
+    }
+
     $compileErrorIds = @()
     $excludedStableKeys = @()
     $excludedMutants = @()
@@ -317,8 +393,8 @@ function Build-MutSchemata {
             Env  = $Env
             Path = $schemataDir
         }
-        if ($rulesetFile) {
-            $compileParams['Ruleset'] = $rulesetFile
+        if ($schemataRulesetFile) {
+            $compileParams['Ruleset'] = $schemataRulesetFile
         }
 
         $compileResult = Compile-MutApp @compileParams

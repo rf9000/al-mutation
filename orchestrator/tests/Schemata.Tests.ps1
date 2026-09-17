@@ -271,15 +271,38 @@ Describe 'Build-MutSchemata: generator flags' {
         Should -Invoke -ModuleName Schemata Compile-MutApp -ParameterFilter {
             -not $Ruleset
         } -Times 1
+
+        # No generated schemata ruleset should exist anywhere under the fake workDir.
+        (Get-ChildItem -Path "$TestDrive/out" -Recurse -Filter '.cli-ruleset-schemata.json' -ErrorAction SilentlyContinue) | Should -BeNullOrEmpty
     }
 
-    It 'passes the resolved ruleset file to Compile-MutApp when config.rulesets is set' {
+    It 'writes a generated schemata ruleset next to the configured ruleset and passes it (not the configured ruleset) to Compile-MutApp' {
         $config = New-MutFakeConfig -WorkDir "$TestDrive/out" -Rulesets ([pscustomobject]@{ sourcePath = 'C:/x'; file = '.cli-ruleset-localdeploy.json' })
+        $expectedSchemataRuleset = Join-Path "$TestDrive/out/rulesets" '.cli-ruleset-schemata.json'
 
         Build-MutSchemata -Config $config -Env $script:envHandle -RunDir $script:runDir -RunNo 1 | Out-Null
 
         Should -Invoke -ModuleName Schemata Compile-MutApp -ParameterFilter {
-            $Ruleset -eq (Join-Path "$TestDrive/out/rulesets" '.cli-ruleset-localdeploy.json')
+            $Ruleset -eq $expectedSchemataRuleset
         } -Times 1
+
+        (Test-Path $expectedSchemataRuleset) | Should -Be $true
+
+        # BOM-less UTF-8: the first byte must not be the UTF-8 BOM (0xEF).
+        $firstByte = [System.IO.File]::ReadAllBytes($expectedSchemataRuleset)[0]
+        $firstByte | Should -Not -Be 0xEF
+
+        $rulesetJson = Get-Content -Path $expectedSchemataRuleset -Raw | ConvertFrom-Json
+        $rulesetJson.includedRuleSets.Count | Should -Be 1
+        $rulesetJson.includedRuleSets[0].action | Should -Be 'Default'
+        $rulesetJson.includedRuleSets[0].path | Should -Be './.cli-ruleset-localdeploy.json'
+
+        $rulesetJson.rules.Count | Should -Be 2
+        $aa0072 = $rulesetJson.rules | Where-Object { $_.id -eq 'AA0072' }
+        $aa0072.action | Should -Be 'Info'
+        $aa0072.justification | Should -Not -BeNullOrEmpty
+        $aa0137 = $rulesetJson.rules | Where-Object { $_.id -eq 'AA0137' }
+        $aa0137.action | Should -Be 'Info'
+        $aa0137.justification | Should -Not -BeNullOrEmpty
     }
 }
