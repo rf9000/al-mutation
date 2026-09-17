@@ -14,7 +14,10 @@ const TWO_CHAR_OPERATORS: readonly string[] = [
   '/=',
 ];
 
-const ONE_CHAR_OPERATORS: ReadonlySet<string> = new Set(['<', '>', '=', '+', '-', '*', '/', '.']);
+// `|` appears in AL filter expressions (e.g. `filter("A" | "B")`) and `?` is the AL conditional
+// (ternary) operator (e.g. `cond ? a : b`) -- both are real-world AL (§6.4.1, T21b); `:` in a
+// ternary is the existing `punct` colon, unchanged.
+const ONE_CHAR_OPERATORS: ReadonlySet<string> = new Set(['<', '>', '=', '+', '-', '*', '/', '.', '|', '?']);
 
 // `{` and `}` are only used for object bodies and property blocks (§6.4.2) and
 // are emitted as `punct` tokens alongside the characters listed in §6.4.1.

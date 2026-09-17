@@ -31,7 +31,7 @@ function loadSource(name: string): string {
   return readFileSync(path.join(fixturesDir, `${name}.al`), 'utf8');
 }
 
-const fixtures = ['comments-and-strings', 'operators', 'preprocessor'];
+const fixtures = ['comments-and-strings', 'operators', 'preprocessor', 'filter-and-ternary'];
 
 for (const name of fixtures) {
   test(`tokenize matches golden fixture: ${name}`, () => {
@@ -54,6 +54,46 @@ test('start/end offsets slice back to text for every token', () => {
       );
     }
   }
+});
+
+test('filter pipe "|" lexes as a standalone operator token (real-world AL, T21b)', () => {
+  // e.g. `where("External Code Type" = filter("Regulatory Reporting" | "Local Instrument"))`
+  const source = 'a := filter("A" | "B");';
+  const tokens = tokenize(source);
+  const kindsAndText = tokens.map((t) => ({ kind: t.kind, text: t.text }));
+  assert.deepEqual(kindsAndText, [
+    { kind: 'identifier', text: 'a' },
+    { kind: 'operator', text: ':=' },
+    { kind: 'identifier', text: 'filter' },
+    { kind: 'punct', text: '(' },
+    { kind: 'quotedIdentifier', text: '"A"' },
+    { kind: 'operator', text: '|' },
+    { kind: 'quotedIdentifier', text: '"B"' },
+    { kind: 'punct', text: ')' },
+    { kind: 'punct', text: ';' },
+  ]);
+});
+
+test('ternary "?" and ":" lex as separate operator/punct tokens (real-world AL, T21b)', () => {
+  // e.g. `OutputText := X.StartsWith('-') ? X.Substring(2) : '-' + X;`
+  const source = "a := b ? '1' : '2';";
+  const tokens = tokenize(source);
+  const kindsAndText = tokens.map((t) => ({ kind: t.kind, text: t.text }));
+  assert.deepEqual(kindsAndText, [
+    { kind: 'identifier', text: 'a' },
+    { kind: 'operator', text: ':=' },
+    { kind: 'identifier', text: 'b' },
+    { kind: 'operator', text: '?' },
+    { kind: 'string', text: "'1'" },
+    { kind: 'punct', text: ':' },
+    { kind: 'string', text: "'2'" },
+    { kind: 'punct', text: ';' },
+  ]);
+  // `?` and `:` must be two distinct tokens, not merged into one.
+  const questionToken = tokens.find((t) => t.text === '?');
+  const colonToken = tokens.find((t) => t.text === ':');
+  assert.ok(questionToken !== undefined && colonToken !== undefined);
+  assert.notEqual(questionToken!.start, colonToken!.start);
 });
 
 test('unterminated string throws with the line number', () => {

@@ -239,10 +239,17 @@ export function generate(options: GenerateOptions): GenerateResult {
   const allSkipped: Skip[] = [];
 
   for (const relPath of alFiles) {
-    const source = fs.readFileSync(path.join(options.autDir, relPath), 'utf8');
-    const { candidates, skipped } = generateCandidatesForFile(relPath, source, options);
-    allCandidates.push(...candidates);
-    allSkipped.push(...skipped);
+    // §6.4.9: one file's tokenizer error (or any other failure in this per-file step) must not
+    // abort the whole run -- it is recorded as a skip and the remaining files still generate.
+    try {
+      const source = fs.readFileSync(path.join(options.autDir, relPath), 'utf8');
+      const { candidates, skipped } = generateCandidatesForFile(relPath, source, options);
+      allCandidates.push(...candidates);
+      allSkipped.push(...skipped);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      allSkipped.push({ file: relPath, line: 0, reason: `tokenize-error: ${message}` });
+    }
   }
 
   // §6.4.8: ids 1..N over the full enumeration (all files, requested operators), before any filter below.
@@ -269,24 +276,32 @@ export function generate(options: GenerateOptions): GenerateResult {
 
   const schemataDir = path.join(options.outDir, 'aut-schemata');
   for (const relPath of allFiles) {
-    const srcAbs = path.join(options.autDir, relPath);
-    const destAbs = path.join(schemataDir, relPath);
-    fs.mkdirSync(path.dirname(destAbs), { recursive: true });
+    // Any error escaping this per-file step must name the relative file path (§6.4.9) -- this
+    // step still aborts the run (unlike the tokenize step above), since a file reaching here
+    // already tokenized and generated candidates successfully, so a failure here is unexpected.
+    try {
+      const srcAbs = path.join(options.autDir, relPath);
+      const destAbs = path.join(schemataDir, relPath);
+      fs.mkdirSync(path.dirname(destAbs), { recursive: true });
 
-    if (relPath === 'app.json') {
-      const source = fs.readFileSync(srcAbs, 'utf8');
-      fs.writeFileSync(destAbs, patchAppJson(source, options), 'utf8');
-      continue;
-    }
+      if (relPath === 'app.json') {
+        const source = fs.readFileSync(srcAbs, 'utf8');
+        fs.writeFileSync(destAbs, patchAppJson(source, options), 'utf8');
+        continue;
+      }
 
-    const mutantsForFile = selectedByFile.get(relPath);
-    if (mutantsForFile !== undefined) {
-      const source = fs.readFileSync(srcAbs, 'utf8');
-      const { output, lineMap: fileLineMap } = rewriteFile(source, mutantsForFile);
-      fs.writeFileSync(destAbs, output, 'utf8');
-      lineMap[relPath] = fileLineMap;
-    } else {
-      fs.copyFileSync(srcAbs, destAbs);
+      const mutantsForFile = selectedByFile.get(relPath);
+      if (mutantsForFile !== undefined) {
+        const source = fs.readFileSync(srcAbs, 'utf8');
+        const { output, lineMap: fileLineMap } = rewriteFile(source, mutantsForFile);
+        fs.writeFileSync(destAbs, output, 'utf8');
+        lineMap[relPath] = fileLineMap;
+      } else {
+        fs.copyFileSync(srcAbs, destAbs);
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      throw new Error(`${relPath}: ${message}`);
     }
   }
 
