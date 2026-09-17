@@ -24,9 +24,9 @@ Output: a mutation score and a survivor list, exported as files in `results/`.
 | Item | Value |
 |---|---|
 | AUT source (read-only) | `C:\GeneralDev\AL\Continia Banking Master\Continia Banking\base-application` |
-| AUT app id / version | `83461f48-dd16-49ea-b00c-e656830c640f` / `28.5.0.0` |
+| AUT app id / version | `83461f48-dd16-49ea-b00c-e656830c640f` / `29.0.0.0` (was `28.5.0.0` on 2026-09-07) |
 | AUT id ranges | 71553575–71553874, 72282325–72282424, 72282525–72282574, 72918625–72918824 |
-| AUT runtime / platform / target | `17.0` / `28.0.0.0` / `Cloud` |
+| AUT runtime / platform / target | `18.0` / `29.0.0.0` / `Cloud` (was `17.0` / `28.0.0.0`; the AUT moved to BC 29 around 2026-09-16, which forced a second environment — see §1.1) |
 | Test app source (read-only) | `C:\GeneralDev\AL\Continia Banking Master\Continia Banking\base-application-test` |
 | Test app id / id range | `02b81fad-90fa-4cdc-a414-5bda25e96db0` / 94999–95999 |
 | Rulesets (read-only) | `C:\GeneralDev\AL\Continia Banking Master\Continia Banking\Banking Rulesets\` — use `.cli-ruleset-localdeploy.json` |
@@ -49,8 +49,17 @@ fixture for generator and orchestrator.
 Test codeunit file: `Authentication\TestAuthShareDetect.Codeunit.al` (relative to the test app root). Test 95155 also
 references `CTS-CB Upgrade To 28xxx` and `CTS-CB Http Factory`; coverage rows for those objects are filtered out, not an error.
 **The AUT repo is a moving target** (the owning team merges daily; on 2026-09-08 the previously planned objects 72918690 /
-72918691 and test codeunit 95913 were no longer present). `Sync-MutAutCopy` snapshots the working tree at run time; every
-live task re-verifies that its target objects exist in the copy before using them and records drift in `docs/issues.md`.
+72918691 and test codeunit 95913 were no longer present, and by 2026-09-16 the whole app had moved from BC 28 to BC 29).
+`Sync-MutAutCopy` snapshots the working tree at run time; every live task re-verifies that its target objects exist in the
+copy before using them, checks that `app.json`'s `platform`/`application` still match the target environment's BC version,
+and records drift in `docs/issues.md`.
+
+**Two environments (2026-09-17).** `mut-spike-01` is a BC 28.1 sandbox and stays the Tier A (fixture) environment — the
+fixture apps and the §8 acceptance run live there. Tier B needs a BC 29 environment (`mut-spike-02`, profile
+`ff24b00b-ea9b-4311-8191-81b8370f0a0a`, build 29.0.54011.54239) because BC refuses an app whose `platform`/`application`
+is newer than the server. `mutation.fixture.config.json` points at `mut-spike-01`, `mutation.config.json` at `mut-spike-02`.
+Mutation Core (platform 28.0.0.0, runtime 17.0) installs on both: BC accepts an app built against an older platform, and its
+Microsoft "Test Runner" 28.0.0.0 dependency is satisfied by the 29.x runner.
 
 **Gate G1 — full baseline.** Running all 181 test codeunits (baseline + coverage) is required before
 the first full mutation run, but only after the go decision at Gate G0 (§8). It is the last task in the list
