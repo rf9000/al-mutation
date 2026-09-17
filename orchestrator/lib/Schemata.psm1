@@ -480,7 +480,20 @@ function Build-MutSchemata {
     }
 
     $diagnosticsSummary = ($lastDiagnostics | Select-Object -First 10 | ForEach-Object { "$($_.Code): $($_.Message)" }) -join '; '
-    throw "Build-MutSchemata: compile did not succeed within $script:MaxIterations iteration(s); last CompileErrorIds: $($compileErrorIds -join ', '); last compile diagnostics: $diagnosticsSummary"
+    # M6: when the last Compile-MutApp call hit the CLI's run-level failure shape (or a row-level
+    # failure whose diagnostics[] came back empty), $diagnosticsSummary above is empty -- carry
+    # the compile result's own Code/ErrorMessage too (when present -- Test-MutHasProperty guards
+    # a mock or older caller that doesn't set them), so this throw is never just "last compile
+    # diagnostics: " with nothing else (docs/issues.md T13).
+    $lastCode = $null
+    if (Test-MutHasProperty $compileResult 'Code') {
+        $lastCode = $compileResult.Code
+    }
+    $lastErrorMessage = $null
+    if (Test-MutHasProperty $compileResult 'ErrorMessage') {
+        $lastErrorMessage = $compileResult.ErrorMessage
+    }
+    throw "Build-MutSchemata: compile did not succeed within $script:MaxIterations iteration(s); last CompileErrorIds: $($compileErrorIds -join ', '); Code: $lastCode; Message: $lastErrorMessage; last compile diagnostics: $diagnosticsSummary"
 }
 
 Export-ModuleMember -Function Build-MutSchemata

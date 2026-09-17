@@ -132,6 +132,26 @@ Describe 'Compile-MutApp' {
         $result.AppFile | Should -BeNullOrEmpty
     }
 
+    It 'returns Success=$false with Code and ErrorMessage from the single-object run-level failure shape (M6)' {
+        $dir = "$TestDrive/compile-run-level-failure"
+        New-Item -ItemType Directory -Path $dir | Out-Null
+
+        Mock -ModuleName DemoPortal Invoke-Continia {
+            [pscustomobject]@{
+                success = $false
+                error   = [pscustomobject]@{ code = 'symbol-fetch-failed'; message = 'dev-endpoint package failed validation (28.1.49838.50268)' }
+            }
+        }
+
+        $result = Compile-MutApp -Env $envHandle -Path $dir
+
+        $result.Success | Should -Be $false
+        $result.Code | Should -Be 'symbol-fetch-failed'
+        $result.ErrorMessage | Should -Be 'dev-endpoint package failed validation (28.1.49838.50268)'
+        $result.Diagnostics.Count | Should -Be 0
+        $result.AppFile | Should -BeNullOrEmpty
+    }
+
     It 'refuses an environment not named mut-*' {
         Mock -ModuleName DemoPortal Invoke-Continia { throw 'must not be called' }
 
@@ -240,6 +260,42 @@ Describe 'Publish-MutApp' {
         $result.Code | Should -Be 'compile-failed'
     }
 
+    It 'returns Success=$false with Code and ErrorMessage from the single-object run-level failure shape (M6)' {
+        Mock -ModuleName DemoPortal Invoke-Continia {
+            [pscustomobject]@{
+                success = $false
+                error   = [pscustomobject]@{ code = 'symbol-fetch-failed'; message = 'dev-endpoint package failed validation (28.1.49838.50268)' }
+            }
+        }
+
+        $result = Publish-MutApp -Env $envHandle -Path $script:dir
+
+        $result.Success | Should -Be $false
+        $result.Code | Should -Be 'symbol-fetch-failed'
+        $result.ErrorMessage | Should -Be 'dev-endpoint package failed validation (28.1.49838.50268)'
+        $result.Diagnostics.Count | Should -Be 0
+    }
+
+    It 'carries the row-level error string into ErrorMessage on the array path even with empty diagnostics (M6)' {
+        Mock -ModuleName DemoPortal Invoke-Continia {
+            @([pscustomobject]@{
+                app         = 'X'
+                compiled    = $true
+                published   = $false
+                code        = 'publish-failed'
+                diagnostics = @()
+                error       = "Extension compilation failed ... error AL0185: Codeunit 'Assert' is missing"
+            })
+        }
+
+        $result = Publish-MutApp -Env $envHandle -Path $script:dir
+
+        $result.Success | Should -Be $false
+        $result.Code | Should -Be 'publish-failed'
+        $result.Diagnostics.Count | Should -Be 0
+        $result.ErrorMessage | Should -Be "Extension compilation failed ... error AL0185: Codeunit 'Assert' is missing"
+    }
+
     It 'refuses an environment not named mut-*' {
         Mock -ModuleName DemoPortal Invoke-Continia { throw 'must not be called' }
 
@@ -300,6 +356,21 @@ Describe 'Publish-MutAppFile' {
         Mock -ModuleName DemoPortal Invoke-Continia { [pscustomobject]@{ success = $false } }
 
         (Publish-MutAppFile -Env $envHandle -AppFile 'C:/out/schemata.app').Success | Should -Be $false
+    }
+
+    It 'returns Success=$false with Code and ErrorMessage from the single-object run-level failure shape (M6)' {
+        Mock -ModuleName DemoPortal Invoke-Continia {
+            [pscustomobject]@{
+                success = $false
+                error   = [pscustomobject]@{ code = 'app-lock-held'; message = 'the file is locked by another process' }
+            }
+        }
+
+        $result = Publish-MutAppFile -Env $envHandle -AppFile 'C:/out/schemata.app'
+
+        $result.Success | Should -Be $false
+        $result.Code | Should -Be 'app-lock-held'
+        $result.ErrorMessage | Should -Be 'the file is locked by another process'
     }
 
     It 'refuses an environment not named mut-*' {

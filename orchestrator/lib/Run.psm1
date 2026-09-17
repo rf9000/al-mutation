@@ -388,21 +388,21 @@ function Publish-MutBaseline {
 
     $coreResult = Publish-MutApp -Env $Env -Path $Config.coreApp.path -AllowDowngrade
     if (-not $coreResult.Success) {
-        throw "Publish-MutBaseline: publishing Mutation Core (coreApp.path) failed. Diagnostics: $(($coreResult.Diagnostics | ConvertTo-Json -Depth 10 -Compress))"
+        throw "Publish-MutBaseline: publishing Mutation Core (coreApp.path) failed. Code: $($coreResult.Code); Message: $($coreResult.ErrorMessage); Diagnostics: $(($coreResult.Diagnostics | ConvertTo-Json -Depth 10 -Compress))"
     }
 
     $autPublishParams = @{ Env = $Env; Path = $autPath; AllowDowngrade = $true }
     if ($rulesetFile) { $autPublishParams['Ruleset'] = $rulesetFile }
     $autResult = Publish-MutApp @autPublishParams
     if (-not $autResult.Success) {
-        throw "Publish-MutBaseline: publishing aut-original failed. Diagnostics: $(($autResult.Diagnostics | ConvertTo-Json -Depth 10 -Compress))"
+        throw "Publish-MutBaseline: publishing aut-original failed. Code: $($autResult.Code); Message: $($autResult.ErrorMessage); Diagnostics: $(($autResult.Diagnostics | ConvertTo-Json -Depth 10 -Compress))"
     }
 
     $testAppPublishParams = @{ Env = $Env; Path = $testAppPath; AllowDowngrade = $true }
     if ($rulesetFile) { $testAppPublishParams['Ruleset'] = $rulesetFile }
     $testAppResult = Publish-MutApp @testAppPublishParams
     if (-not $testAppResult.Success) {
-        throw "Publish-MutBaseline: publishing test-app failed. Diagnostics: $(($testAppResult.Diagnostics | ConvertTo-Json -Depth 10 -Compress))"
+        throw "Publish-MutBaseline: publishing test-app failed. Code: $($testAppResult.Code); Message: $($testAppResult.ErrorMessage); Diagnostics: $(($testAppResult.Diagnostics | ConvertTo-Json -Depth 10 -Compress))"
     }
 
     foreach ($permissionSet in @($Config.permissionSets)) {
@@ -619,7 +619,7 @@ function Publish-MutSchemata {
     if ($strategy -eq 'same-version' -or $strategy -eq 'bump-build' -or $strategy -eq 'unpublish-test-app') {
         $publishFileResult = Publish-MutAppFile -Env $Env -AppFile $Schemata.AppFile
         if (-not $publishFileResult.Success) {
-            throw "Publish-MutSchemata: publishing the schemata app ($($Schemata.AppFile)) failed under publishStrategy '$strategy'."
+            throw "Publish-MutSchemata: publishing the schemata app ($($Schemata.AppFile)) failed under publishStrategy '$strategy'. Code: $($publishFileResult.Code); Message: $($publishFileResult.ErrorMessage)"
         }
     }
     else {
@@ -636,7 +636,7 @@ function Publish-MutSchemata {
         if ($rulesetFile) { $testAppPublishParams['Ruleset'] = $rulesetFile }
         $testAppResult = Publish-MutApp @testAppPublishParams
         if (-not $testAppResult.Success) {
-            throw "Publish-MutSchemata: republishing test-app after unpublish-test-app failed."
+            throw "Publish-MutSchemata: republishing test-app after unpublish-test-app failed. Code: $($testAppResult.Code); Message: $($testAppResult.ErrorMessage); Diagnostics: $(($testAppResult.Diagnostics | ConvertTo-Json -Depth 10 -Compress))"
         }
     }
 

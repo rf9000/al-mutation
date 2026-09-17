@@ -806,6 +806,33 @@ function ConvertTo-MutDiagnosticList {
     return , $list
 }
 
+function Test-MutIsCliRunLevelFailure {
+    <#
+        .SYNOPSIS
+        M6: `continia compile`/`deploy`/`publish` return one of two shapes on failure --
+        the normal per-app row (`error` is a plain string, alc's raw output) or, when the run
+        cannot even reach the per-app loop, a single object `{success: false, error: {code,
+        message}}` where `error` is itself an object. Detects the latter so callers can pull
+        `Code`/`ErrorMessage` out of it instead of reading an absent array's first row and
+        reporting Success=$false with nothing else (the defect behind three live
+        investigations: a run failing with "publishing failed. Diagnostics:" and no further
+        clue, root-caused only by re-running the CLI by hand to read error.code -- T13,
+        docs/issues.md).
+    #>
+    param($Response)
+
+    if (-not (Test-MutHasProperty $Response 'success')) {
+        return $false
+    }
+    if ($Response.success -ne $false) {
+        return $false
+    }
+    if (-not (Test-MutHasProperty $Response 'error')) {
+        return $false
+    }
+    return Test-MutHasProperty $Response.error 'code'
+}
+
 function Install-MutDependencies {
     <#
         .SYNOPSIS
@@ -837,8 +864,17 @@ function Compile-MutApp {
         diagnosticCounts.error -eq 0 and an app file being present. TimeoutSec (default 900,
         T25) is forwarded to Invoke-Continia's own process-level timeout: the real AUT compiles
         in ~70s, but the schemata build (many more mutated files) needs headroom.
+
+        M6: a run that cannot reach the per-app loop at all (e.g. symbol refresh failing before
+        alc ever runs) returns a single object `{success: false, error: {code, message}}`
+        instead of the normal row -- detected via Test-MutIsCliRunLevelFailure and mapped
+        straight to Code/ErrorMessage rather than falling through to an empty Diagnostics list.
+        On the normal row shape, the row's own `code`/`error` (a free-prose string, e.g. a
+        BC-side "Extension compilation failed ... error AL0185: ..." dependent-recompile
+        failure) are also always carried into Code/ErrorMessage, since diagnostics[] can be
+        empty even though alc reported a real failure.
         .OUTPUTS
-        [pscustomobject]@{ Success; Diagnostics; AppFile; DurationSec }
+        [pscustomobject]@{ Success; Diagnostics; AppFile; DurationSec; Code; ErrorMessage }
     #>
     param(
         [Parameter(Mandatory = $true)]
@@ -863,6 +899,17 @@ function Compile-MutApp {
     $result = Invoke-Continia -Arguments $arguments -TimeoutSec $TimeoutSec
     $durationSec = ((Get-Date) - $start).TotalSeconds
 
+    if (Test-MutIsCliRunLevelFailure $result) {
+        return [pscustomobject]@{
+            Success      = $false
+            Diagnostics  = @()
+            AppFile      = $null
+            DurationSec  = $durationSec
+            Code         = $result.error.code
+            ErrorMessage = $result.error.message
+        }
+    }
+
     $diagnostics = ConvertTo-MutDiagnosticList -Diagnostics $result.diagnostics
 
     $errorCount = 0
@@ -878,11 +925,23 @@ function Compile-MutApp {
 
     $success = ($errorCount -eq 0) -and ($null -ne $appFilePath)
 
+    $code = $null
+    if (Test-MutHasProperty $result 'code') {
+        $code = $result.code
+    }
+
+    $errorMessage = $null
+    if (Test-MutHasProperty $result 'error') {
+        $errorMessage = $result.error
+    }
+
     return [pscustomobject]@{
-        Success     = $success
-        Diagnostics = $diagnostics
-        AppFile     = $appFilePath
-        DurationSec = $durationSec
+        Success      = $success
+        Diagnostics  = $diagnostics
+        AppFile      = $appFilePath
+        DurationSec  = $durationSec
+        Code         = $code
+        ErrorMessage = $errorMessage
     }
 }
 
@@ -894,8 +953,18 @@ function Publish-MutApp {
         in the deploy run; this app is always the explicit target, so its row is first, per the
         task brief). TimeoutSec (default 900, T25) is forwarded to Invoke-Continia's own
         process-level timeout, same rationale as Compile-MutApp.
+
+        M6: a run that cannot reach the per-app loop at all (e.g. a dependency-not-on-env or
+        symbol-fetch-failed check firing before the array is ever built) returns a single
+        object `{success: false, error: {code, message}}` instead of the array -- detected via
+        Test-MutIsCliRunLevelFailure and mapped straight to Code/ErrorMessage, rather than
+        reading an absent first row and reporting Success=$false with an empty Diagnostics list
+        and no Code (the defect behind three live investigations, docs/issues.md T13). On the
+        normal array path, the row's own `error` (free prose, e.g. a BC-side "Extension
+        compilation failed ... error AL0185: ..." dependent-recompile failure) is always carried
+        into ErrorMessage too, since diagnostics[] can be empty even when the row failed.
         .OUTPUTS
-        [pscustomobject]@{ Success; Code; Diagnostics; DurationSec }
+        [pscustomobject]@{ Success; Code; Diagnostics; DurationSec; ErrorMessage }
     #>
     param(
         [Parameter(Mandatory = $true)]
@@ -927,6 +996,16 @@ function Publish-MutApp {
     $result = Invoke-Continia -Arguments $arguments -TimeoutSec $TimeoutSec
     $durationSec = ((Get-Date) - $start).TotalSeconds
 
+    if (Test-MutIsCliRunLevelFailure $result) {
+        return [pscustomobject]@{
+            Success      = $false
+            Code         = $result.error.code
+            Diagnostics  = @()
+            DurationSec  = $durationSec
+            ErrorMessage = $result.error.message
+        }
+    }
+
     $row = @($result) | Select-Object -First 1
 
     $diagnostics = @()
@@ -939,13 +1018,19 @@ function Publish-MutApp {
         $code = $row.code
     }
 
+    $errorMessage = $null
+    if (Test-MutHasProperty $row 'error') {
+        $errorMessage = $row.error
+    }
+
     $success = (Test-MutHasProperty $row 'published') -and ($row.published -eq $true)
 
     return [pscustomobject]@{
-        Success     = $success
-        Code        = $code
-        Diagnostics = $diagnostics
-        DurationSec = $durationSec
+        Success      = $success
+        Code         = $code
+        Diagnostics  = $diagnostics
+        DurationSec  = $durationSec
+        ErrorMessage = $errorMessage
     }
 }
 
@@ -954,8 +1039,14 @@ function Publish-MutAppFile {
         .SYNOPSIS
         `publish <envId> <AppFile> [--sync-mode <SyncMode>] --json` (§6.5.3): publishes a
         pre-built .app file directly (no compile step), e.g. the schemata build.
+
+        M6: on failure, detects the same `{success: false, error: {code, message}}` run-level
+        envelope (Test-MutIsCliRunLevelFailure) the array-shaped commands use and maps it to
+        Code/ErrorMessage; a flat `code`/`error` on the response itself (mirroring a deploy
+        row) is carried the same way, so a caller never sees a bare Success=$false with no
+        indication of why.
         .OUTPUTS
-        [pscustomobject]@{ Success; DurationSec }
+        [pscustomobject]@{ Success; DurationSec; Code; ErrorMessage }
     #>
     param(
         [Parameter(Mandatory = $true)]
@@ -979,11 +1070,32 @@ function Publish-MutAppFile {
     $result = Invoke-Continia -Arguments $arguments
     $durationSec = ((Get-Date) - $start).TotalSeconds
 
+    if (Test-MutIsCliRunLevelFailure $result) {
+        return [pscustomobject]@{
+            Success      = $false
+            DurationSec  = $durationSec
+            Code         = $result.error.code
+            ErrorMessage = $result.error.message
+        }
+    }
+
     $success = (Test-MutHasProperty $result 'success') -and ($result.success -eq $true)
 
+    $code = $null
+    if (Test-MutHasProperty $result 'code') {
+        $code = $result.code
+    }
+
+    $errorMessage = $null
+    if (Test-MutHasProperty $result 'error') {
+        $errorMessage = $result.error
+    }
+
     return [pscustomobject]@{
-        Success     = $success
-        DurationSec = $durationSec
+        Success      = $success
+        DurationSec  = $durationSec
+        Code         = $code
+        ErrorMessage = $errorMessage
     }
 }
 

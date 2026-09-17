@@ -413,3 +413,39 @@ Describe 'Invoke-MutRunPipeline (fully mocked backend/lib boundary)' {
         }
     }
 }
+
+Describe 'Publish-MutBaseline error surfacing (M6)' {
+    <#
+        .SYNOPSIS
+        Task M6: this defect cost three live investigations -- a publish/compile failure
+        reported only "publishing failed. Diagnostics:" with an empty list, and the actual
+        cause (the CLI's error.code / error message) had to be found by re-running the CLI by
+        hand. Publish-MutApp now surfaces Code/ErrorMessage for both CLI response shapes
+        (§6.5.3, F12); this test focuses on Publish-MutBaseline's own throw message actually
+        including them, mocked at the Publish-MutApp boundary rather than through the whole
+        Invoke-MutRunPipeline.
+    #>
+    BeforeEach {
+        $script:WorkDir = "$TestDrive/work-$([guid]::NewGuid().ToString('N'))"
+        $script:RunDir = Join-Path $script:WorkDir 'runs/1'
+        New-Item -ItemType Directory -Path $script:RunDir -Force | Out-Null
+        $script:Config = New-MutRunTestConfig -WorkDir $script:WorkDir
+
+        Mock -ModuleName Run Install-MutDependencies { }
+    }
+
+    It 'includes the CLI Code and ErrorMessage when publishing the core app fails' {
+        Mock -ModuleName Run Publish-MutApp {
+            [pscustomobject]@{
+                Success      = $false
+                Code         = 'symbol-fetch-failed'
+                Diagnostics  = @()
+                DurationSec  = 0.1
+                ErrorMessage = 'dev-endpoint package failed validation (28.1.49838.50268)'
+            }
+        }
+
+        { Publish-MutBaseline -Config $script:Config -Env $script:EnvHandle -RunDir $script:RunDir } |
+            Should -Throw '*symbol-fetch-failed*dev-endpoint package failed validation*'
+    }
+}
