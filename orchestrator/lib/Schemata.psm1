@@ -167,8 +167,11 @@ function New-MutSchemataRulesetJson {
     <#
         .SYNOPSIS
         Builds the JSON text (BOM-less UTF-8 target; the write itself happens in
-        Write-MutSchemataRuleset) for the generated schemata ruleset (§6.5.4 step 4, §6.5.1):
-        it includes the app's own configured ruleset by relative path (mirroring F12's
+        Write-MutSchemataRuleset) for the generated schemata ruleset (§6.5.4 step 4, §6.5.1).
+        `name` is required by the AL ruleset loader (its absence is AL1033, "Required property
+        'name' not found in JSON" -- live finding, fix round 1, 2026-09-17); `description` is
+        conventional (mirrors F12's own ruleset, which has both). The ruleset includes the app's
+        own configured ruleset by relative path (mirroring F12's
         `.cli-ruleset-localdeploy.json` -> `./.cli-ruleset.json` style) and downgrades to Info
         the two rules the generator's injected guard declarations (§6.4.7) would otherwise
         trip: AA0072 (the `MutationCore` name does not follow the type-suffix naming
@@ -181,6 +184,8 @@ function New-MutSchemataRulesetJson {
     param([Parameter(Mandatory = $true)][string]$RulesetFileName)
 
     $ruleset = [pscustomobject]@{
+        name             = 'Mutation schemata ruleset'
+        description      = "Generated per run by Build-MutSchemata. Includes the app's local-deploy ruleset and downgrades analyzer rules that the generated guard code trips. The schemata app is generated, never shipped, and never read by humans."
         includedRuleSets = @(
             [pscustomobject]@{ action = 'Default'; path = "./$RulesetFileName" }
         )

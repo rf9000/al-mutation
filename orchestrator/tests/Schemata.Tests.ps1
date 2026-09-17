@@ -293,6 +293,14 @@ Describe 'Build-MutSchemata: generator flags' {
         $firstByte | Should -Not -Be 0xEF
 
         $rulesetJson = Get-Content -Path $expectedSchemataRuleset -Raw | ConvertFrom-Json
+
+        # The AL ruleset loader requires a top-level 'name' (AL1033 if absent); regression guard
+        # for the round-1 fix (2026-09-17): assert the exact top-level property set the loader
+        # expects, not just the two properties this module used to write.
+        ($rulesetJson.PSObject.Properties.Name | Sort-Object) | Should -Be @('description', 'includedRuleSets', 'name', 'rules')
+        $rulesetJson.name | Should -Be 'Mutation schemata ruleset'
+        $rulesetJson.description | Should -Not -BeNullOrEmpty
+
         $rulesetJson.includedRuleSets.Count | Should -Be 1
         $rulesetJson.includedRuleSets[0].action | Should -Be 'Default'
         $rulesetJson.includedRuleSets[0].path | Should -Be './.cli-ruleset-localdeploy.json'
