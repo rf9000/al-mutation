@@ -1,0 +1,275 @@
+﻿[
+    {
+        "id":  "HM01",
+        "operator":  "REL",
+        "file":  "Authentication\\Codeunit\\AuthShareDetection.Codeunit.al",
+        "line":  119,
+        "matchedLine":  120,
+        "status":  "Survived",
+        "seconds":  51.8,
+        "failedTests":  [
+
+                        ],
+        "note":  null
+    },
+    {
+        "id":  "HM02",
+        "operator":  "REL",
+        "file":  "Authentication\\Codeunit\\AuthShareDetection.Codeunit.al",
+        "line":  152,
+        "matchedLine":  153,
+        "status":  "Survived",
+        "seconds":  53.1,
+        "failedTests":  [
+
+                        ],
+        "note":  null
+    },
+    {
+        "id":  "HM03",
+        "operator":  "BOOL",
+        "file":  "Authentication\\Codeunit\\AuthShareDetection.Codeunit.al",
+        "line":  203,
+        "matchedLine":  204,
+        "status":  "Killed",
+        "seconds":  59.9,
+        "failedTests":  [
+                            "CTS-CB Test Auth Share Detect:DetectInCompany_WithFakeHttp_UnboundAccount_EmitsSystemNotMappedRow"
+                        ],
+        "note":  null
+    },
+    {
+        "id":  "HM04",
+        "operator":  "BOOL",
+        "file":  "Authentication\\Codeunit\\AuthShareDetection.Codeunit.al",
+        "line":  231,
+        "matchedLine":  null,
+        "status":  "Drift",
+        "seconds":  0,
+        "failedTests":  [
+
+                        ],
+        "note":  "source drift: HM04"
+    },
+    {
+        "id":  "HM05",
+        "operator":  "REL",
+        "file":  "Authentication\\Codeunit\\AuthShareDetection.Codeunit.al",
+        "line":  418,
+        "matchedLine":  399,
+        "status":  "Killed",
+        "seconds":  51.5,
+        "failedTests":  [
+                            "CTS-CB Test Auth Share Detect:UpdatePlaceholderRows_EmptyInputs_BecomesNoMatchingAccounts",
+                            "CTS-CB Test Auth Share Detect:UpdatePlaceholderRows_MismatchOnly_BecomesCommTypeMismatch",
+                            "CTS-CB Test Auth Share Detect:UpdatePlaceholderRows_SingleOtherBank_BecomesSystemNotMapped",
+                            "CTS-CB Test Auth Share Detect:UpdatePlaceholderRows_MultipleOtherBanks_OneRowPerBank",
+                            "CTS-CB Test Auth Share Detect:UpdatePlaceholderRows_UnidentifiedOnly_BecomesDetectionFailed",
+                            "CTS-CB Test Auth Share Detect:UpdatePlaceholderRows_MismatchAndOtherBank_BothEmitted"
+                        ],
+        "note":  null
+    },
+    {
+        "id":  "HM06",
+        "operator":  "REL",
+        "file":  "Authentication\\Codeunit\\AuthShareDetection.Codeunit.al",
+        "line":  422,
+        "matchedLine":  403,
+        "status":  "Killed",
+        "seconds":  50.6,
+        "failedTests":  [
+                            "CTS-CB Test Auth Share Detect:UpdatePlaceholderRows_EmptyInputs_BecomesNoMatchingAccounts",
+                            "CTS-CB Test Auth Share Detect:UpdatePlaceholderRows_SingleOtherBank_BecomesSystemNotMapped",
+                            "CTS-CB Test Auth Share Detect:UpdatePlaceholderRows_MultipleOtherBanks_OneRowPerBank",
+                            "CTS-CB Test Auth Share Detect:UpdatePlaceholderRows_UnidentifiedOnly_BecomesDetectionFailed"
+                        ],
+        "note":  null
+    },
+    {
+        "id":  "HM07",
+        "operator":  "REL",
+        "file":  "Authentication\\Codeunit\\AuthShareDetection.Codeunit.al",
+        "line":  431,
+        "matchedLine":  412,
+        "status":  "Killed",
+        "seconds":  54,
+        "failedTests":  [
+                            "CTS-CB Test Auth Share Detect:UpdatePlaceholderRows_EmptyInputs_BecomesNoMatchingAccounts",
+                            "CTS-CB Test Auth Share Detect:UpdatePlaceholderRows_ExactMatchOnly_BecomesReady",
+                            "CTS-CB Test Auth Share Detect:UpdatePlaceholderRows_MismatchOnly_BecomesCommTypeMismatch",
+                            "CTS-CB Test Auth Share Detect:UpdatePlaceholderRows_SingleOtherBank_BecomesSystemNotMapped",
+                            "CTS-CB Test Auth Share Detect:UpdatePlaceholderRows_MultipleOtherBanks_OneRowPerBank",
+                            "CTS-CB Test Auth Share Detect:UpdatePlaceholderRows_MismatchAndOtherBank_BothEmitted"
+                        ],
+        "note":  null
+    },
+    {
+        "id":  "HM08",
+        "operator":  "NOT",
+        "file":  "Authentication\\Codeunit\\AuthShareDetection.Codeunit.al",
+        "line":  434,
+        "matchedLine":  null,
+        "status":  "Drift",
+        "seconds":  0,
+        "failedTests":  [
+
+                        ],
+        "note":  "source drift: HM08"
+    },
+    {
+        "id":  "HM09",
+        "operator":  "REL",
+        "file":  "Authentication\\Codeunit\\AuthShareDetection.Codeunit.al",
+        "line":  443,
+        "matchedLine":  424,
+        "status":  "Survived",
+        "seconds":  50.3,
+        "failedTests":  [
+
+                        ],
+        "note":  null
+    },
+    {
+        "id":  "HM10",
+        "operator":  "REL",
+        "file":  "Authentication\\Codeunit\\AuthShareDetection.Codeunit.al",
+        "line":  493,
+        "matchedLine":  474,
+        "status":  "Survived",
+        "seconds":  49.8,
+        "failedTests":  [
+
+                        ],
+        "note":  null
+    },
+    {
+        "id":  "HM11",
+        "operator":  "DEL",
+        "file":  "Authentication\\Codeunit\\AuthShareDetection.Codeunit.al",
+        "line":  460,
+        "matchedLine":  null,
+        "status":  "Drift",
+        "seconds":  0,
+        "failedTests":  [
+
+                        ],
+        "note":  "source drift: HM11"
+    },
+    {
+        "id":  "HM12",
+        "operator":  "DEL",
+        "file":  "Authentication\\Codeunit\\AuthShareDetection.Codeunit.al",
+        "line":  526,
+        "matchedLine":  null,
+        "status":  "Drift",
+        "seconds":  0,
+        "failedTests":  [
+
+                        ],
+        "note":  "source drift: HM12"
+    },
+    {
+        "id":  "HM13",
+        "operator":  "DEL",
+        "file":  "Authentication\\Codeunit\\AuthShareDetection.Codeunit.al",
+        "line":  644,
+        "matchedLine":  625,
+        "status":  "Survived",
+        "seconds":  49.8,
+        "failedTests":  [
+
+                        ],
+        "note":  null
+    },
+    {
+        "id":  "HM14",
+        "operator":  "COND",
+        "file":  "Authentication\\Codeunit\\AuthShareDetection.Codeunit.al",
+        "line":  401,
+        "matchedLine":  null,
+        "status":  "Drift",
+        "seconds":  0,
+        "failedTests":  [
+
+                        ],
+        "note":  "source drift: HM14"
+    },
+    {
+        "id":  "HM15",
+        "operator":  "DEL",
+        "file":  "Authentication\\Codeunit\\AuthShareDetection.Codeunit.al",
+        "line":  577,
+        "matchedLine":  null,
+        "status":  "Drift",
+        "seconds":  0,
+        "failedTests":  [
+
+                        ],
+        "note":  "source drift: HM15"
+    },
+    {
+        "id":  "HM16",
+        "operator":  "REL",
+        "file":  "Authentication\\Codeunit\\AuthShareDetection.Codeunit.al",
+        "line":  211,
+        "matchedLine":  212,
+        "status":  "Killed",
+        "seconds":  52.8,
+        "failedTests":  [
+                            "CTS-CB Test Auth Share Detect:DetectInCompany_WithFakeHttp_UnboundAccount_EmitsSystemNotMappedRow"
+                        ],
+        "note":  null
+    },
+    {
+        "id":  "HM17",
+        "operator":  "REL",
+        "file":  "Authentication\\Codeunit\\AuthShareDetection.Codeunit.al",
+        "line":  84,
+        "matchedLine":  85,
+        "status":  "Killed",
+        "seconds":  53,
+        "failedTests":  [
+                            "CTS-CB Test Auth Share Detect:DetectInCompany_WithFakeHttp_UnboundAccount_EmitsSystemNotMappedRow"
+                        ],
+        "note":  null
+    },
+    {
+        "id":  "HM18",
+        "operator":  "NOT",
+        "file":  "Authentication\\Codeunit\\AuthShareDetection.Codeunit.al",
+        "line":  323,
+        "matchedLine":  304,
+        "status":  "Survived",
+        "seconds":  51.2,
+        "failedTests":  [
+
+                        ],
+        "note":  null
+    },
+    {
+        "id":  "HM19",
+        "operator":  "DEL",
+        "file":  "Authentication\\Codeunit\\AuthShareDetection.Codeunit.al",
+        "line":  328,
+        "matchedLine":  309,
+        "status":  "Survived",
+        "seconds":  49.7,
+        "failedTests":  [
+
+                        ],
+        "note":  null
+    },
+    {
+        "id":  "HM20",
+        "operator":  "BOOL",
+        "file":  "Authentication\\Codeunit\\AuthShareDetection.Codeunit.al",
+        "line":  274,
+        "matchedLine":  275,
+        "status":  "Survived",
+        "seconds":  51.1,
+        "failedTests":  [
+
+                        ],
+        "note":  null
+    }
+]

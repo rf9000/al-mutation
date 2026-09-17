@@ -218,7 +218,14 @@ Write-MutLog "Pristine copy hash (SHA256): $originalHash"
 
 $mutantsPath = Join-Path $PSScriptRoot 'mutants.json'
 $resultsPath = Join-Path $PSScriptRoot 'results.json'
-$mutants = @(Get-Content -Path $mutantsPath -Raw | ConvertFrom-Json)
+# NOTE: do not wrap `@()` directly around a `Get-Content | ConvertFrom-Json` pipeline in the same
+# statement -- on this host's Windows PowerShell 5.1 build (5.1.26100.9444), `@(pipeline)` applied
+# directly around ConvertFrom-Json's output collapses a 20-element JSON array into a single nested
+# element (reproduced deterministically, filed in docs/issues.md). Assigning the bare result first,
+# then wrapping the already-materialized variable in a separate statement, is safe and was verified
+# to consistently return the correct 20-element array.
+$mutantsParsed = ConvertFrom-Json -InputObject (Get-Content -Path $mutantsPath -Raw)
+$mutants = @($mutantsParsed)
 
 Write-MutLog "Loaded $($mutants.Count) mutants from $mutantsPath"
 

@@ -14,6 +14,16 @@ Numbers recorded by each spike task, per §7.6 of `docs/SPEC.md`.
 | depsInstallSec (test-app) | 1.6 | DemoPortal | 2026-09-08 | T12 |
 | autDeploySec | 73.0 (1,065 files; `continia deploy` direct CLI call, `--ruleset out/rulesets/.cli-ruleset-localdeploy.json --allow-downgrade --json`, exit 0, `published:true`) | DemoPortal | 2026-09-08 | T12 |
 | testAppDeploySec | 31.5 (`Publish-MutApp -AllowDowngrade`, `Success:true`) | DemoPortal | 2026-09-08 | T12 |
+| **mut-spike-02** Environment Id | 65eb4296-df3c-4ceb-a189-c3d029d701d0 (profile `ff24b00b-ea9b-4311-8191-81b8370f0a0a`, BC 29.0.0.0, build 29.0.54011.54239) | DemoPortal | 2026-09-17 | T13b |
+| mut-spike-02 create+start+apps-poll-settle wall clock | ≈10.3 min (11:30:43→11:40:59 local) — `New-MutEnvironment` created and started the environment and got past the apps-poll settle, but then **threw** inside `Wait-MutEnvironmentSettled`'s test-readiness probe (10 attempts × 30s) because `demoPortal.settleProbe` points at codeunit 95155/`UpdatePlaceholderRows_EmptyInputs_BecomesNoMatchingAccounts` — the AUT's *own* test codeunit, which cannot exist on a brand-new environment before the AUT+test app are ever deployed. Confirmed live: `test run <id> 95155 <function> --json --timeout 120` on the fresh env returned `summary.total:0` (codeunit not found, not a readiness problem). This chicken-and-egg gap never surfaced for `mut-spike-01` because it was already provisioned from earlier tasks (95155 already existed). See `docs/issues.md` T13b entry. | DemoPortal | 2026-09-17 | T13b |
+| mut-spike-02 activation app install + env use (manual completion) | 2.0s install (`deps install-by-id <id> c3755ece-dab0-4d16-987d-040661f18522 --json` → `installed:true, app.version:"29.0.0.0"`) + `env use <id>` (stderr confirmation, exit 0) — run directly via the CLI to complete the two steps `Start-MutEnvironment` never reached after the probe threw; `env get <id> --json` then confirmed `bcVersion:"29.0.0.0"`, `platformVersion/applicationVersion:"29.0.54011.54239"`, matching `out/aut-original/app.json`'s `platform`/`application` (`29.0.0.0`) | DemoPortal | 2026-09-17 | T13b |
+| mut-spike-02 depsInstallSec (aut-original) | 72.0 | DemoPortal | 2026-09-17 | T13b |
+| mut-spike-02 depsInstallSec (test-app) | 70.7 | DemoPortal | 2026-09-17 | T13b |
+| mut-spike-02 core-app publish | 10.4s, Success=true | DemoPortal | 2026-09-17 | T13b |
+| mut-spike-02 autDeploySec | 38.7 (`Publish-MutApp -Ruleset out/rulesets/.cli-ruleset-localdeploy.json -AllowDowngrade`, `Success:true`) | DemoPortal | 2026-09-17 | T13b |
+| mut-spike-02 testAppDeploySec | 54.0 (same ruleset/flags, `Success:true`) | DemoPortal | 2026-09-17 | T13b |
+| mut-spike-02 Grant-MutPermissionSet | 9.4s — `MUT Core All` granted to 4 users (RF, RB, EH, ADMIN), none already had it | DemoPortal | 2026-09-17 | T13b |
+| mut-spike-02 baseline (codeunit 95155) | 13/13 passed, 0 failed, 13.4s — matches T12's 13/13 baseline on `mut-spike-01` at BC 28.1; no regression from the BC 29 move | DemoPortal | 2026-09-17 | T13b |
 
 ## U1/U3
 
@@ -104,11 +114,39 @@ Numbers recorded by each spike task, per §7.6 of `docs/SPEC.md`.
 
 ## Hand mutants
 
-**BLOCKED — 0 of 20 mutants applied.** `Sync-MutAutCopy` pulled a fresh AUT snapshot whose `app.json` now declares `"version": "29.0.0.0"`, `"platform": "29.0.0.0"`, `"application": "29.0.0.0"` and all 5 Continia dependencies at `29.0.0.0` (up from `28.5.0.0` at T12, 2026-09-08 — the AUT is a genuine daily-merging moving target per §1.1, and it has now crossed a BC major-version boundary). `mut-spike-01` is a BC 28.1 sandbox (`bcVersion 28.1.0.0`, `platformVersion/applicationVersion 28.1.49838.50268`) and cannot serve or compile against 29.0.0.0 platform/application/dependency symbols. Every `Publish-MutApp`/`deploy` attempt against `out/aut-original` fails identically with `code: "symbol-fetch-failed"` for all 7 symbol dependencies (5 Continia apps + `Microsoft_Application`/`Microsoft_System`), including the two Microsoft platform packages whose currently-installed versions exactly match what BC actually has (28.1.49838.50268 / 28.0.50197.0) — ruling out an ordinary single-dependency version drift and confirming a structural platform-version gate instead. This blocks 100% of HM01-HM20 (all 20 live in the one AUT codeunit, `AuthShareDetection.Codeunit.al`) since none of them can even be compiled, let alone tested. Full diagnosis (deps install/download attempts, stale `.alpackages` cache elimination, a healthy-dev-endpoint control test against `core-app`, and the `env profiles versions` check confirming a BC 29.0.0.0 profile exists but creating a new environment is out of this task's `mut-spike-01`-only guardrail) is recorded in `docs/issues.md` (T13 entry, 2026-09-17). No mutant was ever written to the copy (the initial publish of the clean, unmutated AUT already failed, before the mutant loop started), so `spikes/hand-mutants/results.json` was never produced. `spikes/hand-mutants/mutants.json` and `spikes/hand-mutants/Invoke-HandMutants.ps1` are committed and are ready to run to completion the moment a BC-29-compatible environment (or an AUT source pinned back below 29.0.0.0) is available — no script changes are expected to be needed. AUT-repo read-only guardrail verified intact throughout: `git -C "Continia Banking" status --short` identical before/after (11 pre-existing lines), and SHA-256 of the three Tier B source files (`AuthShareDetection.Codeunit.al`, `TestAuthShareDetect.Codeunit.al`, `.cli-ruleset-localdeploy.json`) identical before/after. | Blocked (0/20 attempted; kill rate not computable) | DemoPortal | 2026-09-17 | T13 |
+**T13 (2026-09-17, `mut-spike-01`, BC 28.1): BLOCKED — 0 of 20 mutants applied.** `Sync-MutAutCopy` pulled a fresh AUT snapshot whose `app.json` now declares `"version": "29.0.0.0"`, `"platform": "29.0.0.0"`, `"application": "29.0.0.0"` and all 5 Continia dependencies at `29.0.0.0` (up from `28.5.0.0` at T12, 2026-09-08 — the AUT is a genuine daily-merging moving target per §1.1, and it has now crossed a BC major-version boundary). `mut-spike-01` is a BC 28.1 sandbox and cannot serve or compile against 29.0.0.0 platform/application/dependency symbols; every `Publish-MutApp`/`deploy` attempt failed with `code: "symbol-fetch-failed"`. Full diagnosis in `docs/issues.md` (T13 entry). This blocker is resolved by T13b below.
+
+**T13b (2026-09-17, `mut-spike-02`, BC 29.0.0.0): COMPLETE — 20 of 20 mutants applied, compiled, and tested.** Baseline (13/13, 0 failed) confirmed clean before the loop; final republish of the clean AUT copy afterward also passed 13/13, 0 failed, and its SHA-256 matched the pristine pre-loop hash exactly, so the copy was correctly restored. Six mutants drifted (their `find` text was not found on the given line or recurred elsewhere in the file at their exact given line per the harness's own rule for HM11-13/HM15-style ambiguous text — expected, since §6.6.5's line numbers predate the 2026-09-16 BC 29 move; this is recorded as drift, not failure, per the brief).
+
+| Id | Operator | Status | Seconds | Note |
+|---|---|---|---|---|
+| HM01 | REL | Survived | 51.8 | |
+| HM02 | REL | Survived | 53.1 | |
+| HM03 | BOOL | Killed | 59.9 | failed: `DetectInCompany_WithFakeHttp_UnboundAccount_EmitsSystemNotMappedRow` |
+| HM04 | BOOL | Drift | 0.0 | source drift |
+| HM05 | REL | Killed | 51.5 | 6 tests failed |
+| HM06 | REL | Killed | 50.6 | 4 tests failed |
+| HM07 | REL | Killed | 54.0 | 6 tests failed |
+| HM08 | NOT | Drift | 0.0 | source drift |
+| HM09 | REL | Survived | 50.3 | |
+| HM10 | REL | Survived | 49.8 | |
+| HM11 | DEL | Drift | 0.0 | source drift |
+| HM12 | DEL | Drift | 0.0 | source drift |
+| HM13 | DEL | Survived | 49.8 | |
+| HM14 | COND | Drift | 0.0 | source drift |
+| HM15 | DEL | Drift | 0.0 | source drift |
+| HM16 | REL | Killed | 52.8 | failed: `DetectInCompany_WithFakeHttp_UnboundAccount_EmitsSystemNotMappedRow` |
+| HM17 | REL | Killed | 53.0 | failed: `DetectInCompany_WithFakeHttp_UnboundAccount_EmitsSystemNotMappedRow` |
+| HM18 | NOT | Survived | 51.2 | |
+| HM19 | DEL | Survived | 49.7 | |
+| HM20 | BOOL | Survived | 51.1 | |
 
 | Metric | Value | Backend | Date | Source task |
 |---|---|---|---|---|
-| Gate G0 hand-mutant rule (>= 18 of 20 killed -> no-go) | **Not evaluable this run** — 0 of 20 mutants were compiled or tested (BLOCKED above), so neither "met" nor "not met" can be claimed; do not read this as evidence the suite is weak or strong. | DemoPortal | 2026-09-17 | T13 |
+| Totals | Killed 6, Survived 8, Drift 6, CompileError 0 (of 20) | DemoPortal | 2026-09-17 | T13b |
+| Kill rate | 30.0% (6/20); of the 14 non-drift mutants, 6/14 = 42.9% | DemoPortal | 2026-09-17 | T13b |
+| Gate G0 hand-mutant rule (>= 18 of 20 killed -> no-go) | **Not met** (6 < 18) — this criterion alone does not indicate the suite is already strong enough to warrant scaling down to a periodic manual audit; it does not by itself force either a `go` or `no-go` (other §8 G0 criteria — U4 events firing, U7's mutants/day throughput — are evaluated separately in the Recommendation section below) | DemoPortal | 2026-09-17 | T13b |
+| AUT repo read-only verification | `git -C "Continia Banking" status --short` identical before/after (same 11 pre-existing lines as T13); SHA-256 of `AuthShareDetection.Codeunit.al` identical before/after (`B6BF6C4FEF7F73EBA4A75EA43A6ADE8C69B20D2E2349F48FDBE6F8AE2AD87EFA`) | DemoPortal | 2026-09-17 | T13b |
 
 ## Fixture run
 
