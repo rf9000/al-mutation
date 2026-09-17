@@ -528,6 +528,160 @@ test('(h) two conditions in one procedure get MutCond_1 and MutCond_2, numbered 
   assertNoShortCircuitGuard(output);
 });
 
+// --- M8: a statement that shares its physical line with its own `if … then` ---
+// (§6.4.7 requirement: indentation must be the leading whitespace of the anchor's
+// physical line, never arbitrary preceding source text such as `if <cond> then `.)
+
+test('(i) M8: "if <cond> then exit;" on one physical line, DEL on exit: guard block indented by the line\'s whitespace, "if <cond> then" prefix emitted exactly once', () => {
+  const source = [
+    'codeunit 50210 "X"',
+    '{',
+    '    procedure Guard(Flag: Boolean)',
+    '    begin',
+    '        if Flag then exit;',
+    '    end;',
+    '}',
+    '',
+  ].join('\n');
+
+  const { ctx, span } = contextFor(source);
+  const statements: SimpleStatement[] = findSimpleStatements(ctx.tokens, span);
+  const exitStmt = statements.find(
+    (s) => ctx.source.slice(ctx.tokens[s.startIdx]!.start, ctx.tokens[s.endIdx]!.end) === 'exit',
+  );
+  assert.ok(exitStmt);
+
+  const del = DEL.apply(ctx, exitStmt!);
+  assert.equal(del.length, 1);
+  const candidates: MutantCandidate[] = [withId(del[0]!, 1)];
+
+  const { output } = rewriteFile(source, candidates);
+
+  const expected = [
+    'codeunit 50210 "X"',
+    '{',
+    '    procedure Guard(Flag: Boolean)',
+    '    var',
+    '        MutationCore: Codeunit "MUT Mut";',
+    '    begin',
+    '        if Flag then case true of',
+    '            MutationCore.Active(1):',
+    '                begin',
+    '                end;',
+    '            else',
+    '                exit;',
+    '        end;',
+    '    end;',
+    '}',
+    '',
+  ].join('\n');
+
+  assert.equal(output, expected, 'the "if Flag then " prefix must be emitted exactly once, not repeated on every guard-block line');
+  assertNoShortCircuitGuard(output);
+});
+
+test('(j) M8: same shared-line shape with a non-DEL statement mutant (INSFLAG)', () => {
+  const source = [
+    'codeunit 50210 "X"',
+    '{',
+    '    procedure Guard(Flag: Boolean; var FxOrder: Record "MUT Fx Order")',
+    '    var',
+    '        Dummy: Integer;',
+    '    begin',
+    '        if Flag then FxOrder.Modify(true);',
+    '    end;',
+    '}',
+    '',
+  ].join('\n');
+
+  const { ctx, span } = contextFor(source);
+  const [stmt] = findSimpleStatements(ctx.tokens, span);
+  assert.ok(stmt);
+
+  const insflag = INSFLAG.apply(ctx, stmt!);
+  assert.equal(insflag.length, 1);
+  const candidates: MutantCandidate[] = [withId(insflag[0]!, 1)];
+
+  const { output } = rewriteFile(source, candidates);
+
+  const expected = [
+    'codeunit 50210 "X"',
+    '{',
+    '    procedure Guard(Flag: Boolean; var FxOrder: Record "MUT Fx Order")',
+    '    var',
+    '        Dummy: Integer;',
+    '        MutationCore: Codeunit "MUT Mut";',
+    '    begin',
+    '        if Flag then case true of',
+    '            MutationCore.Active(1):',
+    '                FxOrder.Modify(false);',
+    '            else',
+    '                FxOrder.Modify(true);',
+    '        end;',
+    '    end;',
+    '}',
+    '',
+  ].join('\n');
+
+  assert.equal(output, expected);
+  assertNoShortCircuitGuard(output);
+});
+
+test('(k) M8: a statement preceded on its line by something other than "if … then" (an "else" arm)', () => {
+  const source = [
+    'codeunit 50210 "X"',
+    '{',
+    '    procedure Guard(Flag: Boolean)',
+    '    var',
+    '        Dummy: Integer;',
+    '    begin',
+    '        if Flag then',
+    '            Dummy := 1',
+    '        else exit;',
+    '    end;',
+    '}',
+    '',
+  ].join('\n');
+
+  const { ctx, span } = contextFor(source);
+  const statements: SimpleStatement[] = findSimpleStatements(ctx.tokens, span);
+  const exitStmt = statements.find(
+    (s) => ctx.source.slice(ctx.tokens[s.startIdx]!.start, ctx.tokens[s.endIdx]!.end) === 'exit',
+  );
+  assert.ok(exitStmt);
+
+  const del = DEL.apply(ctx, exitStmt!);
+  assert.equal(del.length, 1);
+  const candidates: MutantCandidate[] = [withId(del[0]!, 1)];
+
+  const { output } = rewriteFile(source, candidates);
+
+  const expected = [
+    'codeunit 50210 "X"',
+    '{',
+    '    procedure Guard(Flag: Boolean)',
+    '    var',
+    '        Dummy: Integer;',
+    '        MutationCore: Codeunit "MUT Mut";',
+    '    begin',
+    '        if Flag then',
+    '            Dummy := 1',
+    '        else case true of',
+    '            MutationCore.Active(1):',
+    '                begin',
+    '                end;',
+    '            else',
+    '                exit;',
+    '        end;',
+    '    end;',
+    '}',
+    '',
+  ].join('\n');
+
+  assert.equal(output, expected, 'the "else " prefix must be emitted exactly once, indentation must come from the line\'s leading whitespace, not the word "else"');
+  assertNoShortCircuitGuard(output);
+});
+
 // --- Additional acceptance assertions ---
 
 test('rewriteFile throws when a candidate has no id assigned', () => {

@@ -1,0 +1,41 @@
+[
+  {
+    "id": 1,
+    "stableKey": "afcd7f92b24281ea",
+    "objectType": "codeunit",
+    "objectId": 50260,
+    "objectName": "Case06 Cu",
+    "procedure": "Handle",
+    "line": 5,
+    "operator": "COND",
+    "original": "Flag",
+    "mutated": "true",
+    "file": "src/Case06Cu.Codeunit.al"
+  },
+  {
+    "id": 2,
+    "stableKey": "f1bc501762e25b9b",
+    "objectType": "codeunit",
+    "objectId": 50260,
+    "objectName": "Case06 Cu",
+    "procedure": "Handle",
+    "line": 5,
+    "operator": "COND",
+    "original": "Flag",
+    "mutated": "false",
+    "file": "src/Case06Cu.Codeunit.al"
+  },
+  {
+    "id": 3,
+    "stableKey": "e710aa7ef546c470",
+    "objectType": "codeunit",
+    "objectId": 50260,
+    "objectName": "Case06 Cu",
+    "procedure": "Handle",
+    "line": 6,
+    "operator": "DEL",
+    "original": "exit",
+    "mutated": "",
+    "file": "src/Case06Cu.Codeunit.al"
+  }
+]

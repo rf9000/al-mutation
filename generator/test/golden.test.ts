@@ -21,6 +21,7 @@ const CASES = [
   '03-del-insflag-positions',
   '04-exclusions',
   '05-fixture-aut',
+  '06-shared-line-if-then',
 ];
 
 function baseOptions(autDir: string, outDir: string): GenerateOptions {

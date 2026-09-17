@@ -511,7 +511,7 @@ case true of
         MutCond_<n> := <C>;
 end;
 ```
-For `if C then`: insert the block immediately before the `if` token (preceded by the same indentation as the `if` line) and replace `C` with `MutCond_<n>`. For `until C`: insert the block immediately before the `until` token; if the token before `until` is neither `;` nor `repeat`, insert `;` first; replace `C` with `MutCond_<n>`.
+For `if C then`: insert the block immediately before the `if` token (preceded by the same indentation as the `if` line) and replace `C` with `MutCond_<n>`. For `until C`: insert the block immediately before the `until` token; if the token before `until` is neither `;` nor `repeat`, insert `;` first; replace `C` with `MutCond_<n>`. "The same indentation as the … line" is normative: it is the leading *whitespace run* of that physical source line, never any non-whitespace text preceding the anchor token on that line — an inserted block starts at the anchor's own offset, so whatever precedes it (there is none for `if`/`until` positions, since only `statementList` conditions are mutated, §6.4.3) is unaffected either way.
 
 **Statement guard** (Shape A). For a simple statement `S` (text without its terminator) with candidates `m1..mk`:
 ```al
@@ -525,7 +525,7 @@ case true of
         <S>;
 end
 ```
-A DEL branch is `begin end;`. The original terminator (`;` or none) stays after `end`. The replacement occupies exactly the original statement's span, so it is valid in every statement position, including `then`/`else` branches and case branches, without introducing a dangling `else` (`case … end` is one statement).
+A DEL branch is `begin end;`. The original terminator (`;` or none) stays after `end`. The replacement occupies exactly the original statement's span, so it is valid in every statement position, including `then`/`else` branches and case branches, without introducing a dangling `else` (`case … end` is one statement). The replacement's edit begins at the statement `S`'s own offset — never earlier — so when `S` is not the first token on its physical line (e.g. `if C then S;`, or `S` in an `else`/`do`/case-branch position sharing its line with that keyword), whatever precedes `S` on that line stays put and is emitted exactly once; every subsequent line of the block (each `MutationCore.Active(...)`/branch/`else`/`end` line) is indented by that physical line's own leading whitespace plus the usual per-level step, never by the preceding source text (M8: a statement-guard block naively indented from "everything before `S` on its line" duplicated an un-blocked `if … then` prefix onto every line of the replacement).
 
 **Declarations.** For every procedure with at least one candidate, add to its `var` section (create `    var` before `begin` if absent):
 `        MutationCore: Codeunit "MUT Mut";` and one `        MutCond_<n>: Boolean;` per condition block. Never add unused declarations (some rulesets treat an unused local as an error). `MutationCore` intentionally does not follow the type-suffix naming convention, and being appended after a procedure's existing locals means it isn't always in var-ordering position either; the schemata compile exempts every style analyzer entirely (not just these two shapes) instead of changing this template or downgrading rules one at a time (§6.5.1, §6.5.4 step 4).

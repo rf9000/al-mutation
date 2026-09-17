@@ -54,13 +54,30 @@ function countNewlines(text: string): number {
 }
 
 /**
- * §6.4.7's "the same indentation" rule: the whitespace between the previous
- * newline and `tokenStart`, i.e. the indentation of the line `tokenStart`
- * sits on.
+ * §6.4.7's "the same indentation" rule: the indent prefix for a block must be
+ * whitespace only — the leading whitespace run of the physical line
+ * `tokenStart` sits on, never arbitrary preceding source text.
+ *
+ * This is deliberately *not* `source.slice(newlineIdx + 1, tokenStart)`: that
+ * slice is only ever pure whitespace when the anchor token is the first
+ * token on its line. When it is not (e.g. a statement candidate sharing its
+ * physical line with its own un-blocked `if … then`, or an `else`/`do`
+ * arm), that slice includes the literal preceding source text, which then
+ * gets duplicated onto every subsequent line of the emitted block (M8).
+ * Whatever precedes the anchor on the line (e.g. `if <cond> then `) is left
+ * untouched in the source and is emitted exactly once, by construction: an
+ * inserted block starts at the anchor's own offset and a replaced block's
+ * edit starts at the statement's own offset, so that prefix is never part of
+ * any edit.
  */
 function lineIndent(source: string, tokenStart: number): string {
   const newlineIdx = source.lastIndexOf('\n', tokenStart - 1);
-  return source.slice(newlineIdx + 1, tokenStart);
+  const lineStart = newlineIdx + 1;
+  let i = lineStart;
+  while (i < source.length && (source.charCodeAt(i) === 32 /* space */ || source.charCodeAt(i) === 9) /* tab */) {
+    i++;
+  }
+  return source.slice(lineStart, i);
 }
 
 function previousSignificantToken(tokens: readonly Token[], fromIdx: number): Token | undefined {
