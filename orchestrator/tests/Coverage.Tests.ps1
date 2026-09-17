@@ -102,7 +102,7 @@ Describe 'Get-MutCoveringTests' {
         }
         $references = @{ 50000 = @(50301) }
 
-        $result = Get-MutCoveringTests -Mutant $script:mutant -Coverage $coverage -References $references -TestCodeunits @(95155)
+        $result = Get-MutCoveringTests -Mutant $script:mutant -Coverage $coverage -References $references -TestCodeunits @(95155, 50301)
 
         $result | Should -Be @(50301)
     }
@@ -148,7 +148,7 @@ Describe 'Get-MutCoveringTests' {
         }
         $references = @{ 50000 = @(50301) }
 
-        $result = Get-MutCoveringTests -Mutant $script:mutant -Coverage $coverage -References $references -TestCodeunits @(95155)
+        $result = Get-MutCoveringTests -Mutant $script:mutant -Coverage $coverage -References $references -TestCodeunits @(95155, 50301)
 
         $result | Should -Be @(50301)
     }
@@ -157,9 +157,27 @@ Describe 'Get-MutCoveringTests' {
         $coverage = @{ byTestCodeunit = @{} }
         $references = @{ 50000 = @(50301, 50302) }
 
-        $result = Get-MutCoveringTests -Mutant $script:mutant -Coverage $coverage -References $references -TestCodeunits @(95155)
+        $result = Get-MutCoveringTests -Mutant $script:mutant -Coverage $coverage -References $references -TestCodeunits @(95155, 50301, 50302)
 
         $result | Should -Be @(50301, 50302)
+    }
+
+    It 'intersects the references fallback with TestCodeunits, preserving reference-map order, when only some referenced ids are configured' {
+        $coverage = @{ byTestCodeunit = @{} }
+        $references = @{ 50000 = @(95155, 95179, 95191) }
+
+        $result = Get-MutCoveringTests -Mutant $script:mutant -Coverage $coverage -References $references -TestCodeunits @(95155)
+
+        $result | Should -Be @(95155)
+    }
+
+    It 'returns an empty array (not the unfiltered reference list) when none of the referenced ids are configured' {
+        $coverage = @{ byTestCodeunit = @{} }
+        $references = @{ 50000 = @(95179, 95191) }
+
+        $result = Get-MutCoveringTests -Mutant $script:mutant -Coverage $coverage -References $references -TestCodeunits @(95155)
+
+        @($result).Count | Should -Be 0
     }
 
     It 'returns an empty array when neither coverage nor references match' {
@@ -192,7 +210,7 @@ Describe 'Get-MutCoveringTests' {
         $coverage = @{ byTestCodeunit = @{} }
         $references = @{ 50000 = @(50301) }
 
-        $result = Get-MutCoveringTests -Mutant $script:mutant -Coverage $coverage -References $references -TestCodeunits @(95155)
+        $result = Get-MutCoveringTests -Mutant $script:mutant -Coverage $coverage -References $references -TestCodeunits @(95155, 50301)
 
         ($result -is [array]) | Should -Be $true
         $result.Count | Should -Be 1

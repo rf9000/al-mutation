@@ -108,8 +108,15 @@ function Get-MutCoveringTests {
         LineNo -eq $Mutant.line, and Hits -gt 0 is a covering test -- per §6.5.5, "only
         LineType = Code rows carry meaningful Hits; selection uses those rows", so a non-Code
         row is never treated as covering even if it happens to carry Hits -gt 0. If none
-        qualify, falls back to $References[$Mutant.objectId]. If that is also absent, returns
-        an empty array.
+        qualify, falls back to $References[$Mutant.objectId] intersected with $TestCodeunits
+        (order preserved from the reference map) -- the reference map can name test codeunits
+        outside the configured scope, and those must never be selected: they have no baseline
+        duration (§6.5.4 step 3 only baselines $TestCodeunits) and so no correct timeout budget
+        (§6.5.6), and running them would report coverage from tests the run never claimed to
+        include (§6.5.5). If the intersection is empty -- either $References has no entry for
+        the objectId, or none of its ids are in $TestCodeunits -- returns an empty array; the
+        mutant is then Uncovered, which is the honest outcome when the configured suite does
+        not reach it.
 
         .OUTPUTS
         [int[]] test codeunit ids. Always an array, even for a single result (unary comma).
@@ -157,7 +164,8 @@ function Get-MutCoveringTests {
 
     foreach ($key in $References.Keys) {
         if ([int]$key -eq $objectId) {
-            return , [int[]]@($References[$key])
+            $inScope = @($References[$key]) | Where-Object { $TestCodeunits -contains [int]$_ }
+            return , [int[]]@($inScope)
         }
     }
 
