@@ -389,6 +389,9 @@ Describe 'Invoke-MutMutantLoop' {
         $results[0].Status | Should -Be 'Timeout'
 
         Should -Invoke -ModuleName MutantLoop Reset-MutEnvironment -Times 1
+        # T11b (spike U5): Reset-MutEnvironment must receive -Config so its test-readiness probe
+        # (Wait-MutEnvironmentSettled, backend-side) has a settleProbe target to poll.
+        Should -Invoke -ModuleName MutantLoop Reset-MutEnvironment -ParameterFilter { $Config -eq $script:Config } -Times 1
         Should -Invoke -ModuleName MutantLoop Invoke-MutApi -ParameterFilter { $Method -eq 'POST' } -Times 0
     }
 

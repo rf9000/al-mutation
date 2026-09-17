@@ -27,7 +27,7 @@ if (-not (Get-Command -Name 'Invoke-MutApi' -ErrorAction SilentlyContinue)) {
 }
 if (-not (Get-Command -Name 'Reset-MutEnvironment' -ErrorAction SilentlyContinue)) {
     function global:Reset-MutEnvironment {
-        param($Env)
+        param($Env, $Config)
         throw 'Reset-MutEnvironment: no backend module has been imported into this session.'
     }
 }
@@ -431,7 +431,7 @@ function Invoke-MutMutantLoop {
         $errorMessage = $null
 
         if ($outcome.TimedOut) {
-            Reset-MutEnvironment -Env $Env | Out-Null
+            Reset-MutEnvironment -Env $Env -Config $Config | Out-Null
             Start-MutPostResetSettle
             $status = 'Timeout'
         }

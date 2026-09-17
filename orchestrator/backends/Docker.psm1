@@ -52,7 +52,8 @@ function Remove-MutEnvironment {
 function Reset-MutEnvironment {
     param(
         [Parameter(Mandatory = $true)]
-        $Env
+        $Env,
+        $Config
     )
 
     throw [System.NotImplementedException]::new('Docker backend is not implemented in v1')

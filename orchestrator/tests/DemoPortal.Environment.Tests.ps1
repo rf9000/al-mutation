@@ -15,6 +15,24 @@ BeforeAll {
         }
     }
     $cfg = $script:cfg
+
+    # T11b (spike U5): a config carrying demoPortal.settleProbe, for tests of the
+    # test-readiness probe in Wait-MutEnvironmentSettled.
+    $script:cfgWithProbe = [pscustomobject]@{
+        backend = 'DemoPortal'
+        environmentName = 'mut-spike-01'
+        keepEnvironment = $true
+        demoPortal = [pscustomobject]@{
+            profileId = 'cc557829-71df-40ee-9516-98ca954d4b2f'
+            activationAppId = 'c3755ece-dab0-4d16-987d-040661f18522'
+            cliPath = './.tools/continia.exe'
+            settleProbe = [pscustomobject]@{
+                codeunitId = 50300
+                functionName = 'IsLargeOrder_Twelve_IsTrue'
+            }
+        }
+    }
+    $cfgWithProbe = $script:cfgWithProbe
 }
 
 Describe 'Get-MutEnvironment' {
@@ -201,6 +219,64 @@ Describe 'Start-MutEnvironment' {
         Should -Invoke -ModuleName DemoPortal Invoke-Continia -ParameterFilter { $Arguments[1] -eq 'apps' } -Times 2
     }
 
+    It 'T11b (spike U5): after settling, probes test-readiness (config demoPortal.settleProbe) until summary.total > 0, and records SettleProbeAttempts' {
+        $env = [pscustomobject]@{ Id = 'E1'; Name = 'mut-spike-01'; Url = 'https://x/E1'; Backend = 'DemoPortal'; Shared = $false; Status = 'Draft' }
+
+        $script:__probeGetCalls = 0
+        Mock -ModuleName DemoPortal Invoke-Continia -ParameterFilter { $Arguments[1] -eq 'get' } {
+            $script:__probeGetCalls++
+            if ($script:__probeGetCalls -eq 1) {
+                return [pscustomobject]@{ id = 'E1'; status = 'Draft'; description = 'mut-spike-01'; url = 'https://x/E1'; shared = $false }
+            }
+            return [pscustomobject]@{ id = 'E1'; status = 'Running'; description = 'mut-spike-01'; url = 'https://x/E1'; shared = $false }
+        }
+        Mock -ModuleName DemoPortal Invoke-Continia -ParameterFilter { $Arguments[1] -eq 'start' } { [pscustomobject]@{ ExitCode = 0; StdOut = ''; StdErr = '' } }
+        Mock -ModuleName DemoPortal Invoke-Continia -ParameterFilter { $Arguments[1] -eq 'install-by-id' } { [pscustomobject]@{ success = $true } }
+        Mock -ModuleName DemoPortal Invoke-Continia -ParameterFilter { $Arguments[1] -eq 'use' } { [pscustomobject]@{ ExitCode = 0; StdOut = ''; StdErr = '' } }
+        Mock -ModuleName DemoPortal Invoke-Continia -ParameterFilter { $Arguments[1] -eq 'apps' } { @([pscustomobject]@{ id = 'app1' }) }
+
+        $script:__probeTestCalls = 0
+        Mock -ModuleName DemoPortal Invoke-Continia -ParameterFilter { $Arguments[0] -eq 'test' -and $Arguments[1] -eq 'run' } {
+            $script:__probeTestCalls++
+            if ($script:__probeTestCalls -lt 3) {
+                return [pscustomobject]@{ summary = [pscustomobject]@{ total = 0 } }
+            }
+            return [pscustomobject]@{ summary = [pscustomobject]@{ total = 9 } }
+        }
+
+        $h = Start-MutEnvironment -Env $env -Config $cfgWithProbe
+
+        $h.SettleProbeAttempts | Should -Be 3
+
+        Should -Invoke -ModuleName DemoPortal Invoke-Continia -ParameterFilter {
+            $Arguments[0] -eq 'test' -and $Arguments[1] -eq 'run' -and $Arguments[2] -eq 'E1' -and
+            $Arguments[3] -eq $cfgWithProbe.demoPortal.settleProbe.codeunitId -and
+            $Arguments[4] -eq $cfgWithProbe.demoPortal.settleProbe.functionName
+        } -Times 3
+    }
+
+    It 'T11b (spike U5): throws when the test-readiness probe never reports summary.total > 0 after 10 attempts' {
+        $env = [pscustomobject]@{ Id = 'E1'; Name = 'mut-spike-01'; Url = 'https://x/E1'; Backend = 'DemoPortal'; Shared = $false; Status = 'Draft' }
+
+        $script:__probeThrowGetCalls = 0
+        Mock -ModuleName DemoPortal Invoke-Continia -ParameterFilter { $Arguments[1] -eq 'get' } {
+            $script:__probeThrowGetCalls++
+            if ($script:__probeThrowGetCalls -eq 1) {
+                return [pscustomobject]@{ id = 'E1'; status = 'Draft'; description = 'mut-spike-01'; url = 'https://x/E1'; shared = $false }
+            }
+            return [pscustomobject]@{ id = 'E1'; status = 'Running'; description = 'mut-spike-01'; url = 'https://x/E1'; shared = $false }
+        }
+        Mock -ModuleName DemoPortal Invoke-Continia -ParameterFilter { $Arguments[1] -eq 'start' } { [pscustomobject]@{ ExitCode = 0; StdOut = ''; StdErr = '' } }
+        Mock -ModuleName DemoPortal Invoke-Continia -ParameterFilter { $Arguments[1] -eq 'apps' } { @([pscustomobject]@{ id = 'app1' }) }
+        Mock -ModuleName DemoPortal Invoke-Continia -ParameterFilter { $Arguments[0] -eq 'test' -and $Arguments[1] -eq 'run' } {
+            [pscustomobject]@{ summary = [pscustomobject]@{ total = 0 } }
+        }
+
+        { Start-MutEnvironment -Env $env -Config $cfgWithProbe } | Should -Throw
+
+        Should -Invoke -ModuleName DemoPortal Invoke-Continia -ParameterFilter { $Arguments[0] -eq 'test' -and $Arguments[1] -eq 'run' } -Times 10
+    }
+
     It 'does not call env start, poll, or settle for an already-Running environment, but still installs the activation app and sets the workspace env' {
         $env = [pscustomobject]@{ Id = 'E1'; Name = 'mut-spike-01'; Url = 'https://x/E1'; Backend = 'DemoPortal'; Shared = $false; Status = 'Running' }
 
@@ -322,6 +398,59 @@ Describe 'Reset-MutEnvironment' {
 
         { Reset-MutEnvironment -Env $env } | Should -Throw
         Should -Invoke -ModuleName DemoPortal Invoke-Continia -Times 0
+    }
+
+    It 'T11b (spike U5): skips the test-readiness probe and warns when -Config is not given' {
+        $env = [pscustomobject]@{ Id = 'E1'; Name = 'mut-spike-01'; Url = 'https://x/E1'; Backend = 'DemoPortal'; Shared = $false }
+
+        $script:__resetNoConfigGetCalls = 0
+        Mock -ModuleName DemoPortal Invoke-Continia -ParameterFilter { $Arguments[1] -eq 'stop' } { [pscustomobject]@{ success = $true } }
+        Mock -ModuleName DemoPortal Invoke-Continia -ParameterFilter { $Arguments[1] -eq 'start' } { [pscustomobject]@{ success = $true } }
+        Mock -ModuleName DemoPortal Invoke-Continia -ParameterFilter { $Arguments[1] -eq 'get' } {
+            $script:__resetNoConfigGetCalls++
+            if ($script:__resetNoConfigGetCalls -eq 1) {
+                return [pscustomobject]@{ id = 'E1'; status = 'Stopped'; description = 'mut-spike-01'; url = 'https://x/E1'; shared = $false }
+            }
+            return [pscustomobject]@{ id = 'E1'; status = 'Running'; description = 'mut-spike-01'; url = 'https://x/E1'; shared = $false }
+        }
+        Mock -ModuleName DemoPortal Invoke-Continia -ParameterFilter { $Arguments[1] -eq 'apps' } { @([pscustomobject]@{ id = 'app1' }) }
+        Mock -ModuleName DemoPortal Invoke-Continia -ParameterFilter { $Arguments[0] -eq 'test' -and $Arguments[1] -eq 'run' } { throw 'must not be called: no Config was given to Reset-MutEnvironment' }
+
+        $result = Reset-MutEnvironment -Env $env -WarningVariable resetWarnings -WarningAction SilentlyContinue
+
+        $result.SettleProbeAttempts | Should -Be 0
+        $resetWarnings | Should -Not -BeNullOrEmpty
+        Should -Invoke -ModuleName DemoPortal Invoke-Continia -ParameterFilter { $Arguments[0] -eq 'test' -and $Arguments[1] -eq 'run' } -Times 0
+    }
+
+    It 'T11b (spike U5): probes test-readiness when -Config carries demoPortal.settleProbe, and records SettleProbeAttempts' {
+        $env = [pscustomobject]@{ Id = 'E1'; Name = 'mut-spike-01'; Url = 'https://x/E1'; Backend = 'DemoPortal'; Shared = $false }
+
+        $script:__resetProbeGetCalls = 0
+        Mock -ModuleName DemoPortal Invoke-Continia -ParameterFilter { $Arguments[1] -eq 'stop' } { [pscustomobject]@{ success = $true } }
+        Mock -ModuleName DemoPortal Invoke-Continia -ParameterFilter { $Arguments[1] -eq 'start' } { [pscustomobject]@{ success = $true } }
+        Mock -ModuleName DemoPortal Invoke-Continia -ParameterFilter { $Arguments[1] -eq 'get' } {
+            $script:__resetProbeGetCalls++
+            if ($script:__resetProbeGetCalls -eq 1) {
+                return [pscustomobject]@{ id = 'E1'; status = 'Stopped'; description = 'mut-spike-01'; url = 'https://x/E1'; shared = $false }
+            }
+            return [pscustomobject]@{ id = 'E1'; status = 'Running'; description = 'mut-spike-01'; url = 'https://x/E1'; shared = $false }
+        }
+        Mock -ModuleName DemoPortal Invoke-Continia -ParameterFilter { $Arguments[1] -eq 'apps' } { @([pscustomobject]@{ id = 'app1' }) }
+
+        $script:__resetProbeTestCalls = 0
+        Mock -ModuleName DemoPortal Invoke-Continia -ParameterFilter { $Arguments[0] -eq 'test' -and $Arguments[1] -eq 'run' } {
+            $script:__resetProbeTestCalls++
+            if ($script:__resetProbeTestCalls -lt 3) {
+                return [pscustomobject]@{ summary = [pscustomobject]@{ total = 0 } }
+            }
+            return [pscustomobject]@{ summary = [pscustomobject]@{ total = 9 } }
+        }
+
+        $result = Reset-MutEnvironment -Env $env -Config $cfgWithProbe
+
+        $result.SettleProbeAttempts | Should -Be 3
+        Should -Invoke -ModuleName DemoPortal Invoke-Continia -ParameterFilter { $Arguments[0] -eq 'test' -and $Arguments[1] -eq 'run' } -Times 3
     }
 }
 

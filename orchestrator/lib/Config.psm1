@@ -146,6 +146,15 @@ function Assert-MutConfigShape {
         Assert-MutNonEmptyString $Config.demoPortal 'profileId' 'demoPortal.profileId'
         Assert-MutNonEmptyString $Config.demoPortal 'activationAppId' 'demoPortal.activationAppId'
         Assert-MutNonEmptyString $Config.demoPortal 'cliPath' 'demoPortal.cliPath'
+
+        # T11b (spike U5): the test-readiness probe target for Wait-MutEnvironmentSettled.
+        Assert-MutRequiredKey $Config.demoPortal 'settleProbe' 'demoPortal.settleProbe'
+        Assert-MutRequiredKey $Config.demoPortal.settleProbe 'codeunitId' 'demoPortal.settleProbe.codeunitId'
+        $parsedProbeCodeunitId = 0
+        if (-not [int]::TryParse([string]$Config.demoPortal.settleProbe.codeunitId, [ref]$parsedProbeCodeunitId)) {
+            throw "Get-MutConfig: config key 'demoPortal.settleProbe.codeunitId' must be an integer."
+        }
+        Assert-MutNonEmptyString $Config.demoPortal.settleProbe 'functionName' 'demoPortal.settleProbe.functionName'
     }
 
     Assert-MutRequiredKey $Config 'permissionSets' 'permissionSets'

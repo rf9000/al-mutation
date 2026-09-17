@@ -46,7 +46,7 @@ BeforeAll {
             generator       = [ordered]@{ maxMutants = 0; onlyObjects = @(); seed = 1; operators = @('REL', 'BOOL'); includeBreak = $false }
             schemata        = [ordered]@{ publishStrategy = 'same-version' }
             timeouts        = [ordered]@{ perTestFactor = 5; minSeconds = 60; jobOverheadSeconds = 0 }
-            demoPortal      = [ordered]@{ profileId = 'cc557829-71df-40ee-9516-98ca954d4b2f'; activationAppId = 'c3755ece-dab0-4d16-987d-040661f18522'; cliPath = './.tools/continia.exe' }
+            demoPortal      = [ordered]@{ profileId = 'cc557829-71df-40ee-9516-98ca954d4b2f'; activationAppId = 'c3755ece-dab0-4d16-987d-040661f18522'; cliPath = './.tools/continia.exe'; settleProbe = [ordered]@{ codeunitId = 50300; functionName = 'IsLargeOrder_Twelve_IsTrue' } }
         }
 
         foreach ($key in $Overrides.Keys) {
@@ -184,6 +184,24 @@ Describe 'Get-MutConfig' {
         $path = New-MutTestConfigFile -Overrides $overrides
         { Get-MutConfig -Path $path } | Should -Throw '*demoPortal.cliPath*'
     }
+
+    It 'throws naming the missing key when demoPortal.settleProbe is absent and backend is DemoPortal' {
+        $overrides = @{ demoPortal = @{ profileId = 'x'; activationAppId = 'y'; cliPath = './.tools/continia.exe' } }
+        $path = New-MutTestConfigFile -Overrides $overrides
+        { Get-MutConfig -Path $path } | Should -Throw '*demoPortal.settleProbe*'
+    }
+
+    It 'throws when demoPortal.settleProbe.codeunitId is not an integer' {
+        $overrides = @{ demoPortal = @{ profileId = 'x'; activationAppId = 'y'; cliPath = './.tools/continia.exe'; settleProbe = @{ codeunitId = 'not-a-number'; functionName = 'IsLargeOrder_Twelve_IsTrue' } } }
+        $path = New-MutTestConfigFile -Overrides $overrides
+        { Get-MutConfig -Path $path } | Should -Throw '*demoPortal.settleProbe.codeunitId*'
+    }
+
+    It 'throws naming the missing key when demoPortal.settleProbe.functionName is absent' {
+        $overrides = @{ demoPortal = @{ profileId = 'x'; activationAppId = 'y'; cliPath = './.tools/continia.exe'; settleProbe = @{ codeunitId = 50300 } } }
+        $path = New-MutTestConfigFile -Overrides $overrides
+        { Get-MutConfig -Path $path } | Should -Throw '*demoPortal.settleProbe.functionName*'
+    }
 }
 
 Describe 'Config.psm1 isolation' {
@@ -213,6 +231,16 @@ Describe 'Docker backend' {
         $dockerNames = (Get-Command -All -Module Docker).Name | Sort-Object
         $demoNames = (Get-Command -All -Module DemoPortal).Name | Sort-Object
         $dockerNames | Should -Be $demoNames
+    }
+
+    It 'exports the same parameter names as DemoPortal for every function (T11b: Reset-MutEnvironment gained an optional -Config)' {
+        $commonParams = @('Verbose', 'Debug', 'ErrorAction', 'WarningAction', 'InformationAction', 'ErrorVariable', 'WarningVariable', 'InformationVariable', 'OutVariable', 'OutBuffer', 'PipelineVariable')
+        $demoNames = (Get-Command -All -Module DemoPortal).Name | Sort-Object
+        foreach ($name in $demoNames) {
+            $demoParams = (Get-Command -All -Module DemoPortal | Where-Object Name -eq $name).Parameters.Keys | Where-Object { $_ -notin $commonParams } | Sort-Object
+            $dockerParams = (Get-Command -All -Module Docker | Where-Object Name -eq $name).Parameters.Keys | Where-Object { $_ -notin $commonParams } | Sort-Object
+            $dockerParams | Should -Be $demoParams -Because "function '$name'"
+        }
     }
 
     It 'throws NotImplementedException for every exported function' {

@@ -292,12 +292,28 @@ function Wait-MutEnvironmentSettled {
         transition to Running) and by Reset-MutEnvironment (always, since it always
         stops-then-starts).
 
+        FIX (T11b, spike U5, live 2026-09-16): the `env apps` poll + fixed 30s above was STILL
+        not sufficient -- a `test run` issued right after it, on codeunit 50300 (which has
+        tests), came back total 0 / passed 0 (no tests discovered). This adds a second,
+        stronger probe: `test run <id> <ProbeCodeunitId> <ProbeFunction> --json --timeout 120`
+        (via Invoke-Continia), up to 10 times 30s apart, until the response's
+        `summary.total -gt 0`. The probe target comes from `$Config.demoPortal.settleProbe`
+        (`{ codeunitId; functionName }`); when $Config is $null or carries no such key, the
+        probe is skipped with a warning rather than silently treated as ready (callers that
+        genuinely cannot supply a config, e.g. Reset-MutEnvironment without -Config, get the
+        old apps-poll-only behavior, never a silent guarantee of readiness). An environment that
+        never reports a positive total after all 10 attempts throws -- an unready environment
+        must not silently continue and risk every subsequent mutant being lost.
+
         .OUTPUTS
-        [double] total elapsed seconds (poll time + the fixed 30s), for SettleDurationSec.
+        [pscustomobject]@{ SettleDurationSec; SettleProbeAttempts } -- SettleDurationSec is the
+        total elapsed seconds (apps poll + the fixed 30s + the test-readiness probe, when run);
+        SettleProbeAttempts is 0 when the probe was skipped.
     #>
     param(
         [Parameter(Mandatory = $true)]
-        [string]$Id
+        [string]$Id,
+        $Config
     )
 
     $start = Get-Date
@@ -313,7 +329,38 @@ function Wait-MutEnvironmentSettled {
 
     Start-Sleep -Seconds 30
 
-    return ((Get-Date) - $start).TotalSeconds
+    $probeAttempts = 0
+    $hasProbeConfig = ($null -ne $Config) -and (Test-MutHasProperty $Config 'demoPortal') -and
+        (Test-MutHasProperty $Config.demoPortal 'settleProbe') -and ($null -ne $Config.demoPortal.settleProbe)
+
+    if ($hasProbeConfig) {
+        $probe = $Config.demoPortal.settleProbe
+        $maxProbeAttempts = 10
+        $probeReady = $false
+
+        for ($i = 0; $i -lt $maxProbeAttempts; $i++) {
+            $probeAttempts++
+            $probeResponse = Invoke-Continia -Arguments @('test', 'run', $Id, $probe.codeunitId, $probe.functionName, '--json', '--timeout', '120')
+            if ((Test-MutHasProperty $probeResponse 'summary') -and (Test-MutHasProperty $probeResponse.summary 'total') -and ($probeResponse.summary.total -gt 0)) {
+                $probeReady = $true
+                break
+            }
+            if ($i -lt ($maxProbeAttempts - 1)) {
+                Start-Sleep -Seconds 30
+            }
+        }
+
+        if (-not $probeReady) {
+            throw "Wait-MutEnvironmentSettled: test-readiness probe (codeunit $($probe.codeunitId), function $($probe.functionName)) never reported summary.total -gt 0 for environment '$Id' after $probeAttempts attempts; the environment may not be ready to run tests."
+        }
+    }
+    else {
+        Write-Warning "Wait-MutEnvironmentSettled: no demoPortal.settleProbe in config; skipping the test-readiness probe for environment '$Id'."
+    }
+
+    $settleDurationSec = ((Get-Date) - $start).TotalSeconds
+
+    return [pscustomobject]@{ SettleDurationSec = $settleDurationSec; SettleProbeAttempts = $probeAttempts }
 }
 
 function Wait-MutEnvironmentAppears {
@@ -355,8 +402,9 @@ function Start-MutEnvironment {
         (`env use`) unconditionally, since those are safe to repeat.
         .OUTPUTS
         The handle with Status='Running', StartDurationSec, ActivationInstallDurationSec,
-        SettleDurationSec (0 for StartDurationSec/SettleDurationSec when the environment was
-        already Running and env start/poll/settle were skipped).
+        SettleDurationSec, SettleProbeAttempts (0 for StartDurationSec/SettleDurationSec/
+        SettleProbeAttempts when the environment was already Running and env
+        start/poll/settle were skipped).
     #>
     param(
         [Parameter(Mandatory = $true)]
@@ -373,6 +421,7 @@ function Start-MutEnvironment {
 
     $startDurationSec = 0
     $settleDurationSec = 0
+    $settleProbeAttempts = 0
     $running = $current
 
     if (-not ((Test-MutHasProperty $current 'status') -and $current.status -eq 'Running')) {
@@ -381,7 +430,9 @@ function Start-MutEnvironment {
         $running = Wait-MutEnvironmentStatus -Id $Env.Id -Status 'Running'
         $startDurationSec = ((Get-Date) - $startStart).TotalSeconds
 
-        $settleDurationSec = Wait-MutEnvironmentSettled -Id $Env.Id
+        $settled = Wait-MutEnvironmentSettled -Id $Env.Id -Config $Config
+        $settleDurationSec = $settled.SettleDurationSec
+        $settleProbeAttempts = $settled.SettleProbeAttempts
     }
 
     $activationStart = Get-Date
@@ -395,6 +446,7 @@ function Start-MutEnvironment {
     Add-Member -InputObject $handle -NotePropertyName 'StartDurationSec' -NotePropertyValue $startDurationSec
     Add-Member -InputObject $handle -NotePropertyName 'ActivationInstallDurationSec' -NotePropertyValue $activationInstallDurationSec
     Add-Member -InputObject $handle -NotePropertyName 'SettleDurationSec' -NotePropertyValue $settleDurationSec
+    Add-Member -InputObject $handle -NotePropertyName 'SettleProbeAttempts' -NotePropertyValue $settleProbeAttempts
 
     return $handle
 }
@@ -467,12 +519,21 @@ function Reset-MutEnvironment {
         waits for the environment to settle (Wait-MutEnvironmentSettled, T27 fix round 1 finding
         4a) before returning -- Reset-MutEnvironment always performs a real stop/start, so it
         always settles, unlike Start-MutEnvironment's own conditional check.
+
+        .PARAMETER Config
+        Optional (T11b, spike U5). Forwarded to Wait-MutEnvironmentSettled so its
+        test-readiness probe can run using `$Config.demoPortal.settleProbe`. When omitted, the
+        probe is skipped with a warning (see Wait-MutEnvironmentSettled) rather than treated as
+        a guarantee of readiness -- callers that cannot supply a config keep the older
+        apps-poll-only settle behavior.
+
         .OUTPUTS
-        [pscustomobject]@{ DurationSec; SettleDurationSec }
+        [pscustomobject]@{ DurationSec; SettleDurationSec; SettleProbeAttempts }
     #>
     param(
         [Parameter(Mandatory = $true)]
-        $Env
+        $Env,
+        $Config
     )
 
     Assert-MutEnvironmentAllowed $Env
@@ -485,11 +546,11 @@ function Reset-MutEnvironment {
     Invoke-Continia -Arguments @('env', 'start', $Env.Id) -ExpectJson:$false | Out-Null
     Wait-MutEnvironmentStatus -Id $Env.Id -Status 'Running' | Out-Null
 
-    $settleDurationSec = Wait-MutEnvironmentSettled -Id $Env.Id
+    $settled = Wait-MutEnvironmentSettled -Id $Env.Id -Config $Config
 
     $durationSec = ((Get-Date) - $start).TotalSeconds
 
-    return [pscustomobject]@{ DurationSec = $durationSec; SettleDurationSec = $settleDurationSec }
+    return [pscustomobject]@{ DurationSec = $durationSec; SettleDurationSec = $settled.SettleDurationSec; SettleProbeAttempts = $settled.SettleProbeAttempts }
 }
 
 function Get-MutCredential {
