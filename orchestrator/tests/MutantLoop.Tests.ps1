@@ -135,7 +135,7 @@ Describe 'Invoke-MutMutantLoop' {
         Remove-Variable -Name MutCallLog -Scope Global -ErrorAction SilentlyContinue
     }
 
-    It 'marks a mutant with no covering tests as Uncovered without calling the API or running tests' {
+    It 'marks a mutant with no covering tests as Uncovered without any per-mutant API call or running tests (M3: only the upfront resume-fetch touches the API)' {
         Mock -ModuleName MutantLoop Invoke-MutTestsWithBudget { throw 'must not be called for an uncovered mutant' }
 
         $mutant = [pscustomobject]@{ id = 1; objectId = 60000; line = 1 }
@@ -150,7 +150,14 @@ Describe 'Invoke-MutMutantLoop' {
         $results[0].KillingTest | Should -BeNullOrEmpty
         @($results[0].CoveringTests).Count | Should -Be 0
 
-        Should -Invoke -ModuleName MutantLoop Invoke-MutApi -Times 0
+        # M3: Invoke-MutMutantLoop now makes exactly one upfront GET (the resume-fetch, filtered
+        # to runNo only, no mutantId) before the per-mutant loop even starts. An Uncovered mutant
+        # still triggers no PATCH/POST and no test run of its own.
+        Should -Invoke -ModuleName MutantLoop Invoke-MutApi -ParameterFilter {
+            $Method -eq 'GET' -and $Path -notlike '*mutantId*'
+        } -Times 1
+        Should -Invoke -ModuleName MutantLoop Invoke-MutApi -ParameterFilter { $Method -eq 'PATCH' } -Times 0
+        Should -Invoke -ModuleName MutantLoop Invoke-MutApi -ParameterFilter { $Method -eq 'POST' } -Times 0
         Should -Invoke -ModuleName MutantLoop Invoke-MutTestsWithBudget -Times 0
     }
 
@@ -194,10 +201,18 @@ Describe 'Invoke-MutMutantLoop' {
     }
 
     It 'does not POST Killed when a mutantResults row already exists for (runNo, mutantId)' {
+        # M3: the upfront resume-fetch (GET filtered to runNo only, no mutantId) must return
+        # empty here so the mutant is NOT skipped outright -- this test is specifically about the
+        # mid-iteration existing-row check (e.g. the table's own OnAfterTestMethodRun hook, §6.1.4,
+        # having already inserted the Killed row while the test job ran), distinct from a full,
+        # resumed-run skip.
         Mock -ModuleName MutantLoop Invoke-MutApi {
             $global:MutCallLog += "API:$Method`:$Path"
+            if ($Method -eq 'GET' -and $Path -like '*mutantId eq*') {
+                return [pscustomobject]@{ value = @([pscustomobject]@{ mutantId = 9; status = 'Killed' }) }
+            }
             if ($Method -eq 'GET') {
-                return [pscustomobject]@{ value = @([pscustomobject]@{ status = 'Killed' }) }
+                return [pscustomobject]@{ value = @() }
             }
             return $null
         }
@@ -253,7 +268,15 @@ Describe 'Invoke-MutMutantLoop' {
             $Body.mutantId -eq 11 -and $Body.status -eq 'Survived' -and $Body.durationMs -eq 900
         } -Times 1
 
-        Should -Invoke -ModuleName MutantLoop Invoke-MutApi -ParameterFilter { $Method -eq 'GET' } -Times 0
+        # M3: two GETs are now expected -- the upfront resume-fetch (runNo only) plus the
+        # existence check before the Survived POST (runNo and mutantId), both against the
+        # default BeforeEach mock which returns an empty `value` array for any GET.
+        Should -Invoke -ModuleName MutantLoop Invoke-MutApi -ParameterFilter {
+            $Method -eq 'GET' -and $Path -notlike '*mutantId*'
+        } -Times 1
+        Should -Invoke -ModuleName MutantLoop Invoke-MutApi -ParameterFilter {
+            $Method -eq 'GET' -and $Path -like '*mutantId eq 11*'
+        } -Times 1
     }
 
     It 'retries once when the test run comes back with zero total tests (Passed=0, Failed=0), then uses the retry''s real result (regression, T27 live-run fix)' {
@@ -348,7 +371,11 @@ Describe 'Invoke-MutMutantLoop' {
         } -Times 1
     }
 
-    It 'still throws when a Survived POST fails for a reason other than a duplicate-key conflict' {
+    It 'records Status Error (and does not abort the loop) when a Survived POST fails for a reason other than a duplicate-key conflict (M3: one mutant must never kill the run)' {
+        # Pre-M3, a non-duplicate-key POST failure propagated out of Invoke-MutMutantLoop and
+        # aborted the whole run. M3 requirement 3 wraps every mutant's body so ANY unexpected
+        # error -- including this one -- is instead recorded as Status 'Error' and the loop moves
+        # on to the next mutant.
         Mock -ModuleName MutantLoop Invoke-MutTestsWithBudget {
             [pscustomobject]@{
                 TimedOut     = $false
@@ -367,11 +394,26 @@ Describe 'Invoke-MutMutantLoop' {
             return $null
         }
 
-        $mutant = [pscustomobject]@{ id = 1; objectId = 50000; line = 4 }
+        $mutantA = [pscustomobject]@{ id = 1; objectId = 50000; line = 4 }
+        $mutantB = [pscustomobject]@{ id = 2; objectId = 60000; line = 4 }
 
-        { Invoke-MutMutantLoop -Config $script:Config -Env $script:EnvHandle -Mutants @($mutant) `
+        $results = $null
+        $caughtError = $null
+        try {
+            $results = Invoke-MutMutantLoop -Config $script:Config -Env $script:EnvHandle -Mutants @($mutantA, $mutantB) `
                 -Baseline $script:Baseline -Coverage $script:Coverage -References $script:References `
-                -RunNo 1 -RunDir $script:RunDir -BackendModulePath 'unused.psm1' } | Should -Throw '*unrelated server error*'
+                -RunNo 1 -RunDir $script:RunDir -BackendModulePath 'unused.psm1'
+        }
+        catch {
+            $caughtError = $_
+        }
+
+        $caughtError | Should -BeNullOrEmpty
+        $results.Count | Should -Be 2
+        $results[0].Status | Should -Be 'Error'
+        $results[0].Error | Should -BeLike '*unrelated server error*'
+        # The loop continued: mutant 2 (uncovered) was still processed.
+        $results[1].Status | Should -Be 'Uncovered'
     }
 
     It 'on timeout: resets the environment once, records Timeout, and never POSTs a result' {
@@ -441,9 +483,12 @@ Describe 'Invoke-MutMutantLoop' {
             $Method -eq 'PATCH' -and $Body.activeMutantId -eq 0 -and $Body.currentRunNo -eq 6
         } -Times 1
 
-        $global:MutCallLog[0] | Should -BeLike 'API:PATCH:*'
-        $global:MutCallLog[1] | Should -Be 'TESTS'
-        $global:MutCallLog[-1] | Should -BeLike 'API:PATCH:*'
+        # M3: skip the leading upfront resume-fetch GET (one per loop invocation) before checking
+        # this mutant's own PATCH/TESTS/PATCH sequence.
+        $callLog = @($global:MutCallLog | Select-Object -Skip 1)
+        $callLog[0] | Should -BeLike 'API:PATCH:*'
+        $callLog[1] | Should -Be 'TESTS'
+        $callLog[-1] | Should -BeLike 'API:PATCH:*'
     }
 
     It 'PATCHes activeMutantId back to 0 after a timeout too' {
@@ -458,8 +503,8 @@ Describe 'Invoke-MutMutantLoop' {
             -Baseline $script:Baseline -Coverage $script:Coverage -References $script:References `
             -RunNo 7 -RunDir $script:RunDir -BackendModulePath 'unused.psm1' | Out-Null
 
-        # order: PATCH(id) -> TESTS -> RESET -> SETTLE -> PATCH(0)
-        $global:MutCallLog | Should -Be @('API:PATCH:mutationSetup(0)', 'TESTS', 'RESET', 'SETTLE', 'API:PATCH:mutationSetup(0)')
+        # order: GET (M3 upfront resume-fetch) -> PATCH(id) -> TESTS -> RESET -> SETTLE -> PATCH(0)
+        $global:MutCallLog | Should -Be @('API:GET:mutantResults?$filter=runNo eq 7', 'API:PATCH:mutationSetup(0)', 'TESTS', 'RESET', 'SETTLE', 'API:PATCH:mutationSetup(0)')
 
         Should -Invoke -ModuleName MutantLoop Invoke-MutApi -ParameterFilter {
             $Method -eq 'PATCH' -and $Body.activeMutantId -eq 0
@@ -572,6 +617,168 @@ Describe 'Invoke-MutMutantLoop' {
         $parsed[0].Id | Should -Be 1
         $parsed[1].Id | Should -Be 2
         $parsed[2].Id | Should -Be 3
+    }
+
+    It 'resumes a run where the API already holds results for 2 of 4 mutants: only the other 2 are executed, and all 4 appear in the returned rows with correct statuses (M3)' {
+        Mock -ModuleName MutantLoop Invoke-MutApi {
+            param($Env, $Method, $Path, $Body)
+            $global:MutCallLog += "API:$Method`:$Path"
+            if ($Method -eq 'GET' -and $Path -notlike '*mutantId*') {
+                # The upfront resume-fetch (runNo only): mutants 1 and 2 already have rows from
+                # an earlier, crashed attempt at this same RunNo.
+                return [pscustomobject]@{
+                    value = @(
+                        [pscustomobject]@{ mutantId = 1; status = 'Survived'; killingTest = $null; durationMs = 111 }
+                        [pscustomobject]@{ mutantId = 2; status = 'Killed'; killingTest = 'C:F'; durationMs = 222 }
+                    )
+                }
+            }
+            if ($Method -eq 'GET') {
+                return [pscustomobject]@{ value = @() }
+            }
+            return $null
+        }
+
+        Mock -ModuleName MutantLoop Invoke-MutTestsWithBudget {
+            $global:MutCallLog += 'TESTS'
+            [pscustomobject]@{
+                TimedOut     = $false
+                ErrorMessage = $null
+                Result       = [pscustomobject]@{
+                    Passed = 1; Failed = 0; DurationMs = 50
+                    Tests  = @([pscustomobject]@{ Codeunit = 'C'; Function = 'F'; Result = 'Pass'; DurationMs = 50; Error = $null })
+                }
+            }
+        }
+
+        $mutants = @(
+            [pscustomobject]@{ id = 1; objectId = 50000; line = 4 }
+            [pscustomobject]@{ id = 2; objectId = 50000; line = 4 }
+            [pscustomobject]@{ id = 3; objectId = 50000; line = 4 }
+            [pscustomobject]@{ id = 4; objectId = 50000; line = 4 }
+        )
+
+        $results = Invoke-MutMutantLoop -Config $script:Config -Env $script:EnvHandle -Mutants $mutants `
+            -Baseline $script:Baseline -Coverage $script:Coverage -References $script:References `
+            -RunNo 20 -RunDir $script:RunDir -BackendModulePath 'unused.psm1'
+
+        $results.Count | Should -Be 4
+        ($results | Where-Object { $_.Id -eq 1 }).Status | Should -Be 'Survived'
+        ($results | Where-Object { $_.Id -eq 2 }).Status | Should -Be 'Killed'
+        ($results | Where-Object { $_.Id -eq 2 }).KillingTest | Should -Be 'C:F'
+        ($results | Where-Object { $_.Id -eq 3 }).Status | Should -Be 'Survived'
+        ($results | Where-Object { $_.Id -eq 4 }).Status | Should -Be 'Survived'
+
+        # Only mutants 3 and 4 (not recorded yet) actually ran a test job.
+        Should -Invoke -ModuleName MutantLoop Invoke-MutTestsWithBudget -Times 2
+
+        # Resumed mutants 1 and 2 were never (re-)activated.
+        Should -Invoke -ModuleName MutantLoop Invoke-MutApi -ParameterFilter { $Method -eq 'PATCH' -and $Body.activeMutantId -eq 1 } -Times 0
+        Should -Invoke -ModuleName MutantLoop Invoke-MutApi -ParameterFilter { $Method -eq 'PATCH' -and $Body.activeMutantId -eq 2 } -Times 0
+    }
+
+    It 'skips the Survived POST when a mutantResults row already exists for (runNo, mutantId) -- mid-iteration idempotency, distinct from a full resume (M3)' {
+        Mock -ModuleName MutantLoop Invoke-MutApi {
+            param($Env, $Method, $Path, $Body)
+            $global:MutCallLog += "API:$Method`:$Path"
+            if ($Method -eq 'GET' -and $Path -like '*mutantId eq*') {
+                return [pscustomobject]@{ value = @([pscustomobject]@{ mutantId = 15; status = 'Survived' }) }
+            }
+            if ($Method -eq 'GET') {
+                return [pscustomobject]@{ value = @() }
+            }
+            return $null
+        }
+
+        Mock -ModuleName MutantLoop Invoke-MutTestsWithBudget {
+            [pscustomobject]@{
+                TimedOut     = $false
+                ErrorMessage = $null
+                Result       = [pscustomobject]@{
+                    Passed = 1; Failed = 0; DurationMs = 30
+                    Tests  = @([pscustomobject]@{ Codeunit = 'C'; Function = 'F'; Result = 'Pass'; DurationMs = 30; Error = $null })
+                }
+            }
+        }
+
+        $mutant = [pscustomobject]@{ id = 15; objectId = 50000; line = 4 }
+
+        $results = Invoke-MutMutantLoop -Config $script:Config -Env $script:EnvHandle -Mutants @($mutant) `
+            -Baseline $script:Baseline -Coverage $script:Coverage -References $script:References `
+            -RunNo 21 -RunDir $script:RunDir -BackendModulePath 'unused.psm1'
+
+        $results[0].Status | Should -Be 'Survived'
+
+        Should -Invoke -ModuleName MutantLoop Invoke-MutApi -ParameterFilter { $Method -eq 'POST' } -Times 0
+    }
+
+    It 'records Status Error and continues the loop when a mutant''s execution throws an unhandled exception (M3)' {
+        $script:MutThrowCallCount = 0
+        Mock -ModuleName MutantLoop Invoke-MutTestsWithBudget {
+            $script:MutThrowCallCount++
+            if ($script:MutThrowCallCount -eq 1) {
+                throw 'unexpected runspace failure'
+            }
+            [pscustomobject]@{
+                TimedOut     = $false
+                ErrorMessage = $null
+                Result       = [pscustomobject]@{
+                    Passed = 1; Failed = 0; DurationMs = 20
+                    Tests  = @([pscustomobject]@{ Codeunit = 'C'; Function = 'F'; Result = 'Pass'; DurationMs = 20; Error = $null })
+                }
+            }
+        }
+
+        $mutantA = [pscustomobject]@{ id = 70; objectId = 50000; line = 4 }
+        $mutantB = [pscustomobject]@{ id = 71; objectId = 50000; line = 4 }
+
+        $results = Invoke-MutMutantLoop -Config $script:Config -Env $script:EnvHandle -Mutants @($mutantA, $mutantB) `
+            -Baseline $script:Baseline -Coverage $script:Coverage -References $script:References `
+            -RunNo 22 -RunDir $script:RunDir -BackendModulePath 'unused.psm1'
+
+        $results.Count | Should -Be 2
+        $results[0].Status | Should -Be 'Error'
+        $results[0].Error | Should -BeLike '*unexpected runspace failure*'
+        $results[1].Status | Should -Be 'Survived'
+
+        # activeMutantId must still be reset to 0 even for the mutant that threw.
+        Should -Invoke -ModuleName MutantLoop Invoke-MutApi -ParameterFilter {
+            $Method -eq 'PATCH' -and $Body.activeMutantId -eq 0 -and $Body.currentRunNo -eq 22
+        } -Times 2
+    }
+}
+
+Describe 'Write-MutResultsJsonLine append retry (M3)' {
+    It 'retries the append after a transient failure (e.g. the file-lock IOException that crashed run 3) and eventually succeeds without throwing' {
+        $global:MutAddContentAttempts = 0
+        Mock -ModuleName MutantLoop Add-Content {
+            $global:MutAddContentAttempts++
+            if ($global:MutAddContentAttempts -eq 1) {
+                throw [System.IO.IOException]::new('The process cannot access the file because it is being used by another process.')
+            }
+        }
+        Mock -ModuleName MutantLoop Start-Sleep {}
+
+        $runDir = "$TestDrive/retry-$([guid]::NewGuid().ToString('N'))"
+        New-Item -ItemType Directory -Path $runDir -Force | Out-Null
+
+        $row = [pscustomobject]@{ Id = 42; Status = 'Survived'; KillingTest = $null; DurationMs = 10; CoveringTests = @(95155) }
+
+        $threw = $false
+        try {
+            InModuleScope MutantLoop {
+                param($RunDir, $Row)
+                Write-MutResultsJsonLine -RunDir $RunDir -Row $Row
+            } -Parameters @{ RunDir = $runDir; Row = $row }
+        }
+        catch {
+            $threw = $true
+        }
+
+        $threw | Should -Be $false
+        $global:MutAddContentAttempts | Should -Be 2
+
+        Remove-Variable -Name MutAddContentAttempts -Scope Global -ErrorAction SilentlyContinue
     }
 }
 
