@@ -166,7 +166,62 @@ Numbers recorded by each spike task, per §7.6 of `docs/SPEC.md`.
 | BREAK acceptance side effect (concern, not a failure of the stated criterion) | 9 additional non-BREAK mutants (all `DEL`, one `INSFLAG`) also came back `CompileError` — every simple statement eligible for `DEL`/`INSFLAG` is also eligible for `BREAK` and shares ONE guard block with it (§6.4.7); a BREAK compile error is attributed to that whole block's line range (§6.4.9 `linemap.json` is block-, not candidate-, granular), so excluding the offending BREAK candidate's stableKey also swept up its DEL/INSFLAG block-mates. Total CompileError = 24 (15 BREAK + 9 collateral); remaining 17 non-BREAK mutants behaved identically in kind to run 1's corresponding mutations (13 Killed, 2 Survived, 2 Timeout). Architectural, pre-existing (generator/Schemata.psm1 exclusion granularity); not fixed under this task — flagged here for a future task | DemoPortal | 2026-09-09 | T27 |
 | Live defects found and fixed (see `docs/issues.md` for full detail) | (1) `timeouts.minSeconds` too tight for the fixture's fast baseline (60→120s, precautionary); (2) `MutantLoop.psm1`'s `Invoke-MutTestsWithBudget` used `Start-Job`, which hung indefinitely spawning the backend CLI as a further child process — replaced with a background runspace; (3) a test run immediately after `Reset-MutEnvironment` twice returned an empty (0-test) result recorded as a false `Survived`/non-`Timeout` — fixed with a settle delay plus a retry-on-empty-result; (4) `Run.psm1`'s own `Build-MutSchemataStep` corrupted its `schemata.json` cache (a `ConvertFrom-Json`-sourced array re-serializes as `{"value":[...],"Count":N}` once nested) — fixed by rebuilding the array via `ForEach-Object` before caching; (5) `MutantLoop.psm1`'s `Survived` POST path was not idempotent across a resumed run (unlike `Killed`) — fixed by swallowing only an `EntityWithSameKeyExists` conflict; (6) `Run.psm1`'s `Ensure-MutEnvironment` skip path never primed the backend's own module-scoped CLI-path state, crashing the first `Invoke-MutApi` call of a run resumed past that step — fixed by always re-checking the environment cheaply; (7) `generator/src/generate.ts` gated BREAK candidates by BOTH `includeBreak` and membership in `--operators`, silently producing zero BREAK mutants for this task's own fixture-break config — fixed to gate BREAK by `includeBreak` alone; (8) `Run.psm1` never gave a compile-error mutant (e.g. BREAK) any row to report in the final export at all — fixed by threading `Schemata.psm1`'s new `ExcludedMutants` list through to `Export-MutResultsStep`; (9) `Run.psm1`'s `Push-MutManifest` checked only `id`, not the `MUT Mutant` table's actual unique index on `stableKey`, and crashed posting RunNo 2's differently-numbered manifest against an environment that already had RunNo 1's — fixed to also skip on an existing stableKey. All fixes covered by new/updated Pester or `node:test` unit tests; 194 orchestrator Pester tests and 105 generator tests green at the end | DemoPortal | 2026-09-09 | T27 |
 
-## Recommendation
+## Pilot run (run 4, superseded — pre covering-test-scope fix)
 
-| Metric | Value | Backend | Date | Source task |
-|---|---|---|---|---|
+**Superseded measurement.** Run 4 was measured before `afe9c6a` (`fix(orchestrator): reference-map fallback stays inside the configured test scope`) landed. It is kept here for the record and for the explicit before/after comparison in the run 6 section below, not as the current baseline.
+
+| Metric | Value | Backend | Date |
+|---|---|---|---|
+| Wall clock | 00:50:46 (2026-09-17T12:01:40.2162974Z → 2026-09-17T12:52:26.4120255Z) | DemoPortal | 2026-09-17 |
+| Mutants generated / run | 157 / 157 | DemoPortal | 2026-09-17 |
+| Killed / Survived / Timeout / CompileError / Uncovered | 62 / 95 / 0 / 0 / 0 | DemoPortal | 2026-09-17 |
+| Score | 0.3949 | DemoPortal | 2026-09-17 |
+| Mean seconds/mutant (wall clock) | 19.40 | DemoPortal | 2026-09-17 |
+
+## Pilot run (run 6, corrected scope)
+
+`Invoke-MutationRun.ps1 -ConfigPath mutation.config.json -RunNo 6` against `mut-spike-02`, codeunit 72918635 only, baseline covering three test codeunits (95155, 95179, 95191). Run 5 (same scope, `-RunNo 5`) had aborted in `Publish-MutBaseline` with `AL0185: Codeunit 'CTS-CB Req. Header Log Search' is missing` because the environment's installed test suite predated an upstream deletion of that codeunit and its test; the controller unpublished the stale test suite from `mut-spike-02` before this run, and run 6 used a fresh `-RunNo` so `Sync-MutAutCopy` re-synced from source and republished both apps rather than reusing run 5's stale `environment.done`.
+
+| Metric | Value | Backend | Date |
+|---|---|---|---|
+| Wall clock | 00:55:18 (2026-09-17T21:32:51.1680358Z → 2026-09-17T22:28:09.5491343Z) | DemoPortal | 2026-09-17 |
+| Mutants generated / run | 157 / 157 | DemoPortal | 2026-09-17 |
+| Killed / Survived / Timeout / CompileError / Uncovered | 62 / 95 / 0 / 0 / 0 | DemoPortal | 2026-09-17 |
+| Score | 0.3949 | DemoPortal | 2026-09-17 |
+| Mean seconds/mutant (wall clock) | 21.14 | DemoPortal | 2026-09-17 |
+| Covering-test set size distribution | 1 test: 112 mutants (71.3%); 2 tests: 3 mutants (1.9%); 3 tests: 42 mutants (26.8%); 0 tests (uncovered): 0 | DemoPortal | 2026-09-17 |
+| Selection source | 115 mutants (73.2%) selected from baseline coverage rows; 42 mutants (26.8%) selected via the reference-map fallback (`Get-MutCoveringTests`, `orchestrator/lib/Coverage.psm1`), all correctly confined to the configured 3-codeunit scope | DemoPortal | 2026-09-17 |
+| AUT repo read-only verification | `git -C "Continia Banking" status --short` before the run: 7 pre-existing lines (`.gitignore`, `.gitmodules`, 2 ruleset files, 3 untracked entries). After the run: those same 7 lines **plus 7 newly-modified `.docx`/`.rdlc` report layout files** (Direct Debit, Payment Suggestion, Remittance Advice, Customer Statement Payment Reference — all unrelated to codeunit 72918635), with filesystem mtimes of 22:12–22:16 UTC, inside the run window. Traced and ruled out as caused by this pipeline: `orchestrator/lib/AutCopy.psm1`'s `Sync-MutAutCopy`/`Invoke-MutRobocopyMirror` only mirrors `robocopy <source> <workDir-copy> /MIR` (source is never a robocopy destination), and `Run.psm1`'s baseline/schemata steps compile `$Config.workDir/aut-original` (the copy), never `$Config.aut.sourcePath` directly — confirmed by grepping `Run.psm1` for every use of `sourcePath` vs the copied `$autPath`. The change is therefore an **external edit to the source tree by someone/something else during the run**, not a guardrail violation by this tooling. Because `Sync-MutAutCopy` runs once, early, in the `initialize`/`baseline` steps (well before 22:12 UTC), run 6's own working copy and results are unaffected. Flagged here because it means the controller's "stable for ~7 hours" assurance did not fully hold in practice; worth a source-repo-activity check before any future run in this window. | DemoPortal | 2026-09-17 |
+
+### Comparison with run 4
+
+Run 4 was measured **before** `afe9c6a` fixed the reference-map fallback to stay inside the configured test scope. Run 6 is the first measurement **after** that fix, same mutant set (same seed, same `onlyObjects: [72918635]`, same 157 mutants by id).
+
+- **Outcome (Killed/Survived/Timeout/CompileError/Uncovered) is identical for all 157 mutants** — 0 status differences between run 4 and run 6. Totals, score (0.3949), and the survivor list are byte-for-byte the same set of ids.
+- **Covering-test sets changed for exactly 3 mutants**: ids 182, 183, 184 (`ResolveBankCodeForAccount`, line 212, `TempBank.Code <> ''`) went from `[95155]` in run 4 to `[95155, 95179]` in run 6 — codeunit 95179 is now correctly included because the fallback selection no longer needs the scope guard to exclude it (it was already in-scope; run 4's narrower result for this line was itself in-scope, just missing a second covering test that run 6's corrected logic now finds). None of the three changed outcome (182 and 184 stayed Killed, 183 stayed Survived).
+- **Wall clock rose from 00:50:46 to 00:55:18** (19.40s → 21.14s mean per mutant) — expected, since the corrected scope now runs a genuine second/third covering-test job for the 42 mutants using the reference-map fallback (26.8% of the set, all now confined to the 3-codeunit scope) plus the 3 mutants above, instead of silently under-covering or over-reaching outside the configured suite.
+- **Conclusion**: for this codeunit's mutant set, the covering-test-scope bug that run 4 predates did not happen to hide or fabricate any kills — but it could not have been trusted to generalize, since it was capable of selecting tests outside the configured baseline scope (no baseline duration, wrong timeout budget, coverage claims outside the declared suite). Run 6 is the trustworthy measurement going forward; run 4 remains here only as the labelled pre-fix baseline.
+
+### Hand-mutant cross-check (HM01–HM20 vs run 6)
+
+Of the 20 hand mutants in `spikes/hand-mutants/results.json`, 6 are `Drift` (HM04, HM08, HM11, HM12, HM14, HM15 — excluded per the brief). The remaining 14 (Killed or Survived) were matched to a run 6 generator mutant at the same `matchedLine` with equivalent `mutated` text:
+
+| HM id | Line | Operator | Hand status | Generator match (run 6 id) | Agreement |
+|---|---|---|---|---|---|
+| HM01 | 120 | REL | Survived | id 159, `MatchingAccounts.Count() >= 0`, Survived | Agree |
+| HM02 | 153 | REL | Survived | id 162, `AccountsAttempted <> 0`, Survived | Agree |
+| HM03 | 204 | BOOL | Killed | id 174, `(...) or (...)`, Killed | Agree |
+| HM05 | 399 | REL | Killed | id 238, `ExactMatchCount >= 0`, Killed | Agree |
+| HM06 | 403 | REL | Killed | **none** | **Disagree — no generator counterpart** |
+| HM07 | 412 | REL | Killed | id 241, `TotalFailed >= 0`, Killed | Agree |
+| HM09 | 424 | REL | Survived | id 251, `TotalMatched >= 0`, Survived | Agree |
+| HM10 | 474 | REL | Survived | id 256, `TotalAttempted >= 0`, Survived | Agree |
+| HM13 | 625 | DEL | Survived | id 294, statement deleted, Survived | Agree |
+| HM16 | 212 | REL | Killed | id 182, `TempBank.Code = ''`, Killed | Agree |
+| HM17 | 85 | REL | Killed | id 149, `SourceBank.Code <> ''`, Killed | Agree |
+| HM18 | 304 | NOT | Survived | id 213, `ToBank.WritePermission()`, Survived | Agree |
+| HM19 | 309 | DEL | Survived | id 220, statement deleted, Survived | Agree |
+| HM20 | 275 | BOOL | Survived | id 204, `(...) or (...)`, Survived | Agree |
+
+**13 of 14 agree exactly** (same status, equivalent mutated text). **HM06 disagrees**, but not on outcome — the generator never produced a candidate at line 403 (`if MismatchCount > 0 then begin`) at all. Confirmed by the generator's own id sequence in `results/6.json`: ids 238–240 cover line 399's `if ExactMatchCount > 0 then begin` (the first arm of the `if ... then begin ... end else if ... then begin` chain), and the very next ids, 241–243, jump straight to line 412's unrelated `if TotalFailed > 0 then` — no ids exist for line 403 at all, even though `MismatchCount` is real, undrifted source (verified by reading the live file) and structurally identical to the line-399 condition the generator did mutate. Root cause: the generator's candidate detector does not recognize a condition inside an AL `end else if <cond> then begin` (elsif-chain) arm as a mutable `if` condition — only the chain's first `if` gets mutated. This is a real, reproducible generator coverage gap (not a scope, drift, or flakiness issue) and worth a follow-up task to extend the AST candidate detector to elsif arms; not fixed under this task.
+
