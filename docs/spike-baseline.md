@@ -438,7 +438,7 @@ with a full record-level differential showing 0 lost / 0 gained. **0.3949 stands
 | Measure | Before review | After |
 |---|---|---|
 | Generator tests | 113 | 147 |
-| Orchestrator tests | 224 | 289 |
+| Orchestrator tests | 224 | 303 |
 | Real-AUT overlapping statement pairs | 530 | 0 |
 | `endcase` under `--include-break` | 3 | 0 |
 | Whole-AUT mutants | 15,012 | 15,012 |
