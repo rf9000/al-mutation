@@ -409,6 +409,47 @@ in test quality for this slice of the app, not evidence either way about the res
 | Full-suite baseline (all 181 test codeunits) | **Not yet measured** — Gate G1, blocked until a human writes `go` here | Unknown scaling risk; U2's median-savings figure also waits on this |
 | AUT-drift risk | See Chronology above | The AUT changed under this project 3 times in ~10 days (objects deleted, BC28→29, a mid-run dependent-recompile failure) and real code exercised syntax/style rules the fixture never had, surfacing 4 distinct defects only against real code. A longer, less-supervised run is more exposed to this kind of drift, not less. |
 
+## Final pre-merge review (2026-09-18)
+
+The whole branch was reviewed against the spec in four areas (orchestrator backends, orchestrator lib,
+generator, and the AL app + config + this document), then every fix was re-reviewed. Findings and outcomes:
+
+| Area | Verdict | Outcome |
+|---|---|---|
+| Generator | NOT-MERGE-READY → fixed over 3 rounds | 3 blockers, 2 of them introduced by the first fix itself |
+| Orchestrator backends | MERGE-WITH-FIXES → fixed | case-insensitive safety gate; a zero-test baseline reporting success |
+| Orchestrator lib | MERGE-WITH-FIXES → fixed | `Error` mutants scored as survivors; a BOM making every result file unparseable |
+| AL app, config, docs | MERGE-WITH-FIXES → fixed | stale scope claims; omitted open items |
+
+**The generator defect was the merge blocker.** In `case <expr> of`, every branch label from the second
+onward sits at a statement-start position, so a non-numeric label (`BLbl:`) began a bogus "simple statement"
+running through the branch body; the two spans overlapped and the rewriter applied edits with no overlap
+check, emitting `endcase true of`. The real AUT had **530 overlapping pairs across 98 of 1,070 files**. It
+was invisible to a 113-test suite because every existing case-label test used *numeric* labels — the one
+token kind the predicate already rejected. Two further defects were introduced by the fix for it (ternary
+state leaking across statement boundaries, silently losing mutants; and an INSFLAG rewrite that renamed the
+receiver field) and were caught by review rather than by tests.
+
+**Run 6's score is unaffected, and this was verified rather than argued.** At every checkpoint across all
+three generator rounds, regenerating codeunit 72918635 produced a stableKey set byte-identical to
+`results/6.json` (157 of 157, zero differences either way), and the whole-AUT mutant count stayed at 15,012
+with a full record-level differential showing 0 lost / 0 gained. **0.3949 stands without a re-run.**
+
+| Measure | Before review | After |
+|---|---|---|
+| Generator tests | 113 | 147 |
+| Orchestrator tests | 224 | 289 |
+| Real-AUT overlapping statement pairs | 530 | 0 |
+| `endcase` under `--include-break` | 3 | 0 |
+| Whole-AUT mutants | 15,012 | 15,012 |
+| AL object headers resolved | 861 | 869 |
+
+The recurring lesson, and the reason the review was worth its cost: **four separate defects were invisible
+to a green test suite because the tests exercised the one input shape the bug did not cover.** Numeric case
+labels, ternaries placed inside a case branch rather than before one, quoted-identifier INSFLAG receivers,
+and guard tests that mocked the callee to throw and then asserted only that *something* threw — the last of
+which meant deleting the environment safety guard entirely left ten tests green.
+
 ### Not proven
 
 Schemata compile at whole-project scale, and publish at that size, were open questions in earlier drafts of
@@ -419,17 +460,6 @@ and have been removed from this list. What remains genuinely open:
 - **The Docker backend** — interface-only stub, throws `NotImplemented`.
 - **A genuinely multi-codeunit mutant *run*, or any second AUT codeunit taken through the full loop** — compile is now proven at whole-project scale (M7/M8), and the pilot proved the full generate→compile→publish→test→record loop end to end, but only for one codeunit (72918635) at a time. Running that full loop across many codeunits, or the whole project, at once has never been attempted — only its compile step has.
 - **The full 181-codeunit baseline (Gate G1)** — unmeasured; blocked until a human writes `go`.
-- **The generator emits invalid AL for case branches with non-numeric labels.** Found in the final
-  pre-merge review and reproduced: in `case <expr> of`, every branch label from the second onward sits at a
-  statement-start position, so a label such as `BLbl:` starts a bogus "simple statement" that runs through
-  the branch body — the two spans overlap, and the rewriter applies edits with no overlap check, emitting
-  `endcase true of` and a duplicated label. The real AUT has **530 overlapping pairs across 98 of 1,070
-  files**. Under the *default* operator set this never corrupts — proven, not assumed: the full-scale build
-  (`out/m8/w-all`, 15,012 mutants, whole AUT) contains zero such artifacts and compiled `success: true,
-  errorCount: 0`, which is why **run 6's score is unaffected**. Under `--include-break` it fires immediately
-  on real code. `--include-break` is a spec'd flag (§6.4.5, §6.4.9) with its own committed config and
-  **cannot currently be run on this AUT**. It is also a plausible partial explanation for run 2's "BREAK
-  collateral CompileError" finding, which was attributed solely to block-granular linemap exclusion.
 - **Guard overhead in hot code — §3's U3 decision rule fired and its mandated mitigation was never
   applied.** §3 U3 says: if > 2× slowdown, `Active()` becomes a global-variable compare inside the AUT.
   Measured 22.4× on a synthetic 100k-iteration loop; the mitigation was ruled non-blocking and not
@@ -444,6 +474,22 @@ and have been removed from this list. What remains genuinely open:
   enumerable environment users (all already SUPER) changed nothing, so the identity that runs DemoPortal
   test sessions is none of them. The IsolatedStorage channel routes around it and works, but the underlying
   mechanism was never established, and §6.1.5b still states a rationale this project disproved.
+- **Two known defects are recorded but deliberately unfixed** (`docs/issues.md`): `mutation.config.json`'s
+  settle probe targets the AUT's own test codeunit, which cannot exist before the AUT is deployed — it cost
+  ~10 minutes on a fresh environment and still ships as the default, because the real fix changes the shared
+  readiness contract. And resume matches on `(runNo, mutantId)` with nothing binding a run number to the
+  mutant set that produced it, so a resumed run after a generator-flag change would adopt rows against
+  different mutants; it needs a design decision (resume by `stableKey`, or refuse when the set differs).
+- **The reference map is keyed by object name alone, ignoring object type**, so 55 names already collide in
+  the current AUT (`CTS-CB App Management` is both codeunit 71553717 and page 71553628) and the last file
+  enumerated wins. A test's `Codeunit "…"` can therefore resolve to a page id. This is a **live** wrong-id
+  vector with 55 instances — worth the perspective against the header-resolution defect that consumed three
+  review rounds and had zero live instances.
+- **The AUT moved four times during this project** (objects deleted, BC 28→29, a mid-run dependent-recompile
+  failure, and an upstream commit named "removed comments" landing on the final review day). 306 AUT files
+  carry a commented-out `//namespace` declaration; uncommenting them would have silently dropped 246 objects
+  and 18 test codeunits from the reference map under the code as it stood mid-review. A longer, less
+  supervised run is more exposed to this, not less.
 - **CRLF source files** — the generator's end-of-line handling has no test coverage at all (zero CRLF bytes
   in `generator/test/**` or `fixtures/generator/**`). The AUT is 1,023 LF / 46 CRLF / 1 mixed, so the
   CRLF path has run in production without ever being exercised by a test.
