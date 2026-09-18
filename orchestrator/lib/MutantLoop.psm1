@@ -384,12 +384,42 @@ function Get-MutRecordedResultsForRun {
     }
 
     if (@($apiRows).Count -gt 0) {
+        # The `MUT Mutant Result` API row (runNo/mutantId/status/killingTest/durationMs, §6.1.2)
+        # does not carry coveringTests at all, but the data is already on disk: Run.psm1's
+        # Get-MutCoveringTestsStep (§6.5.4 step 7) wrote <RunDir>/covering.json (mutant id ->
+        # covering test codeunit ids) before the loop ever ran. Read it here so a resumed run's
+        # export does not lose coveringTests -- required by §7.3/§7.5 and the most useful column
+        # when triaging survivors -- for every mutant this attempt only knows about via the API.
+        $coveringByMutantId = @{}
+        $coveringPath = Join-Path $RunDir 'covering.json'
+        if (Test-Path -LiteralPath $coveringPath) {
+            try {
+                $coveringRaw = Get-Content -LiteralPath $coveringPath -Raw | ConvertFrom-Json
+                if ($null -ne $coveringRaw) {
+                    foreach ($property in $coveringRaw.PSObject.Properties) {
+                        $coveringByMutantId[[int]$property.Name] = [int[]]@($property.Value)
+                    }
+                }
+            }
+            catch {
+                # A missing/corrupt covering.json must not abort resume -- it only means the
+                # API-sourced rows below fall back to an empty CoveringTests list, same as today.
+                $coveringByMutantId = @{}
+            }
+        }
+
         foreach ($apiRow in $apiRows) {
-            $recorded[[int]$apiRow.mutantId] = [pscustomobject]@{
+            $mutantId = [int]$apiRow.mutantId
+            $coveringTests = @()
+            if ($coveringByMutantId.ContainsKey($mutantId)) {
+                $coveringTests = $coveringByMutantId[$mutantId]
+            }
+
+            $recorded[$mutantId] = [pscustomobject]@{
                 Status        = $apiRow.status
                 KillingTest   = $apiRow.killingTest
                 DurationMs    = $apiRow.durationMs
-                CoveringTests = @()
+                CoveringTests = $coveringTests
                 Error         = $null
             }
         }

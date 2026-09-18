@@ -677,6 +677,55 @@ Describe 'Invoke-MutMutantLoop' {
         Should -Invoke -ModuleName MutantLoop Invoke-MutApi -ParameterFilter { $Method -eq 'PATCH' -and $Body.activeMutantId -eq 2 } -Times 0
     }
 
+    It 'reads coveringTests for API-resumed mutants from covering.json instead of hard-coding an empty list' {
+        # covering.json (written by Run.psm1's Get-MutCoveringTestsStep, §6.5.4 step 7) is on
+        # disk before the loop ever runs, keyed by mutant id as a string.
+        $coveringPath = Join-Path $script:RunDir 'covering.json'
+        ([ordered]@{ '1' = @(95155); '2' = @(95155, 95913) } | ConvertTo-Json -Depth 10) |
+            Set-Content -Path $coveringPath -Encoding UTF8
+
+        Mock -ModuleName MutantLoop Invoke-MutApi {
+            param($Env, $Method, $Path, $Body)
+            if ($Method -eq 'GET' -and $Path -notlike '*mutantId*') {
+                # The upfront resume-fetch: mutants 1 and 2 already have API rows, which never
+                # carry coveringTests at all (the `MUT Mutant Result` table has no such column).
+                return [pscustomobject]@{
+                    value = @(
+                        [pscustomobject]@{ mutantId = 1; status = 'Survived'; killingTest = $null; durationMs = 111 }
+                        [pscustomobject]@{ mutantId = 2; status = 'Killed'; killingTest = 'C:F'; durationMs = 222 }
+                    )
+                }
+            }
+            if ($Method -eq 'GET') {
+                return [pscustomobject]@{ value = @() }
+            }
+            return $null
+        }
+
+        Mock -ModuleName MutantLoop Invoke-MutTestsWithBudget {
+            [pscustomobject]@{
+                TimedOut     = $false
+                ErrorMessage = $null
+                Result       = [pscustomobject]@{
+                    Passed = 1; Failed = 0; DurationMs = 50
+                    Tests  = @([pscustomobject]@{ Codeunit = 'C'; Function = 'F'; Result = 'Pass'; DurationMs = 50; Error = $null })
+                }
+            }
+        }
+
+        $mutants = @(
+            [pscustomobject]@{ id = 1; objectId = 50000; line = 4 }
+            [pscustomobject]@{ id = 2; objectId = 50000; line = 4 }
+        )
+
+        $results = Invoke-MutMutantLoop -Config $script:Config -Env $script:EnvHandle -Mutants $mutants `
+            -Baseline $script:Baseline -Coverage $script:Coverage -References $script:References `
+            -RunNo 21 -RunDir $script:RunDir -BackendModulePath 'unused.psm1'
+
+        @(($results | Where-Object { $_.Id -eq 1 }).CoveringTests) | Should -Be @(95155)
+        @(($results | Where-Object { $_.Id -eq 2 }).CoveringTests) | Should -Be @(95155, 95913)
+    }
+
     It 'skips the Survived POST when a mutantResults row already exists for (runNo, mutantId) -- mid-iteration idempotency, distinct from a full resume (M3)' {
         Mock -ModuleName MutantLoop Invoke-MutApi {
             param($Env, $Method, $Path, $Body)
