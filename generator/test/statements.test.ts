@@ -478,6 +478,85 @@ test('findSimpleStatements: a ternary inside a case-branch statement does not cr
   );
 });
 
+// --- Fix round 1 (review blocker 1): a ternary OUTSIDE a case block must not leak a stale
+// "pending ?" credit into a LATER case block's genuine branch-label colon. AL statements legally
+// end without `;` before `else`/`end`/`until`, so the credit survives past exactly those
+// terminators; every existing ternary test put the ternary INSIDE a case branch, where the bug
+// happened not to matter (the leaked credit is consumed by the branch's own colon, not a later
+// one), so this shape was never exercised.
+
+test('findSimpleStatements: a ternary outside a case block (statement ends at "else", no ";") does not swallow the next case branch\'s label (blocker 1)', () => {
+  const source = [
+    'codeunit 50914 "P5k Cu"',
+    '{',
+    '    procedure T1(b: Boolean; c: Boolean; y: Integer)',
+    '    var',
+    '        FxRec: Record "Probe Tbl";',
+    '    begin',
+    '        if b then',
+    '            y := c ? 1 : 2',
+    '        else',
+    '            case y of',
+    '                1:',
+    '                    FxRec.Insert(true);',
+    '                2:',
+    '                    FxRec.Modify(true);',
+    '            end;',
+    '    end;',
+    '}',
+    '',
+  ].join('\n');
+  const { tokens, span } = oneProcedure(source);
+  const statements = findSimpleStatements(tokens, span);
+
+  const texts = statements.map((s) => textOf(tokens, s.startIdx, s.endIdx));
+  assert.deepEqual(texts, [
+    'y := c ? 1 : 2',
+    'FxRec . Insert ( true )',
+    'FxRec . Modify ( true )',
+  ]);
+  for (let i = 1; i < statements.length; i++) {
+    assert.ok(statements[i - 1]!.endIdx < statements[i]!.startIdx, 'statement spans must not overlap');
+  }
+});
+
+test('findSimpleStatements: a ternary outside a case block (statement ends at "end", no ";") does not swallow the next case branch\'s label (blocker 1)', () => {
+  const source = [
+    'codeunit 50915 "P5l Cu"',
+    '{',
+    '    procedure T2(b: Boolean; c: Boolean; y: Integer)',
+    '    var',
+    '        FxRec: Record "Probe Tbl";',
+    '    begin',
+    '        if b then',
+    '            begin',
+    '                y := c ? 1 : 2',
+    '            end',
+    '        else',
+    '            case y of',
+    '                1:',
+    '                    FxRec.Insert(true);',
+    '                2:',
+    '                    FxRec.Modify(true);',
+    '            end;',
+    '    end;',
+    '}',
+    '',
+  ].join('\n');
+  const { tokens, span } = oneProcedure(source);
+  const statements = findSimpleStatements(tokens, span);
+
+  const texts = statements.map((s) => textOf(tokens, s.startIdx, s.endIdx));
+  assert.deepEqual(texts, [
+    'y := c ? 1 : 2',
+    'FxRec . Insert ( true )',
+    'FxRec . Modify ( true )',
+  ]);
+  for (let i = 1; i < statements.length; i++) {
+    assert.ok(statements[i - 1]!.endIdx < statements[i]!.startIdx, 'statement spans must not overlap');
+  }
+});
+
 const fixturePath = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
   '../../../fixtures/fixture-aut/src/MUTFxOrderMgt.Codeunit.al',

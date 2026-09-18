@@ -48,6 +48,14 @@ function findStatementStarts(tokens: readonly Token[], span: ProcedureSpan): num
   // depth alone. Tracked per paren-depth exactly like `looksLikeCaseLabel` below, so an unmatched
   // `?` "absorbs" the next depth-0 `:` instead of it being misread as ending a branch label (and
   // marking whatever follows -- the ternary's false branch -- as a bogus second statement start).
+  //
+  // Fix round 1 (review blocker): this must self-balance a `?`/`:` pair regardless of what is on
+  // top of blockStack at the time -- a ternary living in an ordinary `begin` block (its normal
+  // habitat) previously left its `?` uncounted against the depth-0 `:` (only consumed when
+  // blockStack top was 'case'), so the credit survived past a statement that legally ends without
+  // `;` (before `else`/`end`/`until`) and was later spent on a REAL case-branch label's colon in a
+  // following case block, silently un-marking that branch's statement start (no skip entry, no
+  // error -- the branch is just never mutated).
   const ternaryPending: number[] = [0];
 
   const mark = (afterIdx: number): void => {
@@ -65,15 +73,20 @@ function findStatementStarts(tokens: readonly Token[], span: ProcedureSpan): num
         ternaryPending[parenDepth] = 0;
       } else if (isCloseBracket(tok)) {
         parenDepth--;
-      } else if (tok.text === ':' && parenDepth === 0 && blockStack[blockStack.length - 1] === 'case') {
+      } else if (tok.text === ':' && parenDepth === 0) {
+        // Self-balancing: a depth-0 `:` first resolves a pending ternary `?`, REGARDLESS of what
+        // is on top of blockStack. A ternary normally lives in an ordinary `begin` block, not a
+        // `case` block, so gating this consumption on blockStack top === 'case' (the original
+        // bug) left the credit unconsumed there; it then survived past a statement that legally
+        // ends without `;` (before `else`/`end`/`until`) and was spent on a LATER, genuine
+        // case-branch label's colon instead, silently un-marking that branch's statement start.
         if ((ternaryPending[0] ?? 0) > 0) {
           ternaryPending[0] = ternaryPending[0]! - 1;
-        } else {
+        } else if (blockStack[blockStack.length - 1] === 'case') {
           mark(i);
         }
       } else if (tok.text === ';' && parenDepth === 0) {
         mark(i);
-        ternaryPending[0] = 0; // defensive: a new statement never carries over a pending ternary
       }
       continue;
     }
