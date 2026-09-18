@@ -276,9 +276,41 @@ Describe 'Export-MutResults' {
         ($json.mutants | Where-Object { $_.id -eq 4 }).status | Should -Be 'Error'
         ($json.mutants | Where-Object { $_.id -eq 5 }).status | Should -Be 'Pending'
 
+        # §7.5 (amended), review fix round 2: the reason must survive into results/<n>.json, not
+        # just the summary -- Get-MutMergedMutantRows previously discarded $result.Error entirely.
+        ($json.mutants | Where-Object { $_.id -eq 4 }).reason | Should -Be 'API call timed out'
+
         $summary = Get-Content -Path $paths.SummaryPath -Raw
         $summary | Should -Match '## Errors'
         $summary | Should -Match 'ErroredOne'
+        $summary | Should -Match 'API call timed out'
+
+        # The Errors table must carry the reason, not the Survivors/Timeouts table's shape
+        # (Original -> Mutated, Covering tests) -- isolate just the Errors section's own text.
+        $errorsSection = ($summary -split '## Errors')[1] -split '## Uncovered' | Select-Object -First 1
+        $errorsSection | Should -Match 'Reason'
+        $errorsSection | Should -Not -Match 'Original -> Mutated'
+        $errorsSection | Should -Not -Match 'Covering tests'
+
+        # Mutant 5 is Pending, so the summary must carry a Pending count ("any mutant was
+        # never reached", §7.5 amended).
+        $summary | Should -Match '## Pending'
+        $summary | Should -Match 'Pending: 1'
+    }
+
+    It 'does not render a Pending section when no mutant was ever left Pending' {
+        $mutants = @(
+            New-MutTestMutant -Id 1 -Procedure 'KilledOne'
+        )
+        $results = @(
+            [pscustomobject]@{ Id = 1; Status = 'Killed'; KillingTest = 'C:F1'; DurationMs = 100; CoveringTests = @(95155) }
+        )
+
+        $paths = Export-MutResults -RunNo 8 -Config $script:Config -Env $script:EnvHandle -Mutants $mutants -Results $results `
+            -OutDir $script:OutDir -StartedUtc (Get-Date) -FinishedUtc (Get-Date) -CompileErrorIds @()
+
+        $summary = Get-Content -Path $paths.SummaryPath -Raw
+        $summary | Should -Not -Match '## Pending'
     }
 
     It 'writes score as JSON null (not 0.0), and Get-MutScore returns $null, when every mutant is Error (the denominator collapses to 0)' {
@@ -299,6 +331,12 @@ Describe 'Export-MutResults' {
 
         $rawJsonText = Get-Content -Path $paths.ResultsPath -Raw
         $rawJsonText | Should -Match '"score":\s*null'
+
+        # review fix round 2: "Score: ****" is literal asterisks in GitHub markdown (a
+        # rendering bug), not a readable statement that the score could not be computed.
+        $summary = Get-Content -Path $paths.SummaryPath -Raw
+        $summary | Should -Not -Match '\*\*\*\*'
+        $summary | Should -Match 'Score: _not computed'
     }
 
     It 'throws when a result row carries an unrecognized status, instead of silently exporting it' {

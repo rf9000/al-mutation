@@ -128,6 +128,7 @@ function Get-MutMergedMutantRows {
             $killingTest = $null
             $durationMs = $null
             $coveringTests = @()
+            $reason = $null
         }
         elseif ($resultsById.ContainsKey($id)) {
             $result = $resultsById[$id]
@@ -135,12 +136,21 @@ function Get-MutMergedMutantRows {
             $killingTest = $result.KillingTest
             $durationMs = $result.DurationMs
             $coveringTests = @($result.CoveringTests)
+            # §7.5 (amended): the Errors table must carry THE REASON an Error mutant's run
+            # failed. Invoke-MutMutantLoop already attaches an `Error` property (the exception
+            # message) to a row with Status 'Error' (MutantLoop.psm1); this was previously
+            # discarded here before it could reach either results/<RunNo>.json or the summary.
+            $reason = $null
+            if (Test-MutHasProperty $result 'Error') {
+                $reason = $result.Error
+            }
         }
         else {
             $status = 'Pending'
             $killingTest = $null
             $durationMs = $null
             $coveringTests = @()
+            $reason = $null
         }
 
         Assert-MutKnownStatus -Status $status -MutantId $id
@@ -158,6 +168,7 @@ function Get-MutMergedMutantRows {
             killingTest   = $killingTest
             durationMs    = $durationMs
             coveringTests = $coveringTests
+            reason        = $reason
         }
     }
 
@@ -214,7 +225,9 @@ function Get-MutSummaryMarkdown {
     <#
         .SYNOPSIS
         Private. Renders the §7.5 summary.md sections: header table, totals table, score,
-        Survivors table, Timeouts table, Compile errors table, Uncovered count.
+        Survivors table, Timeouts table, Compile errors table, Errors table (with the reason,
+        not the Survivors/Timeouts shape), Uncovered count, and a Pending count when any
+        mutant was never reached.
     #>
     param(
         [Parameter(Mandatory = $true)]
@@ -278,7 +291,16 @@ function Get-MutSummaryMarkdown {
 
     $lines += '## Score'
     $lines += ''
-    $lines += "Score: **$Score**"
+    if ($null -eq $Score) {
+        # Not "Score: ****" (Score interpolates to an empty string, and **<empty>** renders as
+        # literal asterisks in GitHub markdown -- a rendering bug in the one artifact meant to
+        # make a collapsed run legible at a glance). $null means the denominator was not
+        # positive (Get-MutScore), i.e. no mutant could contribute a score at all.
+        $lines += 'Score: _not computed (no mutant could contribute; see Errors)_'
+    }
+    else {
+        $lines += "Score: **$Score**"
+    }
     $lines += ''
 
     $lines += '## Survivors'
@@ -342,12 +364,19 @@ function Get-MutSummaryMarkdown {
         $lines += '_None._'
     }
     else {
-        $lines += Format-MutMarkdownTableRow @('Id', 'Object', 'Procedure', 'Line', 'Operator', 'Original -> Mutated', 'Covering tests')
-        $lines += Format-MutMarkdownTableRow @('---', '---', '---', '---', '---', '---', '---')
+        # Not the Survivors/Timeouts table's shape (Original -> Mutated, Covering tests): an
+        # Error row is an infrastructure failure, not evidence about the mutation itself, so
+        # what a reader needs here is WHERE it happened and WHY (§7.5, amended), not the mutation.
+        $lines += Format-MutMarkdownTableRow @('Id', 'Object', 'Procedure', 'Line', 'Operator', 'Reason')
+        $lines += Format-MutMarkdownTableRow @('---', '---', '---', '---', '---', '---')
         foreach ($row in $errors) {
+            $reasonForReport = ''
+            if (Test-MutHasProperty $row 'reason') {
+                $reasonForReport = $row.reason
+            }
             $lines += Format-MutMarkdownTableRow @(
                 "$($row.id)", "$($row.objectId)", $row.procedure, "$($row.line)", $row.operator,
-                "$($row.original) -> $($row.mutated)", (($row.coveringTests) -join ', ')
+                $reasonForReport
             )
         }
     }
@@ -357,6 +386,15 @@ function Get-MutSummaryMarkdown {
     $lines += ''
     $lines += "Uncovered: $($Totals.uncovered)"
     $lines += ''
+
+    if ($totalsPending -gt 0) {
+        # §7.5 (amended): "a Pending count when any mutant was never reached" -- rendered only
+        # when it is non-zero, since a completed run has none and Pending is otherwise noise.
+        $lines += '## Pending'
+        $lines += ''
+        $lines += "Pending: $totalsPending"
+        $lines += ''
+    }
 
     return ($lines -join "`r`n")
 }
