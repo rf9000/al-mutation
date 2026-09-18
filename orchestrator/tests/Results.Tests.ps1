@@ -137,6 +137,10 @@ Describe 'Export-MutResults' {
         $paths.ResultsPath | Should -Be (Join-Path $script:OutDir '1.json')
         $paths.SummaryPath | Should -Be (Join-Path $script:OutDir '1-summary.md')
 
+        # BOM-less UTF-8: the first byte of both written files must not be the UTF-8 BOM (0xEF).
+        ([System.IO.File]::ReadAllBytes($paths.ResultsPath)[0]) | Should -Not -Be 0xEF
+        ([System.IO.File]::ReadAllBytes($paths.SummaryPath)[0]) | Should -Not -Be 0xEF
+
         $json = Get-Content -Path $paths.ResultsPath -Raw | ConvertFrom-Json
 
         $json.runNo | Should -Be 1

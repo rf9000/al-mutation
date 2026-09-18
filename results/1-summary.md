@@ -1,4 +1,4 @@
-﻿# Mutation run 1 summary
+# Mutation run 1 summary
 
 ## Run
 

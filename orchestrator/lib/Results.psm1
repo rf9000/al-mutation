@@ -423,8 +423,15 @@ function Export-MutResults {
         mutants         = $mergedRows
     }
 
+    # Set-Content -Encoding UTF8 emits a UTF-8 BOM (EF BB BF) under PS 5.1, which jq,
+    # JSON.parse and Python all reject outright (ConvertFrom-Json tolerates it, which is why
+    # every internal round-trip and Pester assertion previously passed anyway). Write both
+    # files with the same BOM-less UTF-8 idiom already used at Schemata.psm1:231-232/261-262.
+    $noBomUtf8 = New-Object System.Text.UTF8Encoding($false)
+
     $resultsPath = Join-Path $OutDir "$RunNo.json"
-    ($resultsObject | ConvertTo-Json -Depth 10) | Set-Content -Path $resultsPath -Encoding UTF8
+    $resultsJson = $resultsObject | ConvertTo-Json -Depth 10
+    [System.IO.File]::WriteAllText($resultsPath, $resultsJson, $noBomUtf8)
 
     $wallClock = ''
     if (($StartedUtc -is [datetime]) -and ($FinishedUtc -is [datetime])) {
@@ -436,7 +443,7 @@ function Export-MutResults {
         -WallClock $wallClock -Totals $totals -Score $score -MergedRows $mergedRows
 
     $summaryPath = Join-Path $OutDir "$RunNo-summary.md"
-    $summaryMarkdown | Set-Content -Path $summaryPath -Encoding UTF8
+    [System.IO.File]::WriteAllText($summaryPath, $summaryMarkdown, $noBomUtf8)
 
     return [pscustomobject]@{ ResultsPath = $resultsPath; SummaryPath = $summaryPath }
 }
