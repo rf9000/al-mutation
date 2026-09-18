@@ -119,7 +119,7 @@ codeunit 50310 "AUT Pragma Tests"
     }
 }
 
-Describe 'Get-MutObjectHeader (private: scans forward past directives instead of testing only the first non-comment line)' {
+Describe 'Get-MutObjectHeader (private: tests only the first meaningful line -- blank/`//`/`/* */`/`#` are trivia, nothing else is skipped)' {
     BeforeAll {
         $script:HeaderScratch = Join-Path $script:TempRoot 'header-scratch'
         New-Item -ItemType Directory -Path $script:HeaderScratch -Force | Out-Null
@@ -164,6 +164,79 @@ codeunit 50021 "AUT If Codeunit"
         $header.ObjectType | Should -Be 'codeunit'
         $header.Id | Should -Be 50021
         $header.Name | Should -Be 'AUT If Codeunit'
+    }
+
+    It 'finds the header past a multi-line /* ... */ block comment, WITHOUT attaching the id of a fake header commented out inside it (fix-round-1 regression: the id must be 50100, never the 50999 inside the comment)' {
+        $path = Join-Path $script:HeaderScratch 'block-comment.al'
+        Set-Content -Path $path -Encoding UTF8 -Value @'
+/*
+    codeunit 50999 "Old Fake Codeunit"
+*/
+codeunit 50100 "Real Codeunit"
+{ }
+'@
+
+        $header = InModuleScope References {
+            param($Path)
+            Get-MutObjectHeader -Path $Path
+        } -Parameters @{ Path = $path }
+
+        $header | Should -Not -BeNullOrEmpty
+        $header.Id | Should -Be 50100
+        $header.Name | Should -Be 'Real Codeunit'
+    }
+
+    It 'finds the header past a single-line /* ... */ block comment' {
+        $path = Join-Path $script:HeaderScratch 'single-line-block-comment.al'
+        Set-Content -Path $path -Encoding UTF8 -Value @'
+/* license header */
+codeunit 50101 "AUT Single Line Comment Codeunit"
+{ }
+'@
+
+        $header = InModuleScope References {
+            param($Path)
+            Get-MutObjectHeader -Path $Path
+        } -Parameters @{ Path = $path }
+
+        $header | Should -Not -BeNullOrEmpty
+        $header.Id | Should -Be 50101
+        $header.Name | Should -Be 'AUT Single Line Comment Codeunit'
+    }
+
+    It 'finds the header when real code follows the closing */ on the same line' {
+        $path = Join-Path $script:HeaderScratch 'same-line-after-comment.al'
+        Set-Content -Path $path -Encoding UTF8 -Value @'
+/* license header */codeunit 50102 "AUT Same Line Codeunit"
+{ }
+'@
+
+        $header = InModuleScope References {
+            param($Path)
+            Get-MutObjectHeader -Path $Path
+        } -Parameters @{ Path = $path }
+
+        $header | Should -Not -BeNullOrEmpty
+        $header.Id | Should -Be 50102
+        $header.Name | Should -Be 'AUT Same Line Codeunit'
+    }
+
+    It 'returns $null for a realistic permissionset whose body has a numeric Permissions list (fix-round-1 regression: must not misread "table 50100 = X" as a header)' {
+        $path = Join-Path $script:HeaderScratch 'permissionset-with-numeric-permissions.al'
+        Set-Content -Path $path -Encoding UTF8 -Value @'
+permissionset 50200 "My Perm Set"
+{
+    Permissions = tabledata "Customer" = RIMD,
+                  table 50100 = X, page 50101 = X;
+}
+'@
+
+        $header = InModuleScope References {
+            param($Path)
+            Get-MutObjectHeader -Path $Path
+        } -Parameters @{ Path = $path }
+
+        $header | Should -BeNullOrEmpty
     }
 
     It 'returns $null for a file with no object header at all' {
