@@ -187,6 +187,72 @@ Describe 'Get-MutConfig' {
         { Get-MutConfig -Path $path } | Should -Throw '*timeouts.minSeconds*'
     }
 
+    It 'throws when timeouts.minSeconds is 0 (a zero budget marks every mutant Timeout)' {
+        $overrides = @{ timeouts = @{ perTestFactor = 5; minSeconds = 0; jobOverheadSeconds = 0 } }
+        $path = New-MutTestConfigFile -Overrides $overrides
+        { Get-MutConfig -Path $path } | Should -Throw '*timeouts.minSeconds*'
+    }
+
+    It 'throws when timeouts.minSeconds is negative' {
+        $overrides = @{ timeouts = @{ perTestFactor = 5; minSeconds = -1; jobOverheadSeconds = 0 } }
+        $path = New-MutTestConfigFile -Overrides $overrides
+        { Get-MutConfig -Path $path } | Should -Throw '*timeouts.minSeconds*'
+    }
+
+    It 'throws when timeouts.minSeconds is not a number' {
+        $overrides = @{ timeouts = @{ perTestFactor = 5; minSeconds = 'soon'; jobOverheadSeconds = 0 } }
+        $path = New-MutTestConfigFile -Overrides $overrides
+        { Get-MutConfig -Path $path } | Should -Throw '*timeouts.minSeconds*'
+    }
+
+    It 'throws when timeouts.perTestFactor is 0 or negative' {
+        $overrides = @{ timeouts = @{ perTestFactor = 0; minSeconds = 60; jobOverheadSeconds = 0 } }
+        $path = New-MutTestConfigFile -Overrides $overrides
+        { Get-MutConfig -Path $path } | Should -Throw '*timeouts.perTestFactor*'
+    }
+
+    It 'allows timeouts.jobOverheadSeconds to be 0 (both real configs ship it as 0)' {
+        $overrides = @{ timeouts = @{ perTestFactor = 5; minSeconds = 60; jobOverheadSeconds = 0 } }
+        $path = New-MutTestConfigFile -Overrides $overrides
+        { Get-MutConfig -Path $path } | Should -Not -Throw
+    }
+
+    It 'throws when timeouts.jobOverheadSeconds is negative' {
+        $overrides = @{ timeouts = @{ perTestFactor = 5; minSeconds = 60; jobOverheadSeconds = -5 } }
+        $path = New-MutTestConfigFile -Overrides $overrides
+        { Get-MutConfig -Path $path } | Should -Throw '*timeouts.jobOverheadSeconds*'
+    }
+
+    It 'allows generator.maxMutants to be 0 (both real configs use 0 to mean "no cap")' {
+        $overrides = @{ generator = @{ maxMutants = 0; onlyObjects = @(); seed = 1; operators = @('REL'); includeBreak = $false } }
+        $path = New-MutTestConfigFile -Overrides $overrides
+        { Get-MutConfig -Path $path } | Should -Not -Throw
+    }
+
+    It 'throws when generator.maxMutants is negative' {
+        $overrides = @{ generator = @{ maxMutants = -1; onlyObjects = @(); seed = 1; operators = @('REL'); includeBreak = $false } }
+        $path = New-MutTestConfigFile -Overrides $overrides
+        { Get-MutConfig -Path $path } | Should -Throw '*generator.maxMutants*'
+    }
+
+    It 'throws when generator.maxMutants is not an integer' {
+        $overrides = @{ generator = @{ maxMutants = 'lots'; onlyObjects = @(); seed = 1; operators = @('REL'); includeBreak = $false } }
+        $path = New-MutTestConfigFile -Overrides $overrides
+        { Get-MutConfig -Path $path } | Should -Throw '*generator.maxMutants*'
+    }
+
+    It 'throws when generator.seed is negative' {
+        $overrides = @{ generator = @{ maxMutants = 0; onlyObjects = @(); seed = -1; operators = @('REL'); includeBreak = $false } }
+        $path = New-MutTestConfigFile -Overrides $overrides
+        { Get-MutConfig -Path $path } | Should -Throw '*generator.seed*'
+    }
+
+    It 'throws when generator.seed is not an integer' {
+        $overrides = @{ generator = @{ maxMutants = 0; onlyObjects = @(); seed = 'random'; operators = @('REL'); includeBreak = $false } }
+        $path = New-MutTestConfigFile -Overrides $overrides
+        { Get-MutConfig -Path $path } | Should -Throw '*generator.seed*'
+    }
+
     It 'throws naming the missing key when demoPortal.cliPath is absent and backend is DemoPortal' {
         $overrides = @{ demoPortal = @{ profileId = 'x'; activationAppId = 'y' } }
         $path = New-MutTestConfigFile -Overrides $overrides

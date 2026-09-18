@@ -51,6 +51,55 @@ function Assert-MutNonEmptyString {
     }
 }
 
+function Assert-MutNumberAtLeast {
+    <#
+        .SYNOPSIS
+        Throws unless $Object.$Name is present, parses as a number, and is at least $Minimum
+        ($ExclusiveMinimum makes the bound strict: value > $Minimum rather than value >=
+        $Minimum). Presence-only validation previously let e.g. `timeouts.minSeconds = 0`
+        through: `Get-MutTimeoutBudget` then computes a budget of 0, `WaitOne(0)` returns
+        false immediately, and every mutant is marked Timeout -- each one triggering a full
+        environment reset plus settle.
+    #>
+    param($Object, [string]$Name, [string]$KeyPath, [double]$Minimum, [switch]$ExclusiveMinimum)
+
+    Assert-MutRequiredKey $Object $Name $KeyPath
+
+    $parsed = 0.0
+    if (-not [double]::TryParse([string]$Object.$Name, [ref]$parsed)) {
+        throw "Get-MutConfig: config key '$KeyPath' must be a number. Got '$($Object.$Name)'."
+    }
+
+    if ($ExclusiveMinimum) {
+        if ($parsed -le $Minimum) {
+            throw "Get-MutConfig: config key '$KeyPath' must be greater than $Minimum. Got '$($Object.$Name)'."
+        }
+    }
+    elseif ($parsed -lt $Minimum) {
+        throw "Get-MutConfig: config key '$KeyPath' must be at least $Minimum. Got '$($Object.$Name)'."
+    }
+}
+
+function Assert-MutIntegerAtLeast {
+    <#
+        .SYNOPSIS
+        Throws unless $Object.$Name is present, parses as an integer, and is at least
+        $Minimum.
+    #>
+    param($Object, [string]$Name, [string]$KeyPath, [int]$Minimum)
+
+    Assert-MutRequiredKey $Object $Name $KeyPath
+
+    $parsed = 0
+    if (-not [int]::TryParse([string]$Object.$Name, [ref]$parsed)) {
+        throw "Get-MutConfig: config key '$KeyPath' must be an integer. Got '$($Object.$Name)'."
+    }
+
+    if ($parsed -lt $Minimum) {
+        throw "Get-MutConfig: config key '$KeyPath' must be at least $Minimum. Got '$($Object.$Name)'."
+    }
+}
+
 function Resolve-MutConfigPath {
     <#
         .SYNOPSIS
@@ -124,9 +173,12 @@ function Assert-MutConfigShape {
     }
 
     Assert-MutRequiredKey $Config 'generator' 'generator'
-    Assert-MutRequiredKey $Config.generator 'maxMutants' 'generator.maxMutants'
+    # maxMutants = 0 means "no cap" (§6.4.9: both mutation.config.json and
+    # mutation.fixture.config.json ship it as 0), so 0 is valid; negative and non-integer
+    # values are not.
+    Assert-MutIntegerAtLeast $Config.generator 'maxMutants' 'generator.maxMutants' -Minimum 0
     Assert-MutRequiredKey $Config.generator 'onlyObjects' 'generator.onlyObjects'
-    Assert-MutRequiredKey $Config.generator 'seed' 'generator.seed'
+    Assert-MutIntegerAtLeast $Config.generator 'seed' 'generator.seed' -Minimum 0
     Assert-MutRequiredKey $Config.generator 'operators' 'generator.operators'
     Assert-MutRequiredKey $Config.generator 'includeBreak' 'generator.includeBreak'
 
@@ -137,9 +189,13 @@ function Assert-MutConfigShape {
     }
 
     Assert-MutRequiredKey $Config 'timeouts' 'timeouts'
-    Assert-MutRequiredKey $Config.timeouts 'perTestFactor' 'timeouts.perTestFactor'
-    Assert-MutRequiredKey $Config.timeouts 'minSeconds' 'timeouts.minSeconds'
-    Assert-MutRequiredKey $Config.timeouts 'jobOverheadSeconds' 'timeouts.jobOverheadSeconds'
+    # perTestFactor and minSeconds must be strictly positive: either one at 0 collapses
+    # Get-MutTimeoutBudget's per-mutant budget to 0, WaitOne(0) returns false immediately, and
+    # every mutant is marked Timeout. jobOverheadSeconds legitimately ships as 0 in both real
+    # configs, so it only needs to be non-negative.
+    Assert-MutNumberAtLeast $Config.timeouts 'perTestFactor' 'timeouts.perTestFactor' -Minimum 0 -ExclusiveMinimum
+    Assert-MutNumberAtLeast $Config.timeouts 'minSeconds' 'timeouts.minSeconds' -Minimum 0 -ExclusiveMinimum
+    Assert-MutNumberAtLeast $Config.timeouts 'jobOverheadSeconds' 'timeouts.jobOverheadSeconds' -Minimum 0
 
     if ($Config.backend -eq 'DemoPortal') {
         Assert-MutRequiredKey $Config 'demoPortal' 'demoPortal'
