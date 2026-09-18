@@ -129,6 +129,16 @@ test('INSFLAG: case-insensitive on the method and the literal (RESULT.INSERT(TRU
   assert.equal(candidates[0]!.mutated, 'Result.INSERT(false)');
 });
 
+test('INSFLAG: an assignment whose RHS happens to end in .Modify(true) is NOT a candidate (unanchored-regex fix)', () => {
+  // The receiver must be the WHOLE statement, not just its suffix -- otherwise the regex fires on
+  // any statement/expression that happens to END with a call shaped like `.Modify(true)`, such as
+  // this ternary assignment (`ok := c ? x : Rec.Modify(true)`), which is not an Insert/Modify/
+  // Delete *call statement* at all.
+  const { ctx, stmt } = procedureFixture('ok := c ? x : Rec.Modify(true)');
+  const candidates = INSFLAG.apply(ctx, stmt);
+  assert.equal(candidates.length, 0);
+});
+
 // --- BREAK ---
 
 test('BREAK: every simple statement mutates to MutBreak_ThisDoesNotCompile()', () => {
