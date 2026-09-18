@@ -284,6 +284,15 @@ Describe 'Invoke-MutTests -Coverage (T24, U9 raw/xUnit path)' {
 
         { Invoke-MutTests -Env $envHandle -Targets @([pscustomobject]@{ CodeunitId = 95155; Function = $null }) -TimeoutSec 30 -Coverage } | Should -Not -Throw
     }
+
+    It 'throws (naming the exit code and stderr), rather than returning a clean Passed=0/Failed=0 result, when stdout under --raw has no parseable xUnit XML' {
+        Mock -ModuleName DemoPortal Invoke-Continia {
+            [pscustomobject]@{ ExitCode = 1; StdOut = ''; StdErr = 'panic: could not reach the runner service' }
+        }
+
+        { Invoke-MutTests -Env $envHandle -Targets @([pscustomobject]@{ CodeunitId = 95155; Function = $null }) -TimeoutSec 30 -Coverage } |
+            Should -Throw '*ExitCode=1*could not reach the runner service*'
+    }
 }
 
 Describe 'Invoke-Continia -AllowNonZeroExit' {

@@ -1321,18 +1321,26 @@ function Invoke-MutTests {
             }
 
             $xmlStart = $response.StdOut.IndexOf('<')
-            if ($xmlStart -ge 0) {
-                [xml]$xmlDoc = $response.StdOut.Substring($xmlStart)
-                foreach ($t in (ConvertTo-MutXunitTests -XmlDoc $xmlDoc -Target $target)) {
-                    $tests += $t
-                    if ($t.Result -eq 'Pass') {
-                        $totalPassed++
-                    }
-                    elseif ($t.Result -eq 'Fail') {
-                        $totalFailed++
-                    }
-                    $totalDurationMs += $t.DurationMs
+            if ($xmlStart -lt 0) {
+                # Do NOT silently fall through to a clean Passed=0/Failed=0 result: that shape is
+                # indistinguishable from "this codeunit genuinely has zero tests" and lets a
+                # non-zero exit / unparseable --raw response masquerade as a passing baseline
+                # (the class of bug U5/T09 and the baseline retry guard at MutantLoop.psm1:593
+                # were written to catch; this call site had no equivalent guard). Surface the
+                # exit code and stderr so the caller sees a real failure instead.
+                throw "Invoke-MutTests: coverage run for codeunit $($target.CodeunitId) produced no parseable xUnit XML on stdout (ExitCode=$($response.ExitCode)). StdOut: $($response.StdOut); StdErr: $($response.StdErr)"
+            }
+
+            [xml]$xmlDoc = $response.StdOut.Substring($xmlStart)
+            foreach ($t in (ConvertTo-MutXunitTests -XmlDoc $xmlDoc -Target $target)) {
+                $tests += $t
+                if ($t.Result -eq 'Pass') {
+                    $totalPassed++
                 }
+                elseif ($t.Result -eq 'Fail') {
+                    $totalFailed++
+                }
+                $totalDurationMs += $t.DurationMs
             }
 
             continue

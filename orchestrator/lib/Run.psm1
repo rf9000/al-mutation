@@ -419,6 +419,16 @@ function Publish-MutBaseline {
         $target = @([pscustomobject]@{ CodeunitId = $codeunitId; Function = $null })
         $result = Invoke-MutTests -Env $Env -Targets $target -TimeoutSec $script:MutWholeSuiteTimeoutSec -Coverage
 
+        if (($result.Passed + $result.Failed) -eq 0) {
+            # A baseline run that reports zero passed AND zero failed tests is never a clean
+            # success: it means the coverage run never actually exercised this codeunit (or its
+            # result could not be read), and letting it through would zero out this codeunit's
+            # duration (every mutant's timeout budget then collapses to timeouts.minSeconds),
+            # produce empty coverage rows, and score every mutant reached through it on a
+            # meaningless basis. Fail loudly instead of recording a clean 0/0 baseline.
+            throw "Publish-MutBaseline: the baseline test run for codeunit $codeunitId reported zero tests (Passed=0, Failed=0); aborting rather than recording an empty baseline."
+        }
+
         $allTests += @($result.Tests)
         $durationsByCodeunit["$codeunitId"] = $result.DurationMs
         $jobIdsByCodeunit["$codeunitId"] = @($result.JobIds)

@@ -448,4 +448,19 @@ Describe 'Publish-MutBaseline error surfacing (M6)' {
         { Publish-MutBaseline -Config $script:Config -Env $script:EnvHandle -RunDir $script:RunDir } |
             Should -Throw '*symbol-fetch-failed*dev-endpoint package failed validation*'
     }
+
+    It 'aborts naming the codeunit, rather than recording a clean baseline, when a coverage test run reports zero passed and zero failed tests' {
+        Mock -ModuleName Run Publish-MutApp {
+            [pscustomobject]@{ Success = $true; Code = $null; Diagnostics = @(); DurationSec = 0.1 }
+        }
+        Mock -ModuleName Run Grant-MutPermissionSet { }
+        Mock -ModuleName Run Invoke-MutTests {
+            [pscustomobject]@{ Passed = 0; Failed = 0; Tests = @(); DurationMs = 0; JobIds = @() }
+        }
+
+        { Publish-MutBaseline -Config $script:Config -Env $script:EnvHandle -RunDir $script:RunDir } |
+            Should -Throw '*50300*zero tests*'
+
+        Test-Path (Join-Path $script:RunDir 'baseline.json') | Should -Be $false
+    }
 }
