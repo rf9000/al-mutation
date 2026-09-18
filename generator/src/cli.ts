@@ -33,22 +33,49 @@ function usageError(message: string): number {
   return 2;
 }
 
+/** Thrown by the `parse*` helpers below on a malformed flag value; caught in `runGenerate`. */
+class UsageError extends Error {}
+
+const VALID_OPERATOR_NAMES: ReadonlySet<string> = new Set(OPERATOR_ORDER);
+
+/** Validates every entry against the known operator catalog (§6.4.4) so a typo never silently matches nothing. */
 function parseOperatorList(value: string | undefined): OperatorName[] {
   if (value === undefined) return [...OPERATOR_ORDER];
   const requested = value
     .split(',')
     .map((s) => s.trim())
     .filter((s) => s.length > 0);
+  for (const name of requested) {
+    if (!VALID_OPERATOR_NAMES.has(name)) {
+      throw new UsageError(
+        `--operators: unknown operator ${JSON.stringify(name)} (valid: ${OPERATOR_ORDER.join(', ')})`,
+      );
+    }
+  }
   return requested as OperatorName[];
 }
 
+/** Validates every entry is a plain integer so a typo never silently becomes NaN (matching nothing, i.e. 0 mutants). */
 function parseObjectList(value: string | undefined): number[] {
   if (value === undefined) return [];
   return value
     .split(',')
     .map((s) => s.trim())
     .filter((s) => s.length > 0)
-    .map((s) => Number.parseInt(s, 10));
+    .map((s) => {
+      if (!/^-?\d+$/.test(s)) {
+        throw new UsageError(`--only-objects: ${JSON.stringify(s)} is not an integer`);
+      }
+      return Number.parseInt(s, 10);
+    });
+}
+
+/** Validates a required-integer flag so a typo never silently becomes NaN (e.g. --max-mutants abc silently ignoring the cap). */
+function parseRequiredInt(value: string, flagName: string): number {
+  if (!/^-?\d+$/.test(value)) {
+    throw new UsageError(`--${flagName} must be an integer, got ${JSON.stringify(value)}`);
+  }
+  return Number.parseInt(value, 10);
 }
 
 function runGenerate(args: readonly string[]): number {
@@ -78,19 +105,25 @@ function runGenerate(args: readonly string[]): number {
     excludeStableKeys = keys as string[];
   }
 
-  const options: GenerateOptions = {
-    autDir,
-    outDir,
-    coreAppId,
-    coreAppVersion,
-    autVersion: flags.get('aut-version'),
-    maxMutants: flags.has('max-mutants') ? Number.parseInt(flags.get('max-mutants')!, 10) : 0,
-    seed: flags.has('seed') ? Number.parseInt(flags.get('seed')!, 10) : 1,
-    onlyObjects: parseObjectList(flags.get('only-objects')),
-    operators: parseOperatorList(flags.get('operators')),
-    includeBreak: flags.has('include-break'),
-    excludeStableKeys,
-  };
+  let options: GenerateOptions;
+  try {
+    options = {
+      autDir,
+      outDir,
+      coreAppId,
+      coreAppVersion,
+      autVersion: flags.get('aut-version'),
+      maxMutants: flags.has('max-mutants') ? parseRequiredInt(flags.get('max-mutants')!, 'max-mutants') : 0,
+      seed: flags.has('seed') ? Number.parseInt(flags.get('seed')!, 10) : 1,
+      onlyObjects: parseObjectList(flags.get('only-objects')),
+      operators: parseOperatorList(flags.get('operators')),
+      includeBreak: flags.has('include-break'),
+      excludeStableKeys,
+    };
+  } catch (err) {
+    if (err instanceof UsageError) return usageError(err.message);
+    throw err;
+  }
 
   try {
     const result = generate(options);
