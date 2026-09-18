@@ -726,7 +726,7 @@ one inside `EmitSystemNotMappedRow` after `PlaceholderConsumed := true;`.
                 "original": "…", "mutated": "…", "status": "Survived", "killingTest": null, "durationMs": 4200,
                 "coveringTests": [50300] }] }
 ```
-`score = (killed + timeout) / (total − equivalent − compileError − error − pending)`, rounded to 4 decimals. `Uncovered` counts as survived in the denominator — the suite genuinely did not reach it. `Error` and `Pending` are **excluded** from the denominator: an infrastructure failure (a failed job, a zero-test result, an unhandled exception) is not evidence about the test suite, and leaving it in silently scored every such mutant as a survivor. The totals buckets MUST sum to `total`, and `<RunNo>-summary.md` (§7.5) MUST render an Errors section alongside Survivors/Timeouts/Compile errors/Uncovered.
+`score = (killed + timeout) / (total − equivalent − compileError − error − pending)`, rounded to 4 decimals. `Uncovered` counts as survived in the denominator — the suite genuinely did not reach it. When the denominator is **zero or negative** (e.g. every mutant errored), `score` is **`null`**, not `0` — `0` is indistinguishable in JSON from “the suite killed nothing”, which is the opposite of what a collapsed run means. `Error` and `Pending` are **excluded** from the denominator: an infrastructure failure (a failed job, a zero-test result, an unhandled exception) is not evidence about the test suite, and leaving it in silently scored every such mutant as a survivor. The totals buckets MUST sum to `total`, and `<RunNo>-summary.md` (§7.5) MUST render an Errors section alongside Survivors/Timeouts/Compile errors/Uncovered.
 
 ### 7.4 `fixtures/expected-results.json`
 ```json
@@ -735,7 +735,7 @@ one inside `EmitSystemNotMappedRow` after `PlaceholderConsumed := true;`.
 One entry per row of §6.3.3 (26 entries). Matching key: `(procedure, operator, mutated)`; for DEL, `mutated` is `""` and `original` is added to the key.
 
 ### 7.5 `results/<RunNo>-summary.md`
-Sections: header table (run no, backend, environment, AUT version, started/finished, wall-clock), totals table, score, "Survivors" table (id, object, procedure, line, operator, original → mutated, covering tests), "Timeouts" table, "Compile errors" table, "Uncovered" count.
+Sections: header table (run no, backend, environment, AUT version, started/finished, wall-clock), totals table, score, "Survivors" table (id, object, procedure, line, operator, original → mutated, covering tests), "Timeouts" table, "Compile errors" table, **"Errors" table** (mutants whose run failed for infrastructure reasons — a failed job, a zero-test result, an unhandled exception — with the reason), "Uncovered" count, and a **Pending** count when any mutant was never reached. The totals table carries all nine buckets of §7.3 and they MUST sum to `total`.
 
 ### 7.6 `docs/spike-baseline.md` template
 Sections in this order, each a table with columns `Metric | Value | Backend | Date | Source task`: Environment (create s, start s, activation-app install s, deps install s, AUT deploy s, test app deploy s); U1/U3; U4; U5; U6; U7 (single-method job s, 95155 s, 95913 s, per-test median s); U8 (API base URL pattern); U9 (job id field name, CSV header line); Tier B baseline (pass/fail per codeunit); Hand mutants (20 rows + kill count); Recommendation (`go` / `no-go`, `--max-mutants` default, `timeouts.jobOverheadSeconds`, `schemata.publishStrategy`).
