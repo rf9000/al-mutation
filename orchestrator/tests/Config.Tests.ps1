@@ -340,6 +340,82 @@ Describe 'Get-MutConfig' {
     }
 }
 
+Describe 'Assert-MutNumberAtLeast / Assert-MutIntegerAtLeast (culture-invariant parsing, review fix round 1)' {
+    <#
+        .SYNOPSIS
+        [double]::TryParse(string, ref double) -- the 2-argument overload used before this
+        fix -- implicitly parses under NumberStyles.Float | NumberStyles.AllowThousands in the
+        THREAD'S AMBIENT CULTURE. On a culture where "." is the digit-grouping separator and
+        "," is the decimal separator (e.g. da-DK), "1.5" parses as 15, not 1.5: verified by
+        direct experiment (`[double]::TryParse('1.5', [ref]$d)` under da-DK returns $true with
+        $d -eq 15). Config values ship as JSON numbers today, which ConvertFrom-Json always
+        renders culture-invariantly regardless of the JSON file's own text, so this was never
+        an observed failure -- but a config that ever shipped a fractional value as a JSON
+        STRING would silently validate against the wrong magnitude. These tests flip the
+        thread's current culture to da-DK for the duration of one assertion (restored in
+        `finally` even if the assertion throws) and prove a value that must fail correctly
+        parsed (1.5, tested against a lower bound of 10) still fails rather than silently
+        passing as 15.
+    #>
+    BeforeAll {
+        Import-Module "$PSScriptRoot/../lib/Config.psm1" -Force
+    }
+
+    It 'rejects "1.5" against a lower bound of 10 under da-DK culture (2-arg TryParse would misparse it as 15 and wrongly pass)' {
+        $originalCulture = [System.Threading.Thread]::CurrentThread.CurrentCulture
+        try {
+            [System.Threading.Thread]::CurrentThread.CurrentCulture = [System.Globalization.CultureInfo]::GetCultureInfo('da-DK')
+
+            $obj = [pscustomobject]@{ value = '1.5' }
+            {
+                InModuleScope Config {
+                    param($Obj)
+                    Assert-MutNumberAtLeast -Object $Obj -Name 'value' -KeyPath 'test.value' -Minimum 10 -ExclusiveMinimum
+                } -Parameters @{ Obj = $obj }
+            } | Should -Throw '*test.value*greater than 10*'
+        }
+        finally {
+            [System.Threading.Thread]::CurrentThread.CurrentCulture = $originalCulture
+        }
+    }
+
+    It 'parses "1.5" as 1.5 (not 15) under da-DK culture when the bound is 1 (must pass, proving the correct magnitude was used)' {
+        $originalCulture = [System.Threading.Thread]::CurrentThread.CurrentCulture
+        try {
+            [System.Threading.Thread]::CurrentThread.CurrentCulture = [System.Globalization.CultureInfo]::GetCultureInfo('da-DK')
+
+            $obj = [pscustomobject]@{ value = '1.5' }
+            {
+                InModuleScope Config {
+                    param($Obj)
+                    Assert-MutNumberAtLeast -Object $Obj -Name 'value' -KeyPath 'test.value' -Minimum 1 -ExclusiveMinimum
+                } -Parameters @{ Obj = $obj }
+            } | Should -Not -Throw
+        }
+        finally {
+            [System.Threading.Thread]::CurrentThread.CurrentCulture = $originalCulture
+        }
+    }
+
+    It 'still rejects a non-integer string for Assert-MutIntegerAtLeast under da-DK culture' {
+        $originalCulture = [System.Threading.Thread]::CurrentThread.CurrentCulture
+        try {
+            [System.Threading.Thread]::CurrentThread.CurrentCulture = [System.Globalization.CultureInfo]::GetCultureInfo('da-DK')
+
+            $obj = [pscustomobject]@{ value = '1.500' }
+            {
+                InModuleScope Config {
+                    param($Obj)
+                    Assert-MutIntegerAtLeast -Object $Obj -Name 'value' -KeyPath 'test.value' -Minimum 0
+                } -Parameters @{ Obj = $obj }
+            } | Should -Throw '*test.value*integer*'
+        }
+        finally {
+            [System.Threading.Thread]::CurrentThread.CurrentCulture = $originalCulture
+        }
+    }
+}
+
 Describe 'Config.psm1 isolation' {
     It 'contains none of the forbidden strings (continia, BcContainerHelper, docker) outside the marked allow-line' {
         $path = "$PSScriptRoot/../lib/Config.psm1"

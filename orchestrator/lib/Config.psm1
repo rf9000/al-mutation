@@ -133,8 +133,14 @@ function Assert-MutNumberAtLeast {
 
     Assert-MutRequiredKey $Object $Name $KeyPath
 
+    # InvariantCulture, not the ambient culture: on e.g. a da-DK machine, "." is the digit
+    # GROUPING separator and "," is the decimal separator, so a config shipping a fractional
+    # value as a JSON STRING (e.g. "5.5") would parse to 55 instead of throwing or reading as
+    # 5.5. Values ship as JSON numbers today, which ConvertFrom-Json always renders
+    # culture-invariantly, so this is a hardening measure against a config that ever ships one
+    # as a string, not a fix for an observed failure.
     $parsed = 0.0
-    if (-not [double]::TryParse([string]$Object.$Name, [ref]$parsed)) {
+    if (-not [double]::TryParse([string]$Object.$Name, [System.Globalization.NumberStyles]::Float, [System.Globalization.CultureInfo]::InvariantCulture, [ref]$parsed)) {
         throw "Get-MutConfig: config key '$KeyPath' must be a number. Got '$($Object.$Name)'."
     }
 
@@ -158,8 +164,9 @@ function Assert-MutIntegerAtLeast {
 
     Assert-MutRequiredKey $Object $Name $KeyPath
 
+    # InvariantCulture, same rationale as Assert-MutNumberAtLeast.
     $parsed = 0
-    if (-not [int]::TryParse([string]$Object.$Name, [ref]$parsed)) {
+    if (-not [int]::TryParse([string]$Object.$Name, [System.Globalization.NumberStyles]::Integer, [System.Globalization.CultureInfo]::InvariantCulture, [ref]$parsed)) {
         throw "Get-MutConfig: config key '$KeyPath' must be an integer. Got '$($Object.$Name)'."
     }
 
