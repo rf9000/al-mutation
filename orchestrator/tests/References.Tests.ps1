@@ -117,12 +117,54 @@ codeunit 50310 "AUT Pragma Tests"
 
         $map[50010] | Should -Be @(50310)
     }
+
+    It 'still maps an AUT object whose file opens with a namespace declaration, AND still discovers a test codeunit whose file opens with one (fix round 2: the worse half of the bug -- Get-MutReferenceMap continues past a headerless test codeunit, discarding every reference it contributes)' {
+        $nsAutPath = Join-Path $script:TempRoot 'aut-namespace'
+        $nsTestAppPath = Join-Path $script:TempRoot 'test-app-namespace'
+        New-Item -ItemType Directory -Path $nsAutPath -Force | Out-Null
+        New-Item -ItemType Directory -Path $nsTestAppPath -Force | Out-Null
+
+        Set-Content -Path (Join-Path $nsAutPath 'Namespaced.Codeunit.al') -Encoding UTF8 -Value @'
+namespace Continia.Banking.Base.Validation;
+
+codeunit 50011 "AUT Namespaced Codeunit"
+{
+}
+'@
+
+        Set-Content -Path (Join-Path $nsTestAppPath 'NamespacedTests.Codeunit.al') -Encoding UTF8 -Value @'
+namespace Continia.Banking.Base.Validation.Test;
+
+using Continia.Banking.Base.Validation;
+
+codeunit 50311 "AUT Namespaced Tests"
+{
+    Subtype = Test;
+
+    var
+        N: Codeunit "AUT Namespaced Codeunit";
+
+    [Test]
+    procedure Test1()
+    begin
+    end;
+}
+'@
+
+        $map = Get-MutReferenceMap -AutPath $nsAutPath -TestAppPath $nsTestAppPath
+
+        $map[50011] | Should -Be @(50311)
+    }
 }
 
-Describe 'Get-MutObjectHeader (private: tests only the first meaningful line -- blank/`//`/`/* */`/`#` are trivia, nothing else is skipped)' {
+Describe 'Get-MutObjectHeader (private: strip comments, skip the closed preamble -- blank/`#`/`namespace`/`using` -- test the first remaining line, warn+null if it is not a header)' {
     BeforeAll {
         $script:HeaderScratch = Join-Path $script:TempRoot 'header-scratch'
         New-Item -ItemType Directory -Path $script:HeaderScratch -Force | Out-Null
+    }
+
+    BeforeEach {
+        Mock -ModuleName References Write-Warning { }
     }
 
     It 'finds the header when the file opens with a #pragma directive' {
@@ -221,7 +263,7 @@ codeunit 50101 "AUT Single Line Comment Codeunit"
         $header.Name | Should -Be 'AUT Same Line Codeunit'
     }
 
-    It 'returns $null for a realistic permissionset whose body has a numeric Permissions list (fix-round-1 regression: must not misread "table 50100 = X" as a header)' {
+    It 'returns $null (and warns naming the file) for a realistic permissionset whose body has a numeric Permissions list (fix-round-1 regression: must not misread "table 50100 = X" as a header)' {
         $path = Join-Path $script:HeaderScratch 'permissionset-with-numeric-permissions.al'
         Set-Content -Path $path -Encoding UTF8 -Value @'
 permissionset 50200 "My Perm Set"
@@ -237,9 +279,10 @@ permissionset 50200 "My Perm Set"
         } -Parameters @{ Path = $path }
 
         $header | Should -BeNullOrEmpty
+        Should -Invoke -ModuleName References Write-Warning -ParameterFilter { $Message -like "*$path*" } -Times 1
     }
 
-    It 'returns $null for a file with no object header at all' {
+    It 'returns $null (and warns naming the file) for a file whose only object-like content is a permissionset with no numeric Permissions' {
         $path = Join-Path $script:HeaderScratch 'no-header.al'
         Set-Content -Path $path -Encoding UTF8 -Value @'
 permissionset 50022 "AUT Permissions"
@@ -254,6 +297,101 @@ permissionset 50022 "AUT Permissions"
         } -Parameters @{ Path = $path }
 
         $header | Should -BeNullOrEmpty
+        Should -Invoke -ModuleName References Write-Warning -ParameterFilter { $Message -like "*$path*" } -Times 1
+    }
+
+    It 'returns $null WITHOUT warning for a genuinely empty file (no first-remaining-line to test at all)' {
+        $path = Join-Path $script:HeaderScratch 'truly-empty.al'
+        Set-Content -Path $path -Encoding UTF8 -Value ''
+
+        $header = InModuleScope References {
+            param($Path)
+            Get-MutObjectHeader -Path $Path
+        } -Parameters @{ Path = $path }
+
+        $header | Should -BeNullOrEmpty
+        Should -Invoke -ModuleName References Write-Warning -Times 0
+    }
+
+    It 'finds the header past a namespace declaration (fix round 2: legal AL on BC 22+, the AUT is on BC 29, and 306 AUT files carry this commented out on line 1)' {
+        $path = Join-Path $script:HeaderScratch 'namespace-first.al'
+        Set-Content -Path $path -Encoding UTF8 -Value @'
+namespace Continia.Banking.Base.Validation;
+
+codeunit 50103 "AUT Namespace Codeunit"
+{ }
+'@
+
+        $header = InModuleScope References {
+            param($Path)
+            Get-MutObjectHeader -Path $Path
+        } -Parameters @{ Path = $path }
+
+        $header | Should -Not -BeNullOrEmpty
+        $header.Id | Should -Be 50103
+        $header.Name | Should -Be 'AUT Namespace Codeunit'
+        Should -Invoke -ModuleName References Write-Warning -Times 0
+    }
+
+    It 'finds the header past a using declaration' {
+        $path = Join-Path $script:HeaderScratch 'using-first.al'
+        Set-Content -Path $path -Encoding UTF8 -Value @'
+using Continia.Banking.Base;
+
+codeunit 50104 "AUT Using Codeunit"
+{ }
+'@
+
+        $header = InModuleScope References {
+            param($Path)
+            Get-MutObjectHeader -Path $Path
+        } -Parameters @{ Path = $path }
+
+        $header | Should -Not -BeNullOrEmpty
+        $header.Id | Should -Be 50104
+        $header.Name | Should -Be 'AUT Using Codeunit'
+        Should -Invoke -ModuleName References Write-Warning -Times 0
+    }
+
+    It 'finds the header past BOTH a namespace and a using declaration, in either order the preamble allows' {
+        $path = Join-Path $script:HeaderScratch 'namespace-and-using.al'
+        Set-Content -Path $path -Encoding UTF8 -Value @'
+namespace Continia.Banking.Base.Validation;
+
+using Continia.Banking.Base;
+using Continia.Banking.Base.Other;
+
+codeunit 50105 "AUT Namespace And Using Codeunit"
+{ }
+'@
+
+        $header = InModuleScope References {
+            param($Path)
+            Get-MutObjectHeader -Path $Path
+        } -Parameters @{ Path = $path }
+
+        $header | Should -Not -BeNullOrEmpty
+        $header.Id | Should -Be 50105
+        $header.Name | Should -Be 'AUT Namespace And Using Codeunit'
+    }
+
+    It 'returns $null AND warns naming the file when the first non-preamble line is an unrecognised construct (the gap that let the namespace/using bug through)' {
+        $path = Join-Path $script:HeaderScratch 'unrecognised-leading-construct.al'
+        Set-Content -Path $path -Encoding UTF8 -Value @'
+namespace Continia.Banking.Base.Validation;
+
+apply obsolete;
+codeunit 50106 "AUT Unreachable Codeunit"
+{ }
+'@
+
+        $header = InModuleScope References {
+            param($Path)
+            Get-MutObjectHeader -Path $Path
+        } -Parameters @{ Path = $path }
+
+        $header | Should -BeNullOrEmpty
+        Should -Invoke -ModuleName References Write-Warning -ParameterFilter { $Message -like "*$path*" } -Times 1
     }
 }
 

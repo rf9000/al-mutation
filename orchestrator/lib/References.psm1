@@ -6,6 +6,13 @@ $ErrorActionPreference = 'Stop'
 # First non-comment line of an AL object file: `<type> <id> <quoted-or-bare-name>` (§6.5.5).
 $script:ObjectHeaderPattern = '^(codeunit|table|page|report|enum|interface|query|xmlport)\s+(\d+)\s+("[^"]+"|\S+)'
 
+# §6.5.5's closed "file preamble" set (fix round 2): a `namespace ...;` or `using ...;`
+# declaration, which is legal AL on BC 22+ (the AUT is on BC 29) and may legitimately precede
+# the object header. 306 AUT files (plus 37 test-app files, 18 of them Subtype=Test) already
+# carry exactly this, commented out, on line 1 -- one uncomment away from being dropped by a
+# scan that does not recognise it.
+$script:PreambleDeclarationPattern = '^(namespace|using)\s+\S'
+
 # Quoted object-name references inside AL code: `Codeunit "…"`, `Record "…"`, `Page "…"`,
 # `Enum "…"`, `Codeunit::"…"`, `Page::"…"`, `Database::"…"` (§6.5.5).
 $script:ReferencePattern = '(?:Codeunit|Record|Page|Enum|Database)(?:::)?\s*"([^"]+)"'
@@ -65,22 +72,35 @@ function Remove-MutAlTrivia {
 function Get-MutObjectHeader {
     <#
         .SYNOPSIS
-        Parses one .al file's object header (§6.5.5, amended wording): "first meaningful
-        line" -- skipping blank lines, `//` comments, `/* ... */` block comments (which may
-        span lines) and `#` compiler directives -- is tested ONCE against the object-header
-        pattern; $null is returned if it does not match, rather than scanning further into
-        the object body.
+        Parses one .al file's object header (§6.5.5, corrected wording, fix round 2): strip
+        `//` and `/* ... */` comments (Remove-MutAlTrivia), then skip the recognised file
+        PREAMBLE -- blank lines, `#` compiler directives, and `namespace`/`using`
+        declarations -- and test the FIRST REMAINING line against the object-header pattern.
+        If that line does not match, the file yields NO entry and a warning naming the file
+        is emitted (the preamble set is closed for AL today; anything else appearing before a
+        real header must be visible, not silent).
 
-        A file may legitimately open with a block comment or a compiler directive
-        (`#pragma warning disable ...`, `#if ...`) before its object header (confirmed in the
-        real AUT: BankProcessedItems.Page.al opens with `#pragma warning disable AL0432`),
-        and 24 AUT files contain `/*`. An earlier version of this function kept scanning
-        forward past ANY non-matching line looking for one that matched, which is broader
-        than this: it could walk straight into the object BODY and attach the id of some
-        unrelated `table <id> = ...` token inside a permission-set's `Permissions` list, or
-        resurrect an object header commented out inside a `/* ... */` block just above the
-        real one -- silently mapping the wrong id into nameToId, worse than the $null this
-        function returns when there is genuinely no header at all.
+        Two failure modes motivate this exact shape, both live in the real AUT:
+        - Scanning forward past ANY non-matching line (an earlier, wrong version of this
+          function) attaches a WRONG id: a realistic permissionset whose `Permissions` list
+          contains `table 50100 = X` yields `table 50100` named `=`, and header-shaped text
+          inside a string literal does the same. A wrong id is worse than none: the real
+          object never enters the map and its mutants fall through to `Uncovered`, deflating
+          the score with no signal at all.
+        - Testing only the first non-comment line WITHOUT a preamble concept (the version
+          this replaces) drops a file whose first real line is `namespace ...;` or
+          `using ...;` -- legal AL on BC 22+, the AUT is on BC 29 -- entirely. 306 AUT files
+          (plus 37 test-app files, 18 of them Subtype=Test codeunits) already carry exactly
+          that, commented out, one uncomment away from silently vanishing from nameToId; a
+          test codeunit losing its header is worse, since Get-MutReferenceMap then discards
+          every reference it contributes.
+        - `#pragma`/`#if` before the header (confirmed in the real AUT:
+          BankProcessedItems.Page.al) is the same class of preamble as namespace/using.
+
+        The warning on the leftover case (first remaining line is neither a header nor
+        recognised preamble) is what keeps a THIRD, still-unanticipated leading construct
+        from silently repeating either failure mode: it converts a silent score deflation
+        into something a human sees.
         .OUTPUTS
         [pscustomobject]@{ ObjectType; Id (int); Name (quotes stripped) }, or $null.
     #>
@@ -101,6 +121,9 @@ function Get-MutObjectHeader {
         if ($line.StartsWith('#')) {
             continue
         }
+        if ([regex]::IsMatch($line, $script:PreambleDeclarationPattern, 'IgnoreCase')) {
+            continue
+        }
 
         $match = [regex]::Match($line, $script:ObjectHeaderPattern, 'IgnoreCase')
         if ($match.Success) {
@@ -110,10 +133,12 @@ function Get-MutObjectHeader {
                 Name       = $match.Groups[3].Value.Trim('"')
             }
         }
-        # This is the first meaningful line and it does NOT match the object-header pattern
-        # (e.g. a permissionset/enum-extension file): §6.5.5 tests only this one line, so
-        # stop here rather than scanning further into the object body, where a numeric token
-        # (a Permissions list entry, a field id, ...) could otherwise be misread as a header.
+
+        # First remaining line after comments and the recognised preamble, and it is NOT an
+        # object header (e.g. a permissionset/enum-extension file, or some other construct
+        # this preamble set does not yet know about): yield no entry, but say so, rather than
+        # silently dropping the file the way a bare $null would.
+        Write-Warning "Get-MutObjectHeader: '$Path': first non-preamble line does not match an object header ('$line'); this file will not enter the reference map."
         return $null
     }
     return $null
