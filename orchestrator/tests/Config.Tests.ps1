@@ -247,6 +247,46 @@ Describe 'Get-MutConfig' {
         { Get-MutConfig -Path $path } | Should -Throw '*generator.seed*'
     }
 
+    It 'throws when workDir is nested inside aut.sourcePath (robocopy /MIR would prune files there)' {
+        $autSrc = "$TestDrive/aut-src-$([guid]::NewGuid().ToString('N'))"
+        $overrides = @{
+            aut     = @{ sourcePath = $autSrc; appId = '8b3f4e5c-ad6a-4f7b-9c8d-9e0f1a2b3c4d'; version = '1.0.0.0' }
+            workDir = "$autSrc/out"
+        }
+        $path = New-MutTestConfigFile -Overrides $overrides
+        { Get-MutConfig -Path $path } | Should -Throw '*workDir*aut.sourcePath*'
+    }
+
+    It 'throws when workDir equals testApp.sourcePath exactly' {
+        $testSrc = "$TestDrive/test-src-$([guid]::NewGuid().ToString('N'))"
+        $overrides = @{
+            testApp = @{ sourcePath = $testSrc; appId = '9c4a5f6d-be7b-4a8c-8d9e-0f1a2b3c4d5e'; testCodeunits = @(50300) }
+            workDir = $testSrc
+        }
+        $path = New-MutTestConfigFile -Overrides $overrides
+        { Get-MutConfig -Path $path } | Should -Throw '*workDir*testApp.sourcePath*'
+    }
+
+    It 'throws when workDir is nested inside rulesets.sourcePath' {
+        $rulesetsSrc = "$TestDrive/rulesets-src-$([guid]::NewGuid().ToString('N'))"
+        $overrides = @{
+            rulesets = @{ sourcePath = $rulesetsSrc; file = '.cli-ruleset-localdeploy.json' }
+            workDir  = "$rulesetsSrc/nested/out"
+        }
+        $path = New-MutTestConfigFile -Overrides $overrides
+        { Get-MutConfig -Path $path } | Should -Throw '*workDir*rulesets.sourcePath*'
+    }
+
+    It 'does not throw for sibling paths that merely share a string prefix (e.g. .../out vs .../out2)' {
+        $base = "$TestDrive/prefix-$([guid]::NewGuid().ToString('N'))"
+        $overrides = @{
+            aut     = @{ sourcePath = "$base/out2"; appId = '8b3f4e5c-ad6a-4f7b-9c8d-9e0f1a2b3c4d'; version = '1.0.0.0' }
+            workDir = "$base/out"
+        }
+        $path = New-MutTestConfigFile -Overrides $overrides
+        { Get-MutConfig -Path $path } | Should -Not -Throw
+    }
+
     It 'throws when generator.seed is not an integer' {
         $overrides = @{ generator = @{ maxMutants = 0; onlyObjects = @(); seed = 'random'; operators = @('REL'); includeBreak = $false } }
         $path = New-MutTestConfigFile -Overrides $overrides

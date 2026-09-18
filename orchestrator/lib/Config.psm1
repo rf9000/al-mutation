@@ -117,13 +117,52 @@ function Resolve-MutConfigPath {
     return [System.IO.Path]::GetFullPath([System.IO.Path]::Combine($RepoRoot, $Path))
 }
 
+function Assert-MutWorkDirOutsideSources {
+    <#
+        .SYNOPSIS
+        §4 guardrail 1 enforcement: workDir must not be, or lie inside, aut.sourcePath,
+        testApp.sourcePath or rulesets.sourcePath (when configured). Sync-MutAutCopy
+        (AutCopy.psm1) computes robocopy destinations as `Join-Path workDir <name>`, and
+        robocopy /MIR PRUNES extra files at the destination side; a workDir nested inside one
+        of these source trees would make that destination a subdirectory of the source tree
+        itself, so /MIR would delete files inside it -- worst case, inside the read-only AUT
+        repo. No current config does this, but this is enforcement rather than mere
+        observation of that guardrail. Paths are resolved to absolute (against $RepoRoot when
+        relative) before comparing, since one key may be relative while another is absolute in
+        the same config (§6.5.1's own example config does exactly that: aut.sourcePath is
+        absolute, workDir is `./out`).
+    #>
+    param($Config, [string]$RepoRoot)
+
+    $workDirFull = [System.IO.Path]::GetFullPath((Resolve-MutConfigPath -RepoRoot $RepoRoot -Path $Config.workDir)).TrimEnd('\', '/')
+
+    $sources = @(
+        [pscustomobject]@{ KeyPath = 'aut.sourcePath'; Path = $Config.aut.sourcePath }
+        [pscustomobject]@{ KeyPath = 'testApp.sourcePath'; Path = $Config.testApp.sourcePath }
+    )
+    if ((Test-MutHasProperty $Config 'rulesets') -and ($null -ne $Config.rulesets)) {
+        $sources += [pscustomobject]@{ KeyPath = 'rulesets.sourcePath'; Path = $Config.rulesets.sourcePath }
+    }
+
+    foreach ($source in $sources) {
+        $sourceFull = [System.IO.Path]::GetFullPath((Resolve-MutConfigPath -RepoRoot $RepoRoot -Path $source.Path)).TrimEnd('\', '/')
+
+        $isSamePath = $workDirFull.Equals($sourceFull, [System.StringComparison]::OrdinalIgnoreCase)
+        $isNestedInside = $workDirFull.StartsWith($sourceFull + [System.IO.Path]::DirectorySeparatorChar, [System.StringComparison]::OrdinalIgnoreCase)
+
+        if ($isSamePath -or $isNestedInside) {
+            throw "Get-MutConfig: config key 'workDir' ('$($Config.workDir)') must not be, or lie inside, '$($source.KeyPath)' ('$($source.Path)') -- Sync-MutAutCopy's robocopy /MIR would prune files there."
+        }
+    }
+}
+
 function Assert-MutConfigShape {
     <#
         .SYNOPSIS
         Validates every required key of §6.5.1's config schema, throwing a message naming
         the first missing or invalid key found.
     #>
-    param($Config)
+    param($Config, [string]$RepoRoot = (Get-MutRepoRoot))
 
     Assert-MutNonEmptyString $Config 'backend' 'backend'
     if ($script:AllowedBackends -notcontains $Config.backend) {
@@ -171,6 +210,7 @@ function Assert-MutConfigShape {
     if ([string]::IsNullOrWhiteSpace([string]$Config.workDir)) {
         throw "Get-MutConfig: config key 'workDir' must be a non-empty string."
     }
+    Assert-MutWorkDirOutsideSources -Config $Config -RepoRoot $RepoRoot
 
     Assert-MutRequiredKey $Config 'generator' 'generator'
     # maxMutants = 0 means "no cap" (§6.4.9: both mutation.config.json and
