@@ -10,14 +10,26 @@ $script:ObjectHeaderPattern = '^(codeunit|table|page|report|enum|interface|query
 # `Enum "…"`, `Codeunit::"…"`, `Page::"…"`, `Database::"…"` (§6.5.5).
 $script:ReferencePattern = '(?:Codeunit|Record|Page|Enum|Database)(?:::)?\s*"([^"]+)"'
 
-function Get-MutFirstNonCommentLine {
+function Get-MutObjectHeader {
     <#
         .SYNOPSIS
-        Returns the first non-blank, non-`//`-comment line of $Lines (trimmed), or $null.
+        Parses one .al file's object header (§6.5.5). Scans forward, skipping blank and
+        `//`-comment lines, for the first line that MATCHES the object-header pattern --
+        rather than testing only the first non-comment line and giving up otherwise. A file
+        may legitimately open with a compiler directive (`#pragma warning disable ...`, `#if
+        ...`) before its object header (confirmed in the real AUT:
+        BankProcessedItems.Page.al opens with `#pragma warning disable AL0432`); stopping at
+        that one line previously meant the file never entered nameToId at all, so every
+        reference to it was discarded and its mutants could only fall through to Uncovered.
+        Returns $null when no line in the file matches (e.g. a permission-set/enum-extension
+        file this task does not need, or an empty file).
+        .OUTPUTS
+        [pscustomobject]@{ ObjectType; Id (int); Name (quotes stripped) }, or $null.
     #>
-    param([Parameter(Mandatory = $true)][AllowEmptyCollection()][AllowEmptyString()][string[]]$Lines)
+    param([Parameter(Mandatory = $true)][string]$Path)
 
-    foreach ($rawLine in $Lines) {
+    $lines = @(Get-Content -Path $Path -ErrorAction Stop)
+    foreach ($rawLine in $lines) {
         $line = $rawLine.Trim()
         if ([string]::IsNullOrWhiteSpace($line)) {
             continue
@@ -25,38 +37,20 @@ function Get-MutFirstNonCommentLine {
         if ($line.StartsWith('//')) {
             continue
         }
-        return $line
+
+        $match = [regex]::Match($line, $script:ObjectHeaderPattern, 'IgnoreCase')
+        if ($match.Success) {
+            return [pscustomobject]@{
+                ObjectType = $match.Groups[1].Value
+                Id         = [int]$match.Groups[2].Value
+                Name       = $match.Groups[3].Value.Trim('"')
+            }
+        }
+        # Not blank, not a `//` comment, and not itself an object header (e.g. `#pragma`,
+        # `#if`/`#endif`, or -- for a file with no header at all -- ordinary code): keep
+        # scanning forward instead of giving up on this one line.
     }
     return $null
-}
-
-function Get-MutObjectHeader {
-    <#
-        .SYNOPSIS
-        Parses one .al file's first non-comment line as an AL object header (§6.5.5). Returns
-        $null when the file has no such line (e.g. a permission-set/enum-extension file this
-        task does not need, or an empty file).
-        .OUTPUTS
-        [pscustomobject]@{ ObjectType; Id (int); Name (quotes stripped) }, or $null.
-    #>
-    param([Parameter(Mandatory = $true)][string]$Path)
-
-    $lines = @(Get-Content -Path $Path -ErrorAction Stop)
-    $firstLine = Get-MutFirstNonCommentLine -Lines $lines
-    if ($null -eq $firstLine) {
-        return $null
-    }
-
-    $match = [regex]::Match($firstLine, $script:ObjectHeaderPattern, 'IgnoreCase')
-    if (-not $match.Success) {
-        return $null
-    }
-
-    return [pscustomobject]@{
-        ObjectType = $match.Groups[1].Value
-        Id         = [int]$match.Groups[2].Value
-        Name       = $match.Groups[3].Value.Trim('"')
-    }
 }
 
 function Test-MutIsTestCodeunit {
