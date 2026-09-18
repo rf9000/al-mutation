@@ -1,0 +1,2633 @@
+﻿{
+    "runNo":  4,
+    "backend":  "DemoPortal",
+    "environmentName":  "mut-spike-02",
+    "startedUtc":  "2026-09-17T12:01:40.2162974Z",
+    "finishedUtc":  "2026-09-17T12:52:26.4120255Z",
+    "autAppId":  "83461f48-dd16-49ea-b00c-e656830c640f",
+    "autVersion":  "29.0.0.0",
+    "coreAppVersion":  "1.0.0.0",
+    "generator":  {
+                      "seed":  1,
+                      "maxMutants":  0,
+                      "onlyObjects":  [
+                                          72918635
+                                      ],
+                      "operators":  [
+                                        "REL",
+                                        "BOOL",
+                                        "NOT",
+                                        "COND",
+                                        "DEL",
+                                        "INSFLAG"
+                                    ]
+                  },
+    "totals":  {
+                   "total":  157,
+                   "killed":  62,
+                   "survived":  95,
+                   "timeout":  0,
+                   "compileError":  0,
+                   "uncovered":  0,
+                   "equivalent":  0
+               },
+    "score":  0.3949,
+    "mutants":  [
+                    {
+                        "id":  138,
+                        "stableKey":  "00ae544a812eda45",
+                        "objectId":  72918635,
+                        "procedure":  "DetectInCompany",
+                        "line":  69,
+                        "operator":  "NOT",
+                        "original":  "not CoreMgt.IsAppActiveInCompany(TargetCompany)",
+                        "mutated":  "CoreMgt.IsAppActiveInCompany(TargetCompany)",
+                        "status":  "Killed",
+                        "killingTest":  "CTS-CB Test Auth Share Detect:DetectInCompany_WithFakeHttp_UnboundAccount_EmitsSystemNotMappedRow",
+                        "durationMs":  166,
+                        "coveringTests":  [
+                                              95155
+                                          ]
+                    },
+                    {
+                        "id":  139,
+                        "stableKey":  "cf0a0cbce18e4239",
+                        "objectId":  72918635,
+                        "procedure":  "DetectInCompany",
+                        "line":  69,
+                        "operator":  "COND",
+                        "original":  "not CoreMgt.IsAppActiveInCompany(TargetCompany)",
+                        "mutated":  "true",
+                        "status":  "Killed",
+                        "killingTest":  "CTS-CB Test Auth Share Detect:DetectInCompany_WithFakeHttp_UnboundAccount_EmitsSystemNotMappedRow",
+                        "durationMs":  151,
+                        "coveringTests":  [
+                                              95155
+                                          ]
+                    },
+                    {
+                        "id":  140,
+                        "stableKey":  "7f9e1feb0bf06752",
+                        "objectId":  72918635,
+                        "procedure":  "DetectInCompany",
+                        "line":  69,
+                        "operator":  "COND",
+                        "original":  "not CoreMgt.IsAppActiveInCompany(TargetCompany)",
+                        "mutated":  "false",
+                        "status":  "Survived",
+                        "killingTest":  null,
+                        "durationMs":  166,
+                        "coveringTests":  [
+                                              95155
+                                          ]
+                    },
+                    {
+                        "id":  141,
+                        "stableKey":  "a153ca8c87405e3e",
+                        "objectId":  72918635,
+                        "procedure":  "DetectInCompany",
+                        "line":  71,
+                        "operator":  "DEL",
+                        "original":  "exit",
+                        "mutated":  "",
+                        "status":  "Survived",
+                        "killingTest":  null,
+                        "durationMs":  944,
+                        "coveringTests":  [
+                                              95155,
+                                              95179,
+                                              95191
+                                          ]
+                    },
+                    {
+                        "id":  142,
+                        "stableKey":  "f791647b4060052d",
+                        "objectId":  72918635,
+                        "procedure":  "DetectInCompany",
+                        "line":  75,
+                        "operator":  "NOT",
+                        "original":  "not AuthenticationEntry.Get(BankAuthEntryNo)",
+                        "mutated":  "AuthenticationEntry.Get(BankAuthEntryNo)",
+                        "status":  "Killed",
+                        "killingTest":  "CTS-CB Test Auth Share Detect:DetectInCompany_WithFakeHttp_UnboundAccount_EmitsSystemNotMappedRow",
+                        "durationMs":  154,
+                        "coveringTests":  [
+                                              95155
+                                          ]
+                    },
+                    {
+                        "id":  143,
+                        "stableKey":  "fa5e918c66e76500",
+                        "objectId":  72918635,
+                        "procedure":  "DetectInCompany",
+                        "line":  75,
+                        "operator":  "COND",
+                        "original":  "not AuthenticationEntry.Get(BankAuthEntryNo)",
+                        "mutated":  "true",
+                        "status":  "Killed",
+                        "killingTest":  "CTS-CB Test Auth Share Detect:DetectInCompany_WithFakeHttp_UnboundAccount_EmitsSystemNotMappedRow",
+                        "durationMs":  151,
+                        "coveringTests":  [
+                                              95155
+                                          ]
+                    },
+                    {
+                        "id":  144,
+                        "stableKey":  "b332bed35ff6067c",
+                        "objectId":  72918635,
+                        "procedure":  "DetectInCompany",
+                        "line":  75,
+                        "operator":  "COND",
+                        "original":  "not AuthenticationEntry.Get(BankAuthEntryNo)",
+                        "mutated":  "false",
+                        "status":  "Killed",
+                        "killingTest":  "CTS-CB Test Auth Share Detect:DetectInCompany_WithFakeHttp_UnboundAccount_EmitsSystemNotMappedRow",
+                        "durationMs":  145,
+                        "coveringTests":  [
+                                              95155
+                                          ]
+                    },
+                    {
+                        "id":  145,
+                        "stableKey":  "84fdb8dc7cca63d4",
+                        "objectId":  72918635,
+                        "procedure":  "DetectInCompany",
+                        "line":  76,
+                        "operator":  "DEL",
+                        "original":  "exit",
+                        "mutated":  "",
+                        "status":  "Survived",
+                        "killingTest":  null,
+                        "durationMs":  837,
+                        "coveringTests":  [
+                                              95155,
+                                              95179,
+                                              95191
+                                          ]
+                    },
+                    {
+                        "id":  146,
+                        "stableKey":  "11680fc45d5bbf8a",
+                        "objectId":  72918635,
+                        "procedure":  "DetectInCompany",
+                        "line":  79,
+                        "operator":  "REL",
+                        "original":  "AuthenticationEntry.\"Originating Company\" \u003c\u003e \u0027\u0027",
+                        "mutated":  "AuthenticationEntry.\"Originating Company\" = \u0027\u0027",
+                        "status":  "Survived",
+                        "killingTest":  null,
+                        "durationMs":  146,
+                        "coveringTests":  [
+                                              95155
+                                          ]
+                    },
+                    {
+                        "id":  147,
+                        "stableKey":  "5f536edcc86add11",
+                        "objectId":  72918635,
+                        "procedure":  "DetectInCompany",
+                        "line":  79,
+                        "operator":  "COND",
+                        "original":  "AuthenticationEntry.\"Originating Company\" \u003c\u003e \u0027\u0027",
+                        "mutated":  "true",
+                        "status":  "Survived",
+                        "killingTest":  null,
+                        "durationMs":  145,
+                        "coveringTests":  [
+                                              95155
+                                          ]
+                    },
+                    {
+                        "id":  148,
+                        "stableKey":  "4164a1d96afd3176",
+                        "objectId":  72918635,
+                        "procedure":  "DetectInCompany",
+                        "line":  79,
+                        "operator":  "COND",
+                        "original":  "AuthenticationEntry.\"Originating Company\" \u003c\u003e \u0027\u0027",
+                        "mutated":  "false",
+                        "status":  "Survived",
+                        "killingTest":  null,
+                        "durationMs":  155,
+                        "coveringTests":  [
+                                              95155
+                                          ]
+                    },
+                    {
+                        "id":  149,
+                        "stableKey":  "4e2fb5cfa242b248",
+                        "objectId":  72918635,
+                        "procedure":  "DetectInCompany",
+                        "line":  85,
+                        "operator":  "REL",
+                        "original":  "SourceBank.Code = \u0027\u0027",
+                        "mutated":  "SourceBank.Code \u003c\u003e \u0027\u0027",
+                        "status":  "Killed",
+                        "killingTest":  "CTS-CB Test Auth Share Detect:DetectInCompany_WithFakeHttp_UnboundAccount_EmitsSystemNotMappedRow",
+                        "durationMs":  157,
+                        "coveringTests":  [
+                                              95155
+                                          ]
+                    },
+                    {
+                        "id":  150,
+                        "stableKey":  "f3561c12e9ea4972",
+                        "objectId":  72918635,
+                        "procedure":  "DetectInCompany",
+                        "line":  85,
+                        "operator":  "COND",
+                        "original":  "SourceBank.Code = \u0027\u0027",
+                        "mutated":  "true",
+                        "status":  "Killed",
+                        "killingTest":  "CTS-CB Test Auth Share Detect:DetectInCompany_WithFakeHttp_UnboundAccount_EmitsSystemNotMappedRow",
+                        "durationMs":  140,
+                        "coveringTests":  [
+                                              95155
+                                          ]
+                    },
+                    {
+                        "id":  151,
+                        "stableKey":  "5f3a9634a32ff536",
+                        "objectId":  72918635,
+                        "procedure":  "DetectInCompany",
+                        "line":  85,
+                        "operator":  "COND",
+                        "original":  "SourceBank.Code = \u0027\u0027",
+                        "mutated":  "false",
+                        "status":  "Survived",
+                        "killingTest":  null,
+                        "durationMs":  162,
+                        "coveringTests":  [
+                                              95155
+                                          ]
+                    },
+                    {
+                        "id":  152,
+                        "stableKey":  "3cdd0e48079f1d91",
+                        "objectId":  72918635,
+                        "procedure":  "DetectInCompany",
+                        "line":  86,
+                        "operator":  "DEL",
+                        "original":  "exit",
+                        "mutated":  "",
+                        "status":  "Survived",
+                        "killingTest":  null,
+                        "durationMs":  789,
+                        "coveringTests":  [
+                                              95155,
+                                              95179,
+                                              95191
+                                          ]
+                    },
+                    {
+                        "id":  153,
+                        "stableKey":  "e1484115d221cc1b",
+                        "objectId":  72918635,
+                        "procedure":  "DetectInCompany",
+                        "line":  94,
+                        "operator":  "COND",
+                        "original":  "BankAccount.FindSet()",
+                        "mutated":  "true",
+                        "status":  "Survived",
+                        "killingTest":  null,
+                        "durationMs":  181,
+                        "coveringTests":  [
+                                              95155
+                                          ]
+                    },
+                    {
+                        "id":  154,
+                        "stableKey":  "1de83ffd81055660",
+                        "objectId":  72918635,
+                        "procedure":  "DetectInCompany",
+                        "line":  94,
+                        "operator":  "COND",
+                        "original":  "BankAccount.FindSet()",
+                        "mutated":  "false",
+                        "status":  "Killed",
+                        "killingTest":  "CTS-CB Test Auth Share Detect:DetectInCompany_WithFakeHttp_UnboundAccount_EmitsSystemNotMappedRow",
+                        "durationMs":  182,
+                        "coveringTests":  [
+                                              95155
+                                          ]
+                    },
+                    {
+                        "id":  155,
+                        "stableKey":  "1accfa126779599a",
+                        "objectId":  72918635,
+                        "procedure":  "DetectInCompany",
+                        "line":  96,
+                        "operator":  "COND",
+                        "original":  "ResolveBankCodeForAccount(BankAccount, IHttpFactory, ResolvedBankCode, MissingInfo)",
+                        "mutated":  "true",
+                        "status":  "Killed",
+                        "killingTest":  "CTS-CB Test Auth Share Detect:DetectInCompany_WithFakeHttp_UnboundAccount_EmitsSystemNotMappedRow",
+                        "durationMs":  139,
+                        "coveringTests":  [
+                                              95155
+                                          ]
+                    },
+                    {
+                        "id":  156,
+                        "stableKey":  "e81c134fb42cca80",
+                        "objectId":  72918635,
+                        "procedure":  "DetectInCompany",
+                        "line":  96,
+                        "operator":  "COND",
+                        "original":  "ResolveBankCodeForAccount(BankAccount, IHttpFactory, ResolvedBankCode, MissingInfo)",
+                        "mutated":  "false",
+                        "status":  "Killed",
+                        "killingTest":  "CTS-CB Test Auth Share Detect:DetectInCompany_WithFakeHttp_UnboundAccount_EmitsSystemNotMappedRow",
+                        "durationMs":  157,
+                        "coveringTests":  [
+                                              95155
+                                          ]
+                    },
+                    {
+                        "id":  157,
+                        "stableKey":  "3d0f88ae5920a661",
+                        "objectId":  72918635,
+                        "procedure":  "DetectInCompany",
+                        "line":  113,
+                        "operator":  "COND",
+                        "original":  "MissingInfo",
+                        "mutated":  "true",
+                        "status":  "Survived",
+                        "killingTest":  null,
+                        "durationMs":  745,
+                        "coveringTests":  [
+                                              95155,
+                                              95179,
+                                              95191
+                                          ]
+                    },
+                    {
+                        "id":  158,
+                        "stableKey":  "6df72f92dc3a7b5b",
+                        "objectId":  72918635,
+                        "procedure":  "DetectInCompany",
+                        "line":  113,
+                        "operator":  "COND",
+                        "original":  "MissingInfo",
+                        "mutated":  "false",
+                        "status":  "Survived",
+                        "killingTest":  null,
+                        "durationMs":  790,
+                        "coveringTests":  [
+                                              95155,
+                                              95179,
+                                              95191
+                                          ]
+                    },
+                    {
+                        "id":  159,
+                        "stableKey":  "bfdb1a9c994056f1",
+                        "objectId":  72918635,
+                        "procedure":  "DetectInCompany",
+                        "line":  120,
+                        "operator":  "REL",
+                        "original":  "MatchingAccounts.Count() \u003e 0",
+                        "mutated":  "MatchingAccounts.Count() \u003e= 0",
+                        "status":  "Survived",
+                        "killingTest":  null,
+                        "durationMs":  189,
+                        "coveringTests":  [
+                                              95155
+                                          ]
+                    },
+                    {
+                        "id":  160,
+                        "stableKey":  "71f0681421f0a4de",
+                        "objectId":  72918635,
+                        "procedure":  "DetectInCompany",
+                        "line":  120,
+                        "operator":  "COND",
+                        "original":  "MatchingAccounts.Count() \u003e 0",
+                        "mutated":  "true",
+                        "status":  "Survived",
+                        "killingTest":  null,
+                        "durationMs":  162,
+                        "coveringTests":  [
+                                              95155
+                                          ]
+                    },
+                    {
+                        "id":  161,
+                        "stableKey":  "7b958917bf3ae3db",
+                        "objectId":  72918635,
+                        "procedure":  "DetectInCompany",
+                        "line":  120,
+                        "operator":  "COND",
+                        "original":  "MatchingAccounts.Count() \u003e 0",
+                        "mutated":  "false",
+                        "status":  "Survived",
+                        "killingTest":  null,
+                        "durationMs":  156,
+                        "coveringTests":  [
+                                              95155
+                                          ]
+                    },
+                    {
+                        "id":  162,
+                        "stableKey":  "c04302a73b3844d5",
+                        "objectId":  72918635,
+                        "procedure":  "EmitShareDetectionRan",
+                        "line":  153,
+                        "operator":  "REL",
+                        "original":  "AccountsAttempted = 0",
+                        "mutated":  "AccountsAttempted \u003c\u003e 0",
+                        "status":  "Survived",
+                        "killingTest":  null,
+                        "durationMs":  140,
+                        "coveringTests":  [
+                                              95155
+                                          ]
+                    },
+                    {
+                        "id":  163,
+                        "stableKey":  "868931fb51a5a1fe",
+                        "objectId":  72918635,
+                        "procedure":  "EmitShareDetectionRan",
+                        "line":  153,
+                        "operator":  "COND",
+                        "original":  "AccountsAttempted = 0",
+                        "mutated":  "true",
+                        "status":  "Survived",
+                        "killingTest":  null,
+                        "durationMs":  165,
+                        "coveringTests":  [
+                                              95155
+                                          ]
+                    },
+                    {
+                        "id":  164,
+                        "stableKey":  "2489c1e8a2d23704",
+                        "objectId":  72918635,
+                        "procedure":  "EmitShareDetectionRan",
+                        "line":  153,
+                        "operator":  "COND",
+                        "original":  "AccountsAttempted = 0",
+                        "mutated":  "false",
+                        "status":  "Survived",
+                        "killingTest":  null,
+                        "durationMs":  151,
+                        "coveringTests":  [
+                                              95155
+                                          ]
+                    },
+                    {
+                        "id":  165,
+                        "stableKey":  "f2cdc15203b8ec63",
+                        "objectId":  72918635,
+                        "procedure":  "EmitShareDetectionRan",
+                        "line":  154,
+                        "operator":  "DEL",
+                        "original":  "exit",
+                        "mutated":  "",
+                        "status":  "Survived",
+                        "killingTest":  null,
+                        "durationMs":  894,
+                        "coveringTests":  [
+                                              95155,
+                                              95179,
+                                              95191
+                                          ]
+                    },
+                    {
+                        "id":  166,
+                        "stableKey":  "00ccef50983be755",
+                        "objectId":  72918635,
+                        "procedure":  "AppendAccountForBank",
+                        "line":  177,
+                        "operator":  "REL",
+                        "original":  "BankCode = \u0027\u0027",
+                        "mutated":  "BankCode \u003c\u003e \u0027\u0027",
+                        "status":  "Killed",
+                        "killingTest":  "CTS-CB Test Auth Share Detect:DetectInCompany_WithFakeHttp_UnboundAccount_EmitsSystemNotMappedRow",
+                        "durationMs":  158,
+                        "coveringTests":  [
+                                              95155
+                                          ]
+                    },
+                    {
+                        "id":  167,
+                        "stableKey":  "1691e48490f1f8c2",
+                        "objectId":  72918635,
+                        "procedure":  "AppendAccountForBank",
+                        "line":  177,
+                        "operator":  "COND",
+                        "original":  "BankCode = \u0027\u0027",
+                        "mutated":  "true",
+                        "status":  "Killed",
+                        "killingTest":  "CTS-CB Test Auth Share Detect:DetectInCompany_WithFakeHttp_UnboundAccount_EmitsSystemNotMappedRow",
+                        "durationMs":  152,
+                        "coveringTests":  [
+                                              95155
+                                          ]
+                    },
+                    {
+                        "id":  168,
+                        "stableKey":  "ab05cd1210783078",
+                        "objectId":  72918635,
+                        "procedure":  "AppendAccountForBank",
+                        "line":  177,
+                        "operator":  "COND",
+                        "original":  "BankCode = \u0027\u0027",
+                        "mutated":  "false",
+                        "status":  "Survived",
+                        "killingTest":  null,
+                        "durationMs":  154,
+                        "coveringTests":  [
+                                              95155
+                                          ]
+                    },
+                    {
+                        "id":  169,
+                        "stableKey":  "35151bc2d87df74d",
+                        "objectId":  72918635,
+                        "procedure":  "AppendAccountForBank",
+                        "line":  178,
+                        "operator":  "DEL",
+                        "original":  "exit",
+                        "mutated":  "",
+                        "status":  "Survived",
+                        "killingTest":  null,
+                        "durationMs":  746,
+                        "coveringTests":  [
+                                              95155,
+                                              95179,
+                                              95191
+                                          ]
+                    },
+                    {
+                        "id":  170,
+                        "stableKey":  "88c066b51f6f7c82",
+                        "objectId":  72918635,
+                        "procedure":  "AppendAccountForBank",
+                        "line":  179,
+                        "operator":  "COND",
+                        "original":  "ResolvedOtherAccountsByBank.ContainsKey(BankCode)",
+                        "mutated":  "true",
+                        "status":  "Killed",
+                        "killingTest":  "CTS-CB Test Auth Share Detect:DetectInCompany_WithFakeHttp_UnboundAccount_EmitsSystemNotMappedRow",
+                        "durationMs":  153,
+                        "coveringTests":  [
+                                              95155
+                                          ]
+                    },
+                    {
+                        "id":  171,
+                        "stableKey":  "48ba74b8a41a72e5",
+                        "objectId":  72918635,
+                        "procedure":  "AppendAccountForBank",
+                        "line":  179,
+                        "operator":  "COND",
+                        "original":  "ResolvedOtherAccountsByBank.ContainsKey(BankCode)",
+                        "mutated":  "false",
+                        "status":  "Survived",
+                        "killingTest":  null,
+                        "durationMs":  163,
+                        "coveringTests":  [
+                                              95155
+                                          ]
+                    },
+                    {
+                        "id":  172,
+                        "stableKey":  "f390fc128aed105b",
+                        "objectId":  72918635,
+                        "procedure":  "ResolveBankCodeForAccount",
+                        "line":  204,
+                        "operator":  "REL",
+                        "original":  "(BankAccount.IBAN = \u0027\u0027) and (BankAccount.\"Bank Branch No.\" = \u0027\u0027)",
+                        "mutated":  "(BankAccount.IBAN \u003c\u003e \u0027\u0027) and (BankAccount.\"Bank Branch No.\" = \u0027\u0027)",
+                        "status":  "Killed",
+                        "killingTest":  "CTS-CB Test Auth Share Detect:DetectInCompany_WithFakeHttp_UnboundAccount_EmitsSystemNotMappedRow",
+                        "durationMs":  171,
+                        "coveringTests":  [
+                                              95155
+                                          ]
+                    },
+                    {
+                        "id":  173,
+                        "stableKey":  "636604ac1472a548",
+                        "objectId":  72918635,
+                        "procedure":  "ResolveBankCodeForAccount",
+                        "line":  204,
+                        "operator":  "REL",
+                        "original":  "(BankAccount.IBAN = \u0027\u0027) and (BankAccount.\"Bank Branch No.\" = \u0027\u0027)",
+                        "mutated":  "(BankAccount.IBAN = \u0027\u0027) and (BankAccount.\"Bank Branch No.\" \u003c\u003e \u0027\u0027)",
+                        "status":  "Survived",
+                        "killingTest":  null,
+                        "durationMs":  188,
+                        "coveringTests":  [
+                                              95155
+                                          ]
+                    },
+                    {
+                        "id":  174,
+                        "stableKey":  "9d118f901407239d",
+                        "objectId":  72918635,
+                        "procedure":  "ResolveBankCodeForAccount",
+                        "line":  204,
+                        "operator":  "BOOL",
+                        "original":  "(BankAccount.IBAN = \u0027\u0027) and (BankAccount.\"Bank Branch No.\" = \u0027\u0027)",
+                        "mutated":  "(BankAccount.IBAN = \u0027\u0027) or (BankAccount.\"Bank Branch No.\" = \u0027\u0027)",
+                        "status":  "Killed",
+                        "killingTest":  "CTS-CB Test Auth Share Detect:DetectInCompany_WithFakeHttp_UnboundAccount_EmitsSystemNotMappedRow",
+                        "durationMs":  170,
+                        "coveringTests":  [
+                                              95155
+                                          ]
+                    },
+                    {
+                        "id":  175,
+                        "stableKey":  "073273a2b7636400",
+                        "objectId":  72918635,
+                        "procedure":  "ResolveBankCodeForAccount",
+                        "line":  204,
+                        "operator":  "COND",
+                        "original":  "(BankAccount.IBAN = \u0027\u0027) and (BankAccount.\"Bank Branch No.\" = \u0027\u0027)",
+                        "mutated":  "true",
+                        "status":  "Killed",
+                        "killingTest":  "CTS-CB Test Auth Share Detect:DetectInCompany_WithFakeHttp_UnboundAccount_EmitsSystemNotMappedRow",
+                        "durationMs":  147,
+                        "coveringTests":  [
+                                              95155
+                                          ]
+                    },
+                    {
+                        "id":  176,
+                        "stableKey":  "21980daf6c8841f2",
+                        "objectId":  72918635,
+                        "procedure":  "ResolveBankCodeForAccount",
+                        "line":  204,
+                        "operator":  "COND",
+                        "original":  "(BankAccount.IBAN = \u0027\u0027) and (BankAccount.\"Bank Branch No.\" = \u0027\u0027)",
+                        "mutated":  "false",
+                        "status":  "Survived",
+                        "killingTest":  null,
+                        "durationMs":  146,
+                        "coveringTests":  [
+                                              95155
+                                          ]
+                    },
+                    {
+                        "id":  177,
+                        "stableKey":  "3d116d1b7f9185e5",
+                        "objectId":  72918635,
+                        "procedure":  "ResolveBankCodeForAccount",
+                        "line":  206,
+                        "operator":  "DEL",
+                        "original":  "exit(false)",
+                        "mutated":  "",
+                        "status":  "Survived",
+                        "killingTest":  null,
+                        "durationMs":  867,
+                        "coveringTests":  [
+                                              95155,
+                                              95179,
+                                              95191
+                                          ]
+                    },
+                    {
+                        "id":  178,
+                        "stableKey":  "f1531ad258362f72",
+                        "objectId":  72918635,
+                        "procedure":  "ResolveBankCodeForAccount",
+                        "line":  209,
+                        "operator":  "NOT",
+                        "original":  "not BankInfoLookup.GetBankInfo(TempBank, BankAccount.IBAN, BankAccount.\"Bank Account No.\", BankAccount.\"Country/Region Code\", BankAccount.\"Bank Branch No.\", false, IHttpFactory, Enum::\"CTS-CB Lookup Scenario\"::\"Multi Bank Acc. Setup\")",
+                        "mutated":  "BankInfoLookup.GetBankInfo(TempBank, BankAccount.IBAN, BankAccount.\"Bank Account No.\", BankAccount.\"Country/Region Code\", BankAccount.\"Bank Branch No.\", false, IHttpFactory, Enum::\"CTS-CB Lookup Scenario\"::\"Multi Bank Acc. Setup\")",
+                        "status":  "Killed",
+                        "killingTest":  "CTS-CB Test Auth Share Detect:DetectInCompany_WithFakeHttp_UnboundAccount_EmitsSystemNotMappedRow",
+                        "durationMs":  165,
+                        "coveringTests":  [
+                                              95155
+                                          ]
+                    },
+                    {
+                        "id":  179,
+                        "stableKey":  "5e9ae734430f5be3",
+                        "objectId":  72918635,
+                        "procedure":  "ResolveBankCodeForAccount",
+                        "line":  209,
+                        "operator":  "COND",
+                        "original":  "not BankInfoLookup.GetBankInfo(TempBank, BankAccount.IBAN, BankAccount.\"Bank Account No.\", BankAccount.\"Country/Region Code\", BankAccount.\"Bank Branch No.\", false, IHttpFactory, Enum::\"CTS-CB Lookup Scenario\"::\"Multi Bank Acc. Setup\")",
+                        "mutated":  "true",
+                        "status":  "Killed",
+                        "killingTest":  "CTS-CB Test Auth Share Detect:DetectInCompany_WithFakeHttp_UnboundAccount_EmitsSystemNotMappedRow",
+                        "durationMs":  140,
+                        "coveringTests":  [
+                                              95155
+                                          ]
+                    },
+                    {
+                        "id":  180,
+                        "stableKey":  "5398695c65e111f2",
+                        "objectId":  72918635,
+                        "procedure":  "ResolveBankCodeForAccount",
+                        "line":  209,
+                        "operator":  "COND",
+                        "original":  "not BankInfoLookup.GetBankInfo(TempBank, BankAccount.IBAN, BankAccount.\"Bank Account No.\", BankAccount.\"Country/Region Code\", BankAccount.\"Bank Branch No.\", false, IHttpFactory, Enum::\"CTS-CB Lookup Scenario\"::\"Multi Bank Acc. Setup\")",
+                        "mutated":  "false",
+                        "status":  "Killed",
+                        "killingTest":  "CTS-CB Test Auth Share Detect:DetectInCompany_WithFakeHttp_UnboundAccount_EmitsSystemNotMappedRow",
+                        "durationMs":  148,
+                        "coveringTests":  [
+                                              95155
+                                          ]
+                    },
+                    {
+                        "id":  181,
+                        "stableKey":  "84b532928bb39c33",
+                        "objectId":  72918635,
+                        "procedure":  "ResolveBankCodeForAccount",
+                        "line":  210,
+                        "operator":  "DEL",
+                        "original":  "exit(false)",
+                        "mutated":  "",
+                        "status":  "Survived",
+                        "killingTest":  null,
+                        "durationMs":  751,
+                        "coveringTests":  [
+                                              95155,
+                                              95179,
+                                              95191
+                                          ]
+                    },
+                    {
+                        "id":  182,
+                        "stableKey":  "bbfe4d8c9e44e9dd",
+                        "objectId":  72918635,
+                        "procedure":  "ResolveBankCodeForAccount",
+                        "line":  212,
+                        "operator":  "REL",
+                        "original":  "TempBank.Code \u003c\u003e \u0027\u0027",
+                        "mutated":  "TempBank.Code = \u0027\u0027",
+                        "status":  "Killed",
+                        "killingTest":  "CTS-CB Test Auth Share Detect:DetectInCompany_WithFakeHttp_UnboundAccount_EmitsSystemNotMappedRow",
+                        "durationMs":  145,
+                        "coveringTests":  [
+                                              95155
+                                          ]
+                    },
+                    {
+                        "id":  183,
+                        "stableKey":  "6de650b90c97079b",
+                        "objectId":  72918635,
+                        "procedure":  "ResolveBankCodeForAccount",
+                        "line":  212,
+                        "operator":  "COND",
+                        "original":  "TempBank.Code \u003c\u003e \u0027\u0027",
+                        "mutated":  "true",
+                        "status":  "Survived",
+                        "killingTest":  null,
+                        "durationMs":  159,
+                        "coveringTests":  [
+                                              95155
+                                          ]
+                    },
+                    {
+                        "id":  184,
+                        "stableKey":  "501500a6e63c2bcd",
+                        "objectId":  72918635,
+                        "procedure":  "ResolveBankCodeForAccount",
+                        "line":  212,
+                        "operator":  "COND",
+                        "original":  "TempBank.Code \u003c\u003e \u0027\u0027",
+                        "mutated":  "false",
+                        "status":  "Killed",
+                        "killingTest":  "CTS-CB Test Auth Share Detect:DetectInCompany_WithFakeHttp_UnboundAccount_EmitsSystemNotMappedRow",
+                        "durationMs":  175,
+                        "coveringTests":  [
+                                              95155
+                                          ]
+                    },
+                    {
+                        "id":  185,
+                        "stableKey":  "01e58bd0c9a69d6a",
+                        "objectId":  72918635,
+                        "procedure":  "ResolveBankCodeForAccount",
+                        "line":  216,
+                        "operator":  "DEL",
+                        "original":  "exit(ResolvedBankCode \u003c\u003e \u0027\u0027)",
+                        "mutated":  "",
+                        "status":  "Killed",
+                        "killingTest":  "CTS-CB Test Auth Share Detect:DetectInCompany_WithFakeHttp_UnboundAccount_EmitsSystemNotMappedRow",
+                        "durationMs":  149,
+                        "coveringTests":  [
+                                              95155
+                                          ]
+                    },
+                    {
+                        "id":  186,
+                        "stableKey":  "3e3a4510e2cdbadf",
+                        "objectId":  72918635,
+                        "procedure":  "IsSourceSystemMappedToBank",
+                        "line":  232,
+                        "operator":  "REL",
+                        "original":  "(BankCode = \u0027\u0027) or (SourceBankSystemCode = \u0027\u0027)",
+                        "mutated":  "(BankCode \u003c\u003e \u0027\u0027) or (SourceBankSystemCode = \u0027\u0027)",
+                        "status":  "Survived",
+                        "killingTest":  null,
+                        "durationMs":  164,
+                        "coveringTests":  [
+                                              95155
+                                          ]
+                    },
+                    {
+                        "id":  187,
+                        "stableKey":  "db269011196acf36",
+                        "objectId":  72918635,
+                        "procedure":  "IsSourceSystemMappedToBank",
+                        "line":  232,
+                        "operator":  "REL",
+                        "original":  "(BankCode = \u0027\u0027) or (SourceBankSystemCode = \u0027\u0027)",
+                        "mutated":  "(BankCode = \u0027\u0027) or (SourceBankSystemCode \u003c\u003e \u0027\u0027)",
+                        "status":  "Survived",
+                        "killingTest":  null,
+                        "durationMs":  158,
+                        "coveringTests":  [
+                                              95155
+                                          ]
+                    },
+                    {
+                        "id":  188,
+                        "stableKey":  "f57a1ec9aa936b08",
+                        "objectId":  72918635,
+                        "procedure":  "IsSourceSystemMappedToBank",
+                        "line":  232,
+                        "operator":  "BOOL",
+                        "original":  "(BankCode = \u0027\u0027) or (SourceBankSystemCode = \u0027\u0027)",
+                        "mutated":  "(BankCode = \u0027\u0027) and (SourceBankSystemCode = \u0027\u0027)",
+                        "status":  "Survived",
+                        "killingTest":  null,
+                        "durationMs":  170,
+                        "coveringTests":  [
+                                              95155
+                                          ]
+                    },
+                    {
+                        "id":  189,
+                        "stableKey":  "7a0e7be3955c1afc",
+                        "objectId":  72918635,
+                        "procedure":  "IsSourceSystemMappedToBank",
+                        "line":  232,
+                        "operator":  "COND",
+                        "original":  "(BankCode = \u0027\u0027) or (SourceBankSystemCode = \u0027\u0027)",
+                        "mutated":  "true",
+                        "status":  "Survived",
+                        "killingTest":  null,
+                        "durationMs":  145,
+                        "coveringTests":  [
+                                              95155
+                                          ]
+                    },
+                    {
+                        "id":  190,
+                        "stableKey":  "916a876bb5da1b4a",
+                        "objectId":  72918635,
+                        "procedure":  "IsSourceSystemMappedToBank",
+                        "line":  232,
+                        "operator":  "COND",
+                        "original":  "(BankCode = \u0027\u0027) or (SourceBankSystemCode = \u0027\u0027)",
+                        "mutated":  "false",
+                        "status":  "Survived",
+                        "killingTest":  null,
+                        "durationMs":  141,
+                        "coveringTests":  [
+                                              95155
+                                          ]
+                    },
+                    {
+                        "id":  191,
+                        "stableKey":  "975def73c8bc02dc",
+                        "objectId":  72918635,
+                        "procedure":  "IsSourceSystemMappedToBank",
+                        "line":  233,
+                        "operator":  "DEL",
+                        "original":  "exit(false)",
+                        "mutated":  "",
+                        "status":  "Survived",
+                        "killingTest":  null,
+                        "durationMs":  738,
+                        "coveringTests":  [
+                                              95155,
+                                              95179,
+                                              95191
+                                          ]
+                    },
+                    {
+                        "id":  192,
+                        "stableKey":  "4fd9fb550e8fa476",
+                        "objectId":  72918635,
+                        "procedure":  "IsSourceSystemMappedToBank",
+                        "line":  236,
+                        "operator":  "DEL",
+                        "original":  "exit(not BankSystemMapping2.IsEmpty())",
+                        "mutated":  "",
+                        "status":  "Survived",
+                        "killingTest":  null,
+                        "durationMs":  150,
+                        "coveringTests":  [
+                                              95155
+                                          ]
+                    },
+                    {
+                        "id":  193,
+                        "stableKey":  "d633aa3d3cd2aa91",
+                        "objectId":  72918635,
+                        "procedure":  "IsSourceCommTypeSupportedByBank",
+                        "line":  249,
+                        "operator":  "REL",
+                        "original":  "(BankCode = \u0027\u0027) or (SourceBankSystemCode = \u0027\u0027)",
+                        "mutated":  "(BankCode \u003c\u003e \u0027\u0027) or (SourceBankSystemCode = \u0027\u0027)",
+                        "status":  "Survived",
+                        "killingTest":  null,
+                        "durationMs":  181,
+                        "coveringTests":  [
+                                              95155
+                                          ]
+                    },
+                    {
+                        "id":  194,
+                        "stableKey":  "290db763945c71fe",
+                        "objectId":  72918635,
+                        "procedure":  "IsSourceCommTypeSupportedByBank",
+                        "line":  249,
+                        "operator":  "REL",
+                        "original":  "(BankCode = \u0027\u0027) or (SourceBankSystemCode = \u0027\u0027)",
+                        "mutated":  "(BankCode = \u0027\u0027) or (SourceBankSystemCode \u003c\u003e \u0027\u0027)",
+                        "status":  "Survived",
+                        "killingTest":  null,
+                        "durationMs":  141,
+                        "coveringTests":  [
+                                              95155
+                                          ]
+                    },
+                    {
+                        "id":  195,
+                        "stableKey":  "f48fc02eb3152dc0",
+                        "objectId":  72918635,
+                        "procedure":  "IsSourceCommTypeSupportedByBank",
+                        "line":  249,
+                        "operator":  "BOOL",
+                        "original":  "(BankCode = \u0027\u0027) or (SourceBankSystemCode = \u0027\u0027)",
+                        "mutated":  "(BankCode = \u0027\u0027) and (SourceBankSystemCode = \u0027\u0027)",
+                        "status":  "Survived",
+                        "killingTest":  null,
+                        "durationMs":  177,
+                        "coveringTests":  [
+                                              95155
+                                          ]
+                    },
+                    {
+                        "id":  196,
+                        "stableKey":  "1f6507de94762409",
+                        "objectId":  72918635,
+                        "procedure":  "IsSourceCommTypeSupportedByBank",
+                        "line":  249,
+                        "operator":  "COND",
+                        "original":  "(BankCode = \u0027\u0027) or (SourceBankSystemCode = \u0027\u0027)",
+                        "mutated":  "true",
+                        "status":  "Survived",
+                        "killingTest":  null,
+                        "durationMs":  153,
+                        "coveringTests":  [
+                                              95155
+                                          ]
+                    },
+                    {
+                        "id":  197,
+                        "stableKey":  "e38f6f4281da1282",
+                        "objectId":  72918635,
+                        "procedure":  "IsSourceCommTypeSupportedByBank",
+                        "line":  249,
+                        "operator":  "COND",
+                        "original":  "(BankCode = \u0027\u0027) or (SourceBankSystemCode = \u0027\u0027)",
+                        "mutated":  "false",
+                        "status":  "Survived",
+                        "killingTest":  null,
+                        "durationMs":  162,
+                        "coveringTests":  [
+                                              95155
+                                          ]
+                    },
+                    {
+                        "id":  198,
+                        "stableKey":  "8155b60e1fd437fe",
+                        "objectId":  72918635,
+                        "procedure":  "IsSourceCommTypeSupportedByBank",
+                        "line":  250,
+                        "operator":  "DEL",
+                        "original":  "exit(false)",
+                        "mutated":  "",
+                        "status":  "Survived",
+                        "killingTest":  null,
+                        "durationMs":  886,
+                        "coveringTests":  [
+                                              95155,
+                                              95179,
+                                              95191
+                                          ]
+                    },
+                    {
+                        "id":  199,
+                        "stableKey":  "83c9309c35dae64c",
+                        "objectId":  72918635,
+                        "procedure":  "IsSourceCommTypeSupportedByBank",
+                        "line":  254,
+                        "operator":  "DEL",
+                        "original":  "exit(not BankSystemMapping2.IsEmpty())",
+                        "mutated":  "",
+                        "status":  "Survived",
+                        "killingTest":  null,
+                        "durationMs":  179,
+                        "coveringTests":  [
+                                              95155
+                                          ]
+                    },
+                    {
+                        "id":  200,
+                        "stableKey":  "b315d5860bab92a4",
+                        "objectId":  72918635,
+                        "procedure":  "ResolveAccessibleSourceCompany",
+                        "line":  271,
+                        "operator":  "COND",
+                        "original":  "TryGetSourceBank(PreferredCompany, SourceBankCode, SourceBank)",
+                        "mutated":  "true",
+                        "status":  "Killed",
+                        "killingTest":  "CTS-CB Test Auth Share Detect:DetectInCompany_WithFakeHttp_UnboundAccount_EmitsSystemNotMappedRow",
+                        "durationMs":  137,
+                        "coveringTests":  [
+                                              95155
+                                          ]
+                    },
+                    {
+                        "id":  201,
+                        "stableKey":  "eb2c949cf33b8281",
+                        "objectId":  72918635,
+                        "procedure":  "ResolveAccessibleSourceCompany",
+                        "line":  271,
+                        "operator":  "COND",
+                        "original":  "TryGetSourceBank(PreferredCompany, SourceBankCode, SourceBank)",
+                        "mutated":  "false",
+                        "status":  "Survived",
+                        "killingTest":  null,
+                        "durationMs":  175,
+                        "coveringTests":  [
+                                              95155
+                                          ]
+                    },
+                    {
+                        "id":  202,
+                        "stableKey":  "eeb945d8484531ac",
+                        "objectId":  72918635,
+                        "procedure":  "ResolveAccessibleSourceCompany",
+                        "line":  272,
+                        "operator":  "DEL",
+                        "original":  "exit(PreferredCompany)",
+                        "mutated":  "",
+                        "status":  "Survived",
+                        "killingTest":  null,
+                        "durationMs":  178,
+                        "coveringTests":  [
+                                              95155
+                                          ]
+                    },
+                    {
+                        "id":  203,
+                        "stableKey":  "8fd9bb306e0f4ee4",
+                        "objectId":  72918635,
+                        "procedure":  "ResolveAccessibleSourceCompany",
+                        "line":  275,
+                        "operator":  "REL",
+                        "original":  "(CurrentCompany \u003c\u003e PreferredCompany) and TryGetSourceBank(CurrentCompany, SourceBankCode, SourceBank)",
+                        "mutated":  "(CurrentCompany = PreferredCompany) and TryGetSourceBank(CurrentCompany, SourceBankCode, SourceBank)",
+                        "status":  "Survived",
+                        "killingTest":  null,
+                        "durationMs":  806,
+                        "coveringTests":  [
+                                              95155,
+                                              95179,
+                                              95191
+                                          ]
+                    },
+                    {
+                        "id":  204,
+                        "stableKey":  "90b13ce05b4e45c8",
+                        "objectId":  72918635,
+                        "procedure":  "ResolveAccessibleSourceCompany",
+                        "line":  275,
+                        "operator":  "BOOL",
+                        "original":  "(CurrentCompany \u003c\u003e PreferredCompany) and TryGetSourceBank(CurrentCompany, SourceBankCode, SourceBank)",
+                        "mutated":  "(CurrentCompany \u003c\u003e PreferredCompany) or TryGetSourceBank(CurrentCompany, SourceBankCode, SourceBank)",
+                        "status":  "Survived",
+                        "killingTest":  null,
+                        "durationMs":  829,
+                        "coveringTests":  [
+                                              95155,
+                                              95179,
+                                              95191
+                                          ]
+                    },
+                    {
+                        "id":  205,
+                        "stableKey":  "79a024104cf90e9c",
+                        "objectId":  72918635,
+                        "procedure":  "ResolveAccessibleSourceCompany",
+                        "line":  275,
+                        "operator":  "COND",
+                        "original":  "(CurrentCompany \u003c\u003e PreferredCompany) and TryGetSourceBank(CurrentCompany, SourceBankCode, SourceBank)",
+                        "mutated":  "true",
+                        "status":  "Survived",
+                        "killingTest":  null,
+                        "durationMs":  766,
+                        "coveringTests":  [
+                                              95155,
+                                              95179,
+                                              95191
+                                          ]
+                    },
+                    {
+                        "id":  206,
+                        "stableKey":  "cba49140e6a3eca8",
+                        "objectId":  72918635,
+                        "procedure":  "ResolveAccessibleSourceCompany",
+                        "line":  275,
+                        "operator":  "COND",
+                        "original":  "(CurrentCompany \u003c\u003e PreferredCompany) and TryGetSourceBank(CurrentCompany, SourceBankCode, SourceBank)",
+                        "mutated":  "false",
+                        "status":  "Survived",
+                        "killingTest":  null,
+                        "durationMs":  739,
+                        "coveringTests":  [
+                                              95155,
+                                              95179,
+                                              95191
+                                          ]
+                    },
+                    {
+                        "id":  207,
+                        "stableKey":  "b2b56cd82174e29f",
+                        "objectId":  72918635,
+                        "procedure":  "ResolveAccessibleSourceCompany",
+                        "line":  276,
+                        "operator":  "DEL",
+                        "original":  "exit(CurrentCompany)",
+                        "mutated":  "",
+                        "status":  "Survived",
+                        "killingTest":  null,
+                        "durationMs":  746,
+                        "coveringTests":  [
+                                              95155,
+                                              95179,
+                                              95191
+                                          ]
+                    },
+                    {
+                        "id":  208,
+                        "stableKey":  "48fb3522288c3fd9",
+                        "objectId":  72918635,
+                        "procedure":  "ResolveAccessibleSourceCompany",
+                        "line":  278,
+                        "operator":  "DEL",
+                        "original":  "exit(PreferredCompany)",
+                        "mutated":  "",
+                        "status":  "Survived",
+                        "killingTest":  null,
+                        "durationMs":  743,
+                        "coveringTests":  [
+                                              95155,
+                                              95179,
+                                              95191
+                                          ]
+                    },
+                    {
+                        "id":  209,
+                        "stableKey":  "a6f56e9ec46a2776",
+                        "objectId":  72918635,
+                        "procedure":  "TryGetSourceBank",
+                        "line":  295,
+                        "operator":  "NOT",
+                        "original":  "not SourceBank.Get(SourceBankCode)",
+                        "mutated":  "SourceBank.Get(SourceBankCode)",
+                        "status":  "Survived",
+                        "killingTest":  null,
+                        "durationMs":  154,
+                        "coveringTests":  [
+                                              95155
+                                          ]
+                    },
+                    {
+                        "id":  210,
+                        "stableKey":  "042b55f8f2efaa2d",
+                        "objectId":  72918635,
+                        "procedure":  "TryGetSourceBank",
+                        "line":  295,
+                        "operator":  "COND",
+                        "original":  "not SourceBank.Get(SourceBankCode)",
+                        "mutated":  "true",
+                        "status":  "Killed",
+                        "killingTest":  "CTS-CB Test Auth Share Detect:DetectInCompany_WithFakeHttp_UnboundAccount_EmitsSystemNotMappedRow",
+                        "durationMs":  150,
+                        "coveringTests":  [
+                                              95155
+                                          ]
+                    },
+                    {
+                        "id":  211,
+                        "stableKey":  "f6e7960e1b95f3f9",
+                        "objectId":  72918635,
+                        "procedure":  "TryGetSourceBank",
+                        "line":  295,
+                        "operator":  "COND",
+                        "original":  "not SourceBank.Get(SourceBankCode)",
+                        "mutated":  "false",
+                        "status":  "Killed",
+                        "killingTest":  "CTS-CB Test Auth Share Detect:DetectInCompany_WithFakeHttp_UnboundAccount_EmitsSystemNotMappedRow",
+                        "durationMs":  139,
+                        "coveringTests":  [
+                                              95155
+                                          ]
+                    },
+                    {
+                        "id":  212,
+                        "stableKey":  "c58d779c8e6fa2dc",
+                        "objectId":  72918635,
+                        "procedure":  "TryGetSourceBank",
+                        "line":  296,
+                        "operator":  "DEL",
+                        "original":  "Error(SourceBankUnreadableErr, SourceBankCode, SourceCompany)",
+                        "mutated":  "",
+                        "status":  "Survived",
+                        "killingTest":  null,
+                        "durationMs":  788,
+                        "coveringTests":  [
+                                              95155,
+                                              95179,
+                                              95191
+                                          ]
+                    },
+                    {
+                        "id":  213,
+                        "stableKey":  "3a2e8522fbc835fc",
+                        "objectId":  72918635,
+                        "procedure":  "EnsureTargetBankFromSource",
+                        "line":  304,
+                        "operator":  "NOT",
+                        "original":  "not ToBank.WritePermission()",
+                        "mutated":  "ToBank.WritePermission()",
+                        "status":  "Survived",
+                        "killingTest":  null,
+                        "durationMs":  857,
+                        "coveringTests":  [
+                                              95155,
+                                              95179,
+                                              95191
+                                          ]
+                    },
+                    {
+                        "id":  214,
+                        "stableKey":  "458ff8ebbb43af04",
+                        "objectId":  72918635,
+                        "procedure":  "EnsureTargetBankFromSource",
+                        "line":  304,
+                        "operator":  "COND",
+                        "original":  "not ToBank.WritePermission()",
+                        "mutated":  "true",
+                        "status":  "Survived",
+                        "killingTest":  null,
+                        "durationMs":  845,
+                        "coveringTests":  [
+                                              95155,
+                                              95179,
+                                              95191
+                                          ]
+                    },
+                    {
+                        "id":  215,
+                        "stableKey":  "3c17ba0ea4e2a63b",
+                        "objectId":  72918635,
+                        "procedure":  "EnsureTargetBankFromSource",
+                        "line":  304,
+                        "operator":  "COND",
+                        "original":  "not ToBank.WritePermission()",
+                        "mutated":  "false",
+                        "status":  "Survived",
+                        "killingTest":  null,
+                        "durationMs":  837,
+                        "coveringTests":  [
+                                              95155,
+                                              95179,
+                                              95191
+                                          ]
+                    },
+                    {
+                        "id":  216,
+                        "stableKey":  "731f63e3a58ea82e",
+                        "objectId":  72918635,
+                        "procedure":  "EnsureTargetBankFromSource",
+                        "line":  305,
+                        "operator":  "DEL",
+                        "original":  "exit",
+                        "mutated":  "",
+                        "status":  "Survived",
+                        "killingTest":  null,
+                        "durationMs":  819,
+                        "coveringTests":  [
+                                              95155,
+                                              95179,
+                                              95191
+                                          ]
+                    },
+                    {
+                        "id":  217,
+                        "stableKey":  "37a437ae6d783b9f",
+                        "objectId":  72918635,
+                        "procedure":  "EnsureTargetBankFromSource",
+                        "line":  306,
+                        "operator":  "COND",
+                        "original":  "ToBank.Get(SourceBank.Code)",
+                        "mutated":  "true",
+                        "status":  "Survived",
+                        "killingTest":  null,
+                        "durationMs":  822,
+                        "coveringTests":  [
+                                              95155,
+                                              95179,
+                                              95191
+                                          ]
+                    },
+                    {
+                        "id":  218,
+                        "stableKey":  "4550f1114c35bb49",
+                        "objectId":  72918635,
+                        "procedure":  "EnsureTargetBankFromSource",
+                        "line":  306,
+                        "operator":  "COND",
+                        "original":  "ToBank.Get(SourceBank.Code)",
+                        "mutated":  "false",
+                        "status":  "Survived",
+                        "killingTest":  null,
+                        "durationMs":  903,
+                        "coveringTests":  [
+                                              95155,
+                                              95179,
+                                              95191
+                                          ]
+                    },
+                    {
+                        "id":  219,
+                        "stableKey":  "33d7b63b456d751b",
+                        "objectId":  72918635,
+                        "procedure":  "EnsureTargetBankFromSource",
+                        "line":  307,
+                        "operator":  "DEL",
+                        "original":  "exit",
+                        "mutated":  "",
+                        "status":  "Survived",
+                        "killingTest":  null,
+                        "durationMs":  839,
+                        "coveringTests":  [
+                                              95155,
+                                              95179,
+                                              95191
+                                          ]
+                    },
+                    {
+                        "id":  220,
+                        "stableKey":  "30036301d95447db",
+                        "objectId":  72918635,
+                        "procedure":  "EnsureTargetBankFromSource",
+                        "line":  309,
+                        "operator":  "DEL",
+                        "original":  "ToBank.Insert(true)",
+                        "mutated":  "",
+                        "status":  "Survived",
+                        "killingTest":  null,
+                        "durationMs":  711,
+                        "coveringTests":  [
+                                              95155,
+                                              95179,
+                                              95191
+                                          ]
+                    },
+                    {
+                        "id":  221,
+                        "stableKey":  "531699c2a8cf1c0a",
+                        "objectId":  72918635,
+                        "procedure":  "EnsureTargetBankFromSource",
+                        "line":  309,
+                        "operator":  "INSFLAG",
+                        "original":  "ToBank.Insert(true)",
+                        "mutated":  "ToBank.Insert(false)",
+                        "status":  "Survived",
+                        "killingTest":  null,
+                        "durationMs":  778,
+                        "coveringTests":  [
+                                              95155,
+                                              95179,
+                                              95191
+                                          ]
+                    },
+                    {
+                        "id":  222,
+                        "stableKey":  "cf6de1fc4b596764",
+                        "objectId":  72918635,
+                        "procedure":  "AnnotatePlaceholderAsNotActivated",
+                        "line":  319,
+                        "operator":  "NOT",
+                        "original":  "not TempAuthShareTarget.FindFirst()",
+                        "mutated":  "TempAuthShareTarget.FindFirst()",
+                        "status":  "Survived",
+                        "killingTest":  null,
+                        "durationMs":  769,
+                        "coveringTests":  [
+                                              95155,
+                                              95179,
+                                              95191
+                                          ]
+                    },
+                    {
+                        "id":  223,
+                        "stableKey":  "90f31aa08b92d3ac",
+                        "objectId":  72918635,
+                        "procedure":  "AnnotatePlaceholderAsNotActivated",
+                        "line":  319,
+                        "operator":  "COND",
+                        "original":  "not TempAuthShareTarget.FindFirst()",
+                        "mutated":  "true",
+                        "status":  "Survived",
+                        "killingTest":  null,
+                        "durationMs":  867,
+                        "coveringTests":  [
+                                              95155,
+                                              95179,
+                                              95191
+                                          ]
+                    },
+                    {
+                        "id":  224,
+                        "stableKey":  "4681a16a3c4101eb",
+                        "objectId":  72918635,
+                        "procedure":  "AnnotatePlaceholderAsNotActivated",
+                        "line":  319,
+                        "operator":  "COND",
+                        "original":  "not TempAuthShareTarget.FindFirst()",
+                        "mutated":  "false",
+                        "status":  "Survived",
+                        "killingTest":  null,
+                        "durationMs":  864,
+                        "coveringTests":  [
+                                              95155,
+                                              95179,
+                                              95191
+                                          ]
+                    },
+                    {
+                        "id":  225,
+                        "stableKey":  "de24029e9fb814e9",
+                        "objectId":  72918635,
+                        "procedure":  "AnnotatePlaceholderAsNotActivated",
+                        "line":  321,
+                        "operator":  "DEL",
+                        "original":  "exit",
+                        "mutated":  "",
+                        "status":  "Survived",
+                        "killingTest":  null,
+                        "durationMs":  801,
+                        "coveringTests":  [
+                                              95155,
+                                              95179,
+                                              95191
+                                          ]
+                    },
+                    {
+                        "id":  226,
+                        "stableKey":  "073f4e4d8d5afd6e",
+                        "objectId":  72918635,
+                        "procedure":  "AnnotatePlaceholderAsNotActivated",
+                        "line":  327,
+                        "operator":  "DEL",
+                        "original":  "TempAuthShareTarget.Modify()",
+                        "mutated":  "",
+                        "status":  "Survived",
+                        "killingTest":  null,
+                        "durationMs":  743,
+                        "coveringTests":  [
+                                              95155,
+                                              95179,
+                                              95191
+                                          ]
+                    },
+                    {
+                        "id":  227,
+                        "stableKey":  "95b4fb12a0febb4e",
+                        "objectId":  72918635,
+                        "procedure":  "LinkBankAccountsToBank",
+                        "line":  337,
+                        "operator":  "NOT",
+                        "original":  "not BankAccount.WritePermission()",
+                        "mutated":  "BankAccount.WritePermission()",
+                        "status":  "Survived",
+                        "killingTest":  null,
+                        "durationMs":  717,
+                        "coveringTests":  [
+                                              95155,
+                                              95179,
+                                              95191
+                                          ]
+                    },
+                    {
+                        "id":  228,
+                        "stableKey":  "316068f43bdca217",
+                        "objectId":  72918635,
+                        "procedure":  "LinkBankAccountsToBank",
+                        "line":  337,
+                        "operator":  "COND",
+                        "original":  "not BankAccount.WritePermission()",
+                        "mutated":  "true",
+                        "status":  "Survived",
+                        "killingTest":  null,
+                        "durationMs":  786,
+                        "coveringTests":  [
+                                              95155,
+                                              95179,
+                                              95191
+                                          ]
+                    },
+                    {
+                        "id":  229,
+                        "stableKey":  "c8d265fd6764f279",
+                        "objectId":  72918635,
+                        "procedure":  "LinkBankAccountsToBank",
+                        "line":  337,
+                        "operator":  "COND",
+                        "original":  "not BankAccount.WritePermission()",
+                        "mutated":  "false",
+                        "status":  "Survived",
+                        "killingTest":  null,
+                        "durationMs":  772,
+                        "coveringTests":  [
+                                              95155,
+                                              95179,
+                                              95191
+                                          ]
+                    },
+                    {
+                        "id":  230,
+                        "stableKey":  "bb07d724641e665e",
+                        "objectId":  72918635,
+                        "procedure":  "LinkBankAccountsToBank",
+                        "line":  338,
+                        "operator":  "DEL",
+                        "original":  "exit",
+                        "mutated":  "",
+                        "status":  "Survived",
+                        "killingTest":  null,
+                        "durationMs":  773,
+                        "coveringTests":  [
+                                              95155,
+                                              95179,
+                                              95191
+                                          ]
+                    },
+                    {
+                        "id":  231,
+                        "stableKey":  "df7303a71de8392c",
+                        "objectId":  72918635,
+                        "procedure":  "LinkBankAccountsToBank",
+                        "line":  342,
+                        "operator":  "DEL",
+                        "original":  "BankAccount.Modify()",
+                        "mutated":  "",
+                        "status":  "Survived",
+                        "killingTest":  null,
+                        "durationMs":  798,
+                        "coveringTests":  [
+                                              95155,
+                                              95179,
+                                              95191
+                                          ]
+                    },
+                    {
+                        "id":  232,
+                        "stableKey":  "8be04829e0195f12",
+                        "objectId":  72918635,
+                        "procedure":  "UpdatePlaceholderRows",
+                        "line":  382,
+                        "operator":  "COND",
+                        "original":  "TempAuthShareTarget.FindLast()",
+                        "mutated":  "true",
+                        "status":  "Survived",
+                        "killingTest":  null,
+                        "durationMs":  152,
+                        "coveringTests":  [
+                                              95155
+                                          ]
+                    },
+                    {
+                        "id":  233,
+                        "stableKey":  "3541ff7f5e1b50e3",
+                        "objectId":  72918635,
+                        "procedure":  "UpdatePlaceholderRows",
+                        "line":  382,
+                        "operator":  "COND",
+                        "original":  "TempAuthShareTarget.FindLast()",
+                        "mutated":  "false",
+                        "status":  "Survived",
+                        "killingTest":  null,
+                        "durationMs":  140,
+                        "coveringTests":  [
+                                              95155
+                                          ]
+                    },
+                    {
+                        "id":  234,
+                        "stableKey":  "66261558c35e01a3",
+                        "objectId":  72918635,
+                        "procedure":  "UpdatePlaceholderRows",
+                        "line":  388,
+                        "operator":  "NOT",
+                        "original":  "not TempAuthShareTarget.FindFirst()",
+                        "mutated":  "TempAuthShareTarget.FindFirst()",
+                        "status":  "Killed",
+                        "killingTest":  "CTS-CB Test Auth Share Detect:UpdatePlaceholderRows_EmptyInputs_BecomesNoMatchingAccounts",
+                        "durationMs":  189,
+                        "coveringTests":  [
+                                              95155
+                                          ]
+                    },
+                    {
+                        "id":  235,
+                        "stableKey":  "563cf6e765df2e03",
+                        "objectId":  72918635,
+                        "procedure":  "UpdatePlaceholderRows",
+                        "line":  388,
+                        "operator":  "COND",
+                        "original":  "not TempAuthShareTarget.FindFirst()",
+                        "mutated":  "true",
+                        "status":  "Killed",
+                        "killingTest":  "CTS-CB Test Auth Share Detect:UpdatePlaceholderRows_EmptyInputs_BecomesNoMatchingAccounts",
+                        "durationMs":  188,
+                        "coveringTests":  [
+                                              95155
+                                          ]
+                    },
+                    {
+                        "id":  236,
+                        "stableKey":  "2c546449ab0ba8ae",
+                        "objectId":  72918635,
+                        "procedure":  "UpdatePlaceholderRows",
+                        "line":  388,
+                        "operator":  "COND",
+                        "original":  "not TempAuthShareTarget.FindFirst()",
+                        "mutated":  "false",
+                        "status":  "Killed",
+                        "killingTest":  "CTS-CB Test Auth Share Detect:UpdatePlaceholderRows_NoPlaceholder_NoOp",
+                        "durationMs":  171,
+                        "coveringTests":  [
+                                              95155
+                                          ]
+                    },
+                    {
+                        "id":  237,
+                        "stableKey":  "28b8829cb76c5bb5",
+                        "objectId":  72918635,
+                        "procedure":  "UpdatePlaceholderRows",
+                        "line":  390,
+                        "operator":  "DEL",
+                        "original":  "exit",
+                        "mutated":  "",
+                        "status":  "Killed",
+                        "killingTest":  "CTS-CB Test Auth Share Detect:UpdatePlaceholderRows_NoPlaceholder_NoOp",
+                        "durationMs":  190,
+                        "coveringTests":  [
+                                              95155
+                                          ]
+                    },
+                    {
+                        "id":  238,
+                        "stableKey":  "d7902a47b9076d7c",
+                        "objectId":  72918635,
+                        "procedure":  "UpdatePlaceholderRows",
+                        "line":  399,
+                        "operator":  "REL",
+                        "original":  "ExactMatchCount \u003e 0",
+                        "mutated":  "ExactMatchCount \u003e= 0",
+                        "status":  "Killed",
+                        "killingTest":  "CTS-CB Test Auth Share Detect:UpdatePlaceholderRows_EmptyInputs_BecomesNoMatchingAccounts",
+                        "durationMs":  175,
+                        "coveringTests":  [
+                                              95155
+                                          ]
+                    },
+                    {
+                        "id":  239,
+                        "stableKey":  "df46e4f1c5906a34",
+                        "objectId":  72918635,
+                        "procedure":  "UpdatePlaceholderRows",
+                        "line":  399,
+                        "operator":  "COND",
+                        "original":  "ExactMatchCount \u003e 0",
+                        "mutated":  "true",
+                        "status":  "Killed",
+                        "killingTest":  "CTS-CB Test Auth Share Detect:UpdatePlaceholderRows_EmptyInputs_BecomesNoMatchingAccounts",
+                        "durationMs":  219,
+                        "coveringTests":  [
+                                              95155
+                                          ]
+                    },
+                    {
+                        "id":  240,
+                        "stableKey":  "3d83658997bcdb86",
+                        "objectId":  72918635,
+                        "procedure":  "UpdatePlaceholderRows",
+                        "line":  399,
+                        "operator":  "COND",
+                        "original":  "ExactMatchCount \u003e 0",
+                        "mutated":  "false",
+                        "status":  "Killed",
+                        "killingTest":  "CTS-CB Test Auth Share Detect:UpdatePlaceholderRows_ExactMatchOnly_BecomesReady",
+                        "durationMs":  174,
+                        "coveringTests":  [
+                                              95155
+                                          ]
+                    },
+                    {
+                        "id":  241,
+                        "stableKey":  "baa5df13128b2291",
+                        "objectId":  72918635,
+                        "procedure":  "UpdatePlaceholderRows",
+                        "line":  412,
+                        "operator":  "REL",
+                        "original":  "TotalFailed \u003e 0",
+                        "mutated":  "TotalFailed \u003e= 0",
+                        "status":  "Killed",
+                        "killingTest":  "CTS-CB Test Auth Share Detect:UpdatePlaceholderRows_EmptyInputs_BecomesNoMatchingAccounts",
+                        "durationMs":  199,
+                        "coveringTests":  [
+                                              95155
+                                          ]
+                    },
+                    {
+                        "id":  242,
+                        "stableKey":  "8354a7847aa294ce",
+                        "objectId":  72918635,
+                        "procedure":  "UpdatePlaceholderRows",
+                        "line":  412,
+                        "operator":  "COND",
+                        "original":  "TotalFailed \u003e 0",
+                        "mutated":  "true",
+                        "status":  "Killed",
+                        "killingTest":  "CTS-CB Test Auth Share Detect:UpdatePlaceholderRows_EmptyInputs_BecomesNoMatchingAccounts",
+                        "durationMs":  156,
+                        "coveringTests":  [
+                                              95155
+                                          ]
+                    },
+                    {
+                        "id":  243,
+                        "stableKey":  "5eb06fc5a3aaddf9",
+                        "objectId":  72918635,
+                        "procedure":  "UpdatePlaceholderRows",
+                        "line":  412,
+                        "operator":  "COND",
+                        "original":  "TotalFailed \u003e 0",
+                        "mutated":  "false",
+                        "status":  "Killed",
+                        "killingTest":  "CTS-CB Test Auth Share Detect:UpdatePlaceholderRows_UnidentifiedOnly_BecomesDetectionFailed",
+                        "durationMs":  196,
+                        "coveringTests":  [
+                                              95155
+                                          ]
+                    },
+                    {
+                        "id":  244,
+                        "stableKey":  "72907aa9dc48c23b",
+                        "objectId":  72918635,
+                        "procedure":  "UpdatePlaceholderRows",
+                        "line":  415,
+                        "operator":  "NOT",
+                        "original":  "not PlaceholderConsumed",
+                        "mutated":  "PlaceholderConsumed",
+                        "status":  "Killed",
+                        "killingTest":  "CTS-CB Test Auth Share Detect:UpdatePlaceholderRows_EmptyInputs_BecomesNoMatchingAccounts",
+                        "durationMs":  171,
+                        "coveringTests":  [
+                                              95155
+                                          ]
+                    },
+                    {
+                        "id":  245,
+                        "stableKey":  "b9f9f16d8b7a56f5",
+                        "objectId":  72918635,
+                        "procedure":  "UpdatePlaceholderRows",
+                        "line":  415,
+                        "operator":  "COND",
+                        "original":  "not PlaceholderConsumed",
+                        "mutated":  "true",
+                        "status":  "Killed",
+                        "killingTest":  "CTS-CB Test Auth Share Detect:UpdatePlaceholderRows_ExactMatchOnly_BecomesReady",
+                        "durationMs":  183,
+                        "coveringTests":  [
+                                              95155
+                                          ]
+                    },
+                    {
+                        "id":  246,
+                        "stableKey":  "33745a75d3615d8c",
+                        "objectId":  72918635,
+                        "procedure":  "UpdatePlaceholderRows",
+                        "line":  415,
+                        "operator":  "COND",
+                        "original":  "not PlaceholderConsumed",
+                        "mutated":  "false",
+                        "status":  "Killed",
+                        "killingTest":  "CTS-CB Test Auth Share Detect:UpdatePlaceholderRows_EmptyInputs_BecomesNoMatchingAccounts",
+                        "durationMs":  157,
+                        "coveringTests":  [
+                                              95155
+                                          ]
+                    },
+                    {
+                        "id":  247,
+                        "stableKey":  "4b8dae8e70434c64",
+                        "objectId":  72918635,
+                        "procedure":  "UpdatePlaceholderRows",
+                        "line":  416,
+                        "operator":  "NOT",
+                        "original":  "not TempAuthShareTarget.Get(PlaceholderLineNo)",
+                        "mutated":  "TempAuthShareTarget.Get(PlaceholderLineNo)",
+                        "status":  "Killed",
+                        "killingTest":  "CTS-CB Test Auth Share Detect:UpdatePlaceholderRows_EmptyInputs_BecomesNoMatchingAccounts",
+                        "durationMs":  156,
+                        "coveringTests":  [
+                                              95155
+                                          ]
+                    },
+                    {
+                        "id":  248,
+                        "stableKey":  "fc855ea15ebb9791",
+                        "objectId":  72918635,
+                        "procedure":  "UpdatePlaceholderRows",
+                        "line":  416,
+                        "operator":  "COND",
+                        "original":  "not TempAuthShareTarget.Get(PlaceholderLineNo)",
+                        "mutated":  "true",
+                        "status":  "Killed",
+                        "killingTest":  "CTS-CB Test Auth Share Detect:UpdatePlaceholderRows_EmptyInputs_BecomesNoMatchingAccounts",
+                        "durationMs":  151,
+                        "coveringTests":  [
+                                              95155
+                                          ]
+                    },
+                    {
+                        "id":  249,
+                        "stableKey":  "61ece3dabb91e3c4",
+                        "objectId":  72918635,
+                        "procedure":  "UpdatePlaceholderRows",
+                        "line":  416,
+                        "operator":  "COND",
+                        "original":  "not TempAuthShareTarget.Get(PlaceholderLineNo)",
+                        "mutated":  "false",
+                        "status":  "Survived",
+                        "killingTest":  null,
+                        "durationMs":  154,
+                        "coveringTests":  [
+                                              95155
+                                          ]
+                    },
+                    {
+                        "id":  250,
+                        "stableKey":  "d91cca9a22c3a272",
+                        "objectId":  72918635,
+                        "procedure":  "UpdatePlaceholderRows",
+                        "line":  418,
+                        "operator":  "DEL",
+                        "original":  "exit",
+                        "mutated":  "",
+                        "status":  "Survived",
+                        "killingTest":  null,
+                        "durationMs":  797,
+                        "coveringTests":  [
+                                              95155,
+                                              95179,
+                                              95191
+                                          ]
+                    },
+                    {
+                        "id":  251,
+                        "stableKey":  "413fa62f0b8ec89b",
+                        "objectId":  72918635,
+                        "procedure":  "UpdatePlaceholderRows",
+                        "line":  424,
+                        "operator":  "REL",
+                        "original":  "TotalMatched \u003e 0",
+                        "mutated":  "TotalMatched \u003e= 0",
+                        "status":  "Survived",
+                        "killingTest":  null,
+                        "durationMs":  170,
+                        "coveringTests":  [
+                                              95155
+                                          ]
+                    },
+                    {
+                        "id":  252,
+                        "stableKey":  "48738f66e65676c3",
+                        "objectId":  72918635,
+                        "procedure":  "UpdatePlaceholderRows",
+                        "line":  424,
+                        "operator":  "COND",
+                        "original":  "TotalMatched \u003e 0",
+                        "mutated":  "true",
+                        "status":  "Survived",
+                        "killingTest":  null,
+                        "durationMs":  159,
+                        "coveringTests":  [
+                                              95155
+                                          ]
+                    },
+                    {
+                        "id":  253,
+                        "stableKey":  "3779946a0b684ccb",
+                        "objectId":  72918635,
+                        "procedure":  "UpdatePlaceholderRows",
+                        "line":  424,
+                        "operator":  "COND",
+                        "original":  "TotalMatched \u003e 0",
+                        "mutated":  "false",
+                        "status":  "Survived",
+                        "killingTest":  null,
+                        "durationMs":  166,
+                        "coveringTests":  [
+                                              95155
+                                          ]
+                    },
+                    {
+                        "id":  254,
+                        "stableKey":  "20f7b987767af01e",
+                        "objectId":  72918635,
+                        "procedure":  "MutatePlaceholderToReady",
+                        "line":  441,
+                        "operator":  "DEL",
+                        "original":  "TempAuthShareTarget.Modify()",
+                        "mutated":  "",
+                        "status":  "Killed",
+                        "killingTest":  "CTS-CB Test Auth Share Detect:UpdatePlaceholderRows_ExactMatchOnly_BecomesReady",
+                        "durationMs":  193,
+                        "coveringTests":  [
+                                              95155
+                                          ]
+                    },
+                    {
+                        "id":  255,
+                        "stableKey":  "e3582d83d5ebab39",
+                        "objectId":  72918635,
+                        "procedure":  "MutatePlaceholderToCommTypeMismatch",
+                        "line":  456,
+                        "operator":  "DEL",
+                        "original":  "TempAuthShareTarget.Modify()",
+                        "mutated":  "",
+                        "status":  "Killed",
+                        "killingTest":  "CTS-CB Test Auth Share Detect:UpdatePlaceholderRows_MismatchOnly_BecomesCommTypeMismatch",
+                        "durationMs":  168,
+                        "coveringTests":  [
+                                              95155
+                                          ]
+                    },
+                    {
+                        "id":  256,
+                        "stableKey":  "57bb6bfd37c41f5a",
+                        "objectId":  72918635,
+                        "procedure":  "EmitDetectionFailedRow",
+                        "line":  474,
+                        "operator":  "REL",
+                        "original":  "TotalAttempted \u003e 0",
+                        "mutated":  "TotalAttempted \u003e= 0",
+                        "status":  "Survived",
+                        "killingTest":  null,
+                        "durationMs":  177,
+                        "coveringTests":  [
+                                              95155
+                                          ]
+                    },
+                    {
+                        "id":  257,
+                        "stableKey":  "63cd011325b34c65",
+                        "objectId":  72918635,
+                        "procedure":  "EmitDetectionFailedRow",
+                        "line":  474,
+                        "operator":  "COND",
+                        "original":  "TotalAttempted \u003e 0",
+                        "mutated":  "true",
+                        "status":  "Survived",
+                        "killingTest":  null,
+                        "durationMs":  152,
+                        "coveringTests":  [
+                                              95155
+                                          ]
+                    },
+                    {
+                        "id":  258,
+                        "stableKey":  "c08694d3f0b88b8b",
+                        "objectId":  72918635,
+                        "procedure":  "EmitDetectionFailedRow",
+                        "line":  474,
+                        "operator":  "COND",
+                        "original":  "TotalAttempted \u003e 0",
+                        "mutated":  "false",
+                        "status":  "Survived",
+                        "killingTest":  null,
+                        "durationMs":  158,
+                        "coveringTests":  [
+                                              95155
+                                          ]
+                    },
+                    {
+                        "id":  259,
+                        "stableKey":  "153a05ba76a694d2",
+                        "objectId":  72918635,
+                        "procedure":  "EmitDetectionFailedRow",
+                        "line":  479,
+                        "operator":  "NOT",
+                        "original":  "not PlaceholderConsumed",
+                        "mutated":  "PlaceholderConsumed",
+                        "status":  "Killed",
+                        "killingTest":  "CTS-CB Test Auth Share Detect:UpdatePlaceholderRows_UnidentifiedOnly_BecomesDetectionFailed",
+                        "durationMs":  176,
+                        "coveringTests":  [
+                                              95155
+                                          ]
+                    },
+                    {
+                        "id":  260,
+                        "stableKey":  "7a875665b4833a1a",
+                        "objectId":  72918635,
+                        "procedure":  "EmitDetectionFailedRow",
+                        "line":  479,
+                        "operator":  "COND",
+                        "original":  "not PlaceholderConsumed",
+                        "mutated":  "true",
+                        "status":  "Killed",
+                        "killingTest":  "CTS-CB Test Auth Share Detect:UpdatePlaceholderRows_ExactMatchAndUnidentified_TwoRows",
+                        "durationMs":  141,
+                        "coveringTests":  [
+                                              95155
+                                          ]
+                    },
+                    {
+                        "id":  261,
+                        "stableKey":  "99770e3d4a9c6fbd",
+                        "objectId":  72918635,
+                        "procedure":  "EmitDetectionFailedRow",
+                        "line":  479,
+                        "operator":  "COND",
+                        "original":  "not PlaceholderConsumed",
+                        "mutated":  "false",
+                        "status":  "Killed",
+                        "killingTest":  "CTS-CB Test Auth Share Detect:UpdatePlaceholderRows_UnidentifiedOnly_BecomesDetectionFailed",
+                        "durationMs":  180,
+                        "coveringTests":  [
+                                              95155
+                                          ]
+                    },
+                    {
+                        "id":  262,
+                        "stableKey":  "08297de905d897bf",
+                        "objectId":  72918635,
+                        "procedure":  "EmitDetectionFailedRow",
+                        "line":  480,
+                        "operator":  "NOT",
+                        "original":  "not TempAuthShareTarget.Get(PlaceholderLineNo)",
+                        "mutated":  "TempAuthShareTarget.Get(PlaceholderLineNo)",
+                        "status":  "Killed",
+                        "killingTest":  "CTS-CB Test Auth Share Detect:UpdatePlaceholderRows_UnidentifiedOnly_BecomesDetectionFailed",
+                        "durationMs":  138,
+                        "coveringTests":  [
+                                              95155
+                                          ]
+                    },
+                    {
+                        "id":  263,
+                        "stableKey":  "aa3ac58ad81b0739",
+                        "objectId":  72918635,
+                        "procedure":  "EmitDetectionFailedRow",
+                        "line":  480,
+                        "operator":  "COND",
+                        "original":  "not TempAuthShareTarget.Get(PlaceholderLineNo)",
+                        "mutated":  "true",
+                        "status":  "Killed",
+                        "killingTest":  "CTS-CB Test Auth Share Detect:UpdatePlaceholderRows_UnidentifiedOnly_BecomesDetectionFailed",
+                        "durationMs":  170,
+                        "coveringTests":  [
+                                              95155
+                                          ]
+                    },
+                    {
+                        "id":  264,
+                        "stableKey":  "cd26e1c36df4c585",
+                        "objectId":  72918635,
+                        "procedure":  "EmitDetectionFailedRow",
+                        "line":  480,
+                        "operator":  "COND",
+                        "original":  "not TempAuthShareTarget.Get(PlaceholderLineNo)",
+                        "mutated":  "false",
+                        "status":  "Survived",
+                        "killingTest":  null,
+                        "durationMs":  144,
+                        "coveringTests":  [
+                                              95155
+                                          ]
+                    },
+                    {
+                        "id":  265,
+                        "stableKey":  "a232a219cfadb402",
+                        "objectId":  72918635,
+                        "procedure":  "EmitDetectionFailedRow",
+                        "line":  481,
+                        "operator":  "DEL",
+                        "original":  "exit",
+                        "mutated":  "",
+                        "status":  "Survived",
+                        "killingTest":  null,
+                        "durationMs":  766,
+                        "coveringTests":  [
+                                              95155,
+                                              95179,
+                                              95191
+                                          ]
+                    },
+                    {
+                        "id":  266,
+                        "stableKey":  "f5ed1533fcd4623c",
+                        "objectId":  72918635,
+                        "procedure":  "EmitDetectionFailedRow",
+                        "line":  489,
+                        "operator":  "DEL",
+                        "original":  "TempAuthShareTarget.Modify()",
+                        "mutated":  "",
+                        "status":  "Killed",
+                        "killingTest":  "CTS-CB Test Auth Share Detect:UpdatePlaceholderRows_UnidentifiedOnly_BecomesDetectionFailed",
+                        "durationMs":  161,
+                        "coveringTests":  [
+                                              95155
+                                          ]
+                    },
+                    {
+                        "id":  267,
+                        "stableKey":  "c3d22a40b3661d77",
+                        "objectId":  72918635,
+                        "procedure":  "EmitDetectionFailedRow",
+                        "line":  491,
+                        "operator":  "DEL",
+                        "original":  "exit",
+                        "mutated":  "",
+                        "status":  "Killed",
+                        "killingTest":  "CTS-CB Test Auth Share Detect:UpdatePlaceholderRows_UnidentifiedOnly_BecomesDetectionFailed",
+                        "durationMs":  150,
+                        "coveringTests":  [
+                                              95155
+                                          ]
+                    },
+                    {
+                        "id":  268,
+                        "stableKey":  "277aca6cad253909",
+                        "objectId":  72918635,
+                        "procedure":  "EmitDetectionFailedRow",
+                        "line":  507,
+                        "operator":  "DEL",
+                        "original":  "TempAuthShareTarget.Insert()",
+                        "mutated":  "",
+                        "status":  "Killed",
+                        "killingTest":  "CTS-CB Test Auth Share Detect:UpdatePlaceholderRows_ExactMatchAndUnidentified_TwoRows",
+                        "durationMs":  149,
+                        "coveringTests":  [
+                                              95155
+                                          ]
+                    },
+                    {
+                        "id":  269,
+                        "stableKey":  "a3713c7bcfd029f5",
+                        "objectId":  72918635,
+                        "procedure":  "MutatePlaceholderToNoUnboundAccounts",
+                        "line":  519,
+                        "operator":  "DEL",
+                        "original":  "TempAuthShareTarget.Modify()",
+                        "mutated":  "",
+                        "status":  "Killed",
+                        "killingTest":  "CTS-CB Test Auth Share Detect:UpdatePlaceholderRows_EmptyInputs_BecomesNoMatchingAccounts",
+                        "durationMs":  148,
+                        "coveringTests":  [
+                                              95155
+                                          ]
+                    },
+                    {
+                        "id":  270,
+                        "stableKey":  "3cbf8e1a8c086ff1",
+                        "objectId":  72918635,
+                        "procedure":  "EmitSystemNotMappedRow",
+                        "line":  538,
+                        "operator":  "COND",
+                        "original":  "SourceLocalBank.Get(ResolvedBankCode)",
+                        "mutated":  "true",
+                        "status":  "Survived",
+                        "killingTest":  null,
+                        "durationMs":  161,
+                        "coveringTests":  [
+                                              95155
+                                          ]
+                    },
+                    {
+                        "id":  271,
+                        "stableKey":  "1628f4d8e73abc55",
+                        "objectId":  72918635,
+                        "procedure":  "EmitSystemNotMappedRow",
+                        "line":  538,
+                        "operator":  "COND",
+                        "original":  "SourceLocalBank.Get(ResolvedBankCode)",
+                        "mutated":  "false",
+                        "status":  "Survived",
+                        "killingTest":  null,
+                        "durationMs":  134,
+                        "coveringTests":  [
+                                              95155
+                                          ]
+                    },
+                    {
+                        "id":  272,
+                        "stableKey":  "f93551425fefc27d",
+                        "objectId":  72918635,
+                        "procedure":  "EmitSystemNotMappedRow",
+                        "line":  546,
+                        "operator":  "NOT",
+                        "original":  "not PlaceholderConsumed",
+                        "mutated":  "PlaceholderConsumed",
+                        "status":  "Killed",
+                        "killingTest":  "CTS-CB Test Auth Share Detect:UpdatePlaceholderRows_SingleOtherBank_BecomesSystemNotMapped",
+                        "durationMs":  157,
+                        "coveringTests":  [
+                                              95155
+                                          ]
+                    },
+                    {
+                        "id":  273,
+                        "stableKey":  "072d54672b8aa323",
+                        "objectId":  72918635,
+                        "procedure":  "EmitSystemNotMappedRow",
+                        "line":  546,
+                        "operator":  "COND",
+                        "original":  "not PlaceholderConsumed",
+                        "mutated":  "true",
+                        "status":  "Killed",
+                        "killingTest":  "CTS-CB Test Auth Share Detect:UpdatePlaceholderRows_MultipleOtherBanks_OneRowPerBank",
+                        "durationMs":  144,
+                        "coveringTests":  [
+                                              95155
+                                          ]
+                    },
+                    {
+                        "id":  274,
+                        "stableKey":  "3358d4419e3f91d5",
+                        "objectId":  72918635,
+                        "procedure":  "EmitSystemNotMappedRow",
+                        "line":  546,
+                        "operator":  "COND",
+                        "original":  "not PlaceholderConsumed",
+                        "mutated":  "false",
+                        "status":  "Killed",
+                        "killingTest":  "CTS-CB Test Auth Share Detect:UpdatePlaceholderRows_SingleOtherBank_BecomesSystemNotMapped",
+                        "durationMs":  152,
+                        "coveringTests":  [
+                                              95155
+                                          ]
+                    },
+                    {
+                        "id":  275,
+                        "stableKey":  "9632521efaa53491",
+                        "objectId":  72918635,
+                        "procedure":  "EmitSystemNotMappedRow",
+                        "line":  547,
+                        "operator":  "NOT",
+                        "original":  "not TempAuthShareTarget.Get(PlaceholderLineNo)",
+                        "mutated":  "TempAuthShareTarget.Get(PlaceholderLineNo)",
+                        "status":  "Killed",
+                        "killingTest":  "CTS-CB Test Auth Share Detect:UpdatePlaceholderRows_SingleOtherBank_BecomesSystemNotMapped",
+                        "durationMs":  151,
+                        "coveringTests":  [
+                                              95155
+                                          ]
+                    },
+                    {
+                        "id":  276,
+                        "stableKey":  "c6001487099d28d7",
+                        "objectId":  72918635,
+                        "procedure":  "EmitSystemNotMappedRow",
+                        "line":  547,
+                        "operator":  "COND",
+                        "original":  "not TempAuthShareTarget.Get(PlaceholderLineNo)",
+                        "mutated":  "true",
+                        "status":  "Killed",
+                        "killingTest":  "CTS-CB Test Auth Share Detect:UpdatePlaceholderRows_SingleOtherBank_BecomesSystemNotMapped",
+                        "durationMs":  163,
+                        "coveringTests":  [
+                                              95155
+                                          ]
+                    },
+                    {
+                        "id":  277,
+                        "stableKey":  "cdd71275b591cc17",
+                        "objectId":  72918635,
+                        "procedure":  "EmitSystemNotMappedRow",
+                        "line":  547,
+                        "operator":  "COND",
+                        "original":  "not TempAuthShareTarget.Get(PlaceholderLineNo)",
+                        "mutated":  "false",
+                        "status":  "Survived",
+                        "killingTest":  null,
+                        "durationMs":  143,
+                        "coveringTests":  [
+                                              95155
+                                          ]
+                    },
+                    {
+                        "id":  278,
+                        "stableKey":  "80759f14b1b44503",
+                        "objectId":  72918635,
+                        "procedure":  "EmitSystemNotMappedRow",
+                        "line":  548,
+                        "operator":  "DEL",
+                        "original":  "exit",
+                        "mutated":  "",
+                        "status":  "Survived",
+                        "killingTest":  null,
+                        "durationMs":  793,
+                        "coveringTests":  [
+                                              95155,
+                                              95179,
+                                              95191
+                                          ]
+                    },
+                    {
+                        "id":  279,
+                        "stableKey":  "56555bbcdd0ae04a",
+                        "objectId":  72918635,
+                        "procedure":  "EmitSystemNotMappedRow",
+                        "line":  556,
+                        "operator":  "DEL",
+                        "original":  "TempAuthShareTarget.Modify()",
+                        "mutated":  "",
+                        "status":  "Killed",
+                        "killingTest":  "CTS-CB Test Auth Share Detect:UpdatePlaceholderRows_SingleOtherBank_BecomesSystemNotMapped",
+                        "durationMs":  166,
+                        "coveringTests":  [
+                                              95155
+                                          ]
+                    },
+                    {
+                        "id":  280,
+                        "stableKey":  "bbe81f297ae08ff5",
+                        "objectId":  72918635,
+                        "procedure":  "EmitSystemNotMappedRow",
+                        "line":  558,
+                        "operator":  "DEL",
+                        "original":  "exit",
+                        "mutated":  "",
+                        "status":  "Killed",
+                        "killingTest":  "CTS-CB Test Auth Share Detect:UpdatePlaceholderRows_SingleOtherBank_BecomesSystemNotMapped",
+                        "durationMs":  1009,
+                        "coveringTests":  [
+                                              95155
+                                          ]
+                    },
+                    {
+                        "id":  281,
+                        "stableKey":  "d905bbb87a5f81d4",
+                        "objectId":  72918635,
+                        "procedure":  "EmitSystemNotMappedRow",
+                        "line":  574,
+                        "operator":  "DEL",
+                        "original":  "TempAuthShareTarget.Insert()",
+                        "mutated":  "",
+                        "status":  "Killed",
+                        "killingTest":  "CTS-CB Test Auth Share Detect:UpdatePlaceholderRows_MultipleOtherBanks_OneRowPerBank",
+                        "durationMs":  163,
+                        "coveringTests":  [
+                                              95155
+                                          ]
+                    },
+                    {
+                        "id":  282,
+                        "stableKey":  "9d1f4228d43c7201",
+                        "objectId":  72918635,
+                        "procedure":  "NextLineNo",
+                        "line":  583,
+                        "operator":  "COND",
+                        "original":  "TempAuthShareTarget.FindLast()",
+                        "mutated":  "true",
+                        "status":  "Survived",
+                        "killingTest":  null,
+                        "durationMs":  154,
+                        "coveringTests":  [
+                                              95155
+                                          ]
+                    },
+                    {
+                        "id":  283,
+                        "stableKey":  "15a72b4b5973171b",
+                        "objectId":  72918635,
+                        "procedure":  "NextLineNo",
+                        "line":  583,
+                        "operator":  "COND",
+                        "original":  "TempAuthShareTarget.FindLast()",
+                        "mutated":  "false",
+                        "status":  "Killed",
+                        "killingTest":  "CTS-CB Test Auth Share Detect:UpdatePlaceholderRows_MultipleOtherBanks_OneRowPerBank",
+                        "durationMs":  167,
+                        "coveringTests":  [
+                                              95155
+                                          ]
+                    },
+                    {
+                        "id":  284,
+                        "stableKey":  "8dbbeb795325c3c3",
+                        "objectId":  72918635,
+                        "procedure":  "NextLineNo",
+                        "line":  585,
+                        "operator":  "DEL",
+                        "original":  "exit(LastLineNo + 10)",
+                        "mutated":  "",
+                        "status":  "Killed",
+                        "killingTest":  "CTS-CB Test Auth Share Detect:UpdatePlaceholderRows_MultipleOtherBanks_OneRowPerBank",
+                        "durationMs":  166,
+                        "coveringTests":  [
+                                              95155
+                                          ]
+                    },
+                    {
+                        "id":  285,
+                        "stableKey":  "d18d437e9535b3c3",
+                        "objectId":  72918635,
+                        "procedure":  "CountAccountsInDict",
+                        "line":  598,
+                        "operator":  "DEL",
+                        "original":  "exit(Total)",
+                        "mutated":  "",
+                        "status":  "Survived",
+                        "killingTest":  null,
+                        "durationMs":  189,
+                        "coveringTests":  [
+                                              95155
+                                          ]
+                    },
+                    {
+                        "id":  286,
+                        "stableKey":  "7837f626a4ba7429",
+                        "objectId":  72918635,
+                        "procedure":  "SerializeAccountList",
+                        "line":  613,
+                        "operator":  "DEL",
+                        "original":  "exit(Result.ToText())",
+                        "mutated":  "",
+                        "status":  "Killed",
+                        "killingTest":  "CTS-CB Test Auth Share Detect:UpdatePlaceholderRows_SingleOtherBank_BecomesSystemNotMapped",
+                        "durationMs":  188,
+                        "coveringTests":  [
+                                              95155
+                                          ]
+                    },
+                    {
+                        "id":  287,
+                        "stableKey":  "7efffb17e628b648",
+                        "objectId":  72918635,
+                        "procedure":  "DeleteStaleRegularRowForSameBank",
+                        "line":  618,
+                        "operator":  "REL",
+                        "original":  "BankCode = \u0027\u0027",
+                        "mutated":  "BankCode \u003c\u003e \u0027\u0027",
+                        "status":  "Survived",
+                        "killingTest":  null,
+                        "durationMs":  165,
+                        "coveringTests":  [
+                                              95155
+                                          ]
+                    },
+                    {
+                        "id":  288,
+                        "stableKey":  "0bcc9a1a264c67d0",
+                        "objectId":  72918635,
+                        "procedure":  "DeleteStaleRegularRowForSameBank",
+                        "line":  618,
+                        "operator":  "COND",
+                        "original":  "BankCode = \u0027\u0027",
+                        "mutated":  "true",
+                        "status":  "Survived",
+                        "killingTest":  null,
+                        "durationMs":  181,
+                        "coveringTests":  [
+                                              95155
+                                          ]
+                    },
+                    {
+                        "id":  289,
+                        "stableKey":  "a089040de4ede956",
+                        "objectId":  72918635,
+                        "procedure":  "DeleteStaleRegularRowForSameBank",
+                        "line":  618,
+                        "operator":  "COND",
+                        "original":  "BankCode = \u0027\u0027",
+                        "mutated":  "false",
+                        "status":  "Survived",
+                        "killingTest":  null,
+                        "durationMs":  163,
+                        "coveringTests":  [
+                                              95155
+                                          ]
+                    },
+                    {
+                        "id":  290,
+                        "stableKey":  "653c35dc2ead849c",
+                        "objectId":  72918635,
+                        "procedure":  "DeleteStaleRegularRowForSameBank",
+                        "line":  619,
+                        "operator":  "DEL",
+                        "original":  "exit",
+                        "mutated":  "",
+                        "status":  "Survived",
+                        "killingTest":  null,
+                        "durationMs":  2317,
+                        "coveringTests":  [
+                                              95155,
+                                              95179,
+                                              95191
+                                          ]
+                    },
+                    {
+                        "id":  291,
+                        "stableKey":  "f66867eda4732ef0",
+                        "objectId":  72918635,
+                        "procedure":  "DeleteStaleRegularRowForSameBank",
+                        "line":  624,
+                        "operator":  "NOT",
+                        "original":  "not TempAuthShareTarget.IsEmpty()",
+                        "mutated":  "TempAuthShareTarget.IsEmpty()",
+                        "status":  "Survived",
+                        "killingTest":  null,
+                        "durationMs":  246,
+                        "coveringTests":  [
+                                              95155
+                                          ]
+                    },
+                    {
+                        "id":  292,
+                        "stableKey":  "d5a02f11494f94c9",
+                        "objectId":  72918635,
+                        "procedure":  "DeleteStaleRegularRowForSameBank",
+                        "line":  624,
+                        "operator":  "COND",
+                        "original":  "not TempAuthShareTarget.IsEmpty()",
+                        "mutated":  "true",
+                        "status":  "Survived",
+                        "killingTest":  null,
+                        "durationMs":  276,
+                        "coveringTests":  [
+                                              95155
+                                          ]
+                    },
+                    {
+                        "id":  293,
+                        "stableKey":  "d37ee54d0a6d4389",
+                        "objectId":  72918635,
+                        "procedure":  "DeleteStaleRegularRowForSameBank",
+                        "line":  624,
+                        "operator":  "COND",
+                        "original":  "not TempAuthShareTarget.IsEmpty()",
+                        "mutated":  "false",
+                        "status":  "Survived",
+                        "killingTest":  null,
+                        "durationMs":  191,
+                        "coveringTests":  [
+                                              95155
+                                          ]
+                    },
+                    {
+                        "id":  294,
+                        "stableKey":  "f6f445f1ba1303b7",
+                        "objectId":  72918635,
+                        "procedure":  "DeleteStaleRegularRowForSameBank",
+                        "line":  625,
+                        "operator":  "DEL",
+                        "original":  "TempAuthShareTarget.DeleteAll()",
+                        "mutated":  "",
+                        "status":  "Survived",
+                        "killingTest":  null,
+                        "durationMs":  910,
+                        "coveringTests":  [
+                                              95155,
+                                              95179,
+                                              95191
+                                          ]
+                    }
+                ]
+}
