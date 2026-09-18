@@ -737,3 +737,42 @@ test('rewriteFile is deterministic: same input twice yields identical output', (
   assert.equal(first.output, second.output);
   assert.deepEqual(first.lineMap, second.lineMap);
 });
+
+// --- B2: rewriteFile must never silently apply overlapping edits. ---
+
+test('rewriteFile throws when two candidate spans overlap (B2 invariant)', () => {
+  const source = [
+    'codeunit 50210 "X"',
+    '{',
+    '    procedure P(A: Integer)',
+    '    begin',
+    '        if A > 1 then',
+    '            exit(true);',
+    '    end;',
+    '}',
+    '',
+  ].join('\n');
+
+  const { ctx, span } = contextFor(source);
+  const [cond] = findConditions(ctx.tokens, span);
+  const [stmt] = findSimpleStatements(ctx.tokens, span);
+  assert.ok(cond);
+  assert.ok(stmt);
+
+  const condCandidate = withId(REL.apply(ctx, cond!)[0]!, 1);
+  const delCandidate = DEL.apply(ctx, stmt!)[0]!;
+  assert.ok(delCandidate, 'exit(true) should match DEL');
+
+  // Force an overlap deliberately: a statement candidate whose span starts
+  // at the condition's own start offset (this is the shape B1's bug
+  // produced -- a bogus "statement" span sharing tokens with another
+  // candidate's span -- but constructed directly here so this test does not
+  // depend on B1's fix ever regressing).
+  const overlappingStmt: SimpleStatement = { ...stmt!, startIdx: cond!.startIdx };
+  const overlappingCandidate = withId(
+    { ...delCandidate, target: { kind: 'statement', stmt: overlappingStmt } },
+    2,
+  );
+
+  assert.throws(() => rewriteFile(source, [condCandidate, overlappingCandidate]), /overlap/i);
+});

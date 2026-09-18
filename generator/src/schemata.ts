@@ -283,6 +283,18 @@ export function rewriteFile(
   const lineMap: LineMapEntry[] = [];
 
   for (const edit of edits) {
+    // §6.4.7: "Two candidates never overlap." If they do (e.g. a latent bug
+    // in a statement/condition finder producing overlapping spans, as B1
+    // did), applying edits ascending would silently splice one edit's text
+    // into the middle of another's already-consumed source range and emit
+    // garbage with no error (B2). Fail loudly instead so the caller (§6.4.9
+    // per-file robustness) can skip this file with a recorded reason.
+    if (edit.start < cursor) {
+      throw new Error(
+        `rewriteFile: overlapping mutant candidates (edit at offset ${edit.start} starts before the previous edit ended at offset ${cursor})`,
+      );
+    }
+
     const before = source.slice(cursor, edit.start);
     output += before;
     outputLine += countNewlines(before);

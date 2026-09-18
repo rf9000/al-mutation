@@ -72,6 +72,16 @@ function isSignificant(token: Token): boolean {
   return token.kind !== 'comment' && token.kind !== 'preprocessor';
 }
 
+/**
+ * Strips a leading UTF-8 BOM (`﻿`), which `fs.readFileSync(..., 'utf8')`
+ * keeps as the first character. Left in, it makes the tokenizer throw
+ * (`Unexpected character` at line 1) and the whole file gets dropped as a
+ * `tokenize-error`, even though the file is otherwise perfectly valid AL.
+ */
+function stripBom(text: string): string {
+  return text.charCodeAt(0) === 0xfeff ? text.slice(1) : text;
+}
+
 interface Target {
   start: number;
   kind: 'condition' | 'statement';
@@ -214,6 +224,37 @@ function patchAppJson(source: string, options: GenerateOptions): string {
   return JSON.stringify(obj, null, 2) + '\n';
 }
 
+/** The result of rewriting one file's mutants, or a reason it could not be safely emitted. */
+export type RewriteOutcome = { output: string; lineMap: LineMapEntry[] } | { skipReason: string };
+
+/**
+ * B2/B2b: applies `rewriteFile` and, only on success, re-tokenizes its
+ * output as a cheap end-to-end sanity check that the rewrite is still valid
+ * AL. Never throws: any failure (an overlapping-candidate throw from
+ * `rewriteFile`, per §6.4.7's invariant, or the output failing to tokenize)
+ * is turned into a `skipReason` so the caller can skip this one file --
+ * exactly like the tokenize-error path (§6.4.9) -- instead of emitting
+ * broken AL or aborting the whole run.
+ */
+export function rewriteAndVerify(source: string, mutants: readonly MutantCandidate[]): RewriteOutcome {
+  let rewritten: { output: string; lineMap: LineMapEntry[] };
+  try {
+    rewritten = rewriteFile(source, mutants);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return { skipReason: `overlapping-candidates: ${message}` };
+  }
+
+  try {
+    tokenize(rewritten.output);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return { skipReason: `rewrite-verification-failed: ${message}` };
+  }
+
+  return rewritten;
+}
+
 function toManifestEntry(m: Mutant): Record<string, unknown> {
   return {
     id: m.id,
@@ -242,7 +283,7 @@ export function generate(options: GenerateOptions): GenerateResult {
     // §6.4.9: one file's tokenizer error (or any other failure in this per-file step) must not
     // abort the whole run -- it is recorded as a skip and the remaining files still generate.
     try {
-      const source = fs.readFileSync(path.join(options.autDir, relPath), 'utf8');
+      const source = stripBom(fs.readFileSync(path.join(options.autDir, relPath), 'utf8'));
       const { candidates, skipped } = generateCandidatesForFile(relPath, source, options);
       allCandidates.push(...candidates);
       allSkipped.push(...skipped);
@@ -273,12 +314,16 @@ export function generate(options: GenerateOptions): GenerateResult {
   }
 
   const lineMap: Record<string, LineMapEntry[]> = {};
+  const failedFiles = new Set<string>();
 
   const schemataDir = path.join(options.outDir, 'aut-schemata');
   for (const relPath of allFiles) {
     // Any error escaping this per-file step must name the relative file path (§6.4.9) -- this
     // step still aborts the run (unlike the tokenize step above), since a file reaching here
     // already tokenized and generated candidates successfully, so a failure here is unexpected.
+    // The one expected failure mode -- rewriteAndVerify rejecting this file's mutants (B2/B2b) --
+    // is handled below without throwing: it is recorded as a skip and the original file is
+    // copied through unmutated, exactly like the tokenize-error path never aborts the run.
     try {
       const srcAbs = path.join(options.autDir, relPath);
       const destAbs = path.join(schemataDir, relPath);
@@ -292,10 +337,16 @@ export function generate(options: GenerateOptions): GenerateResult {
 
       const mutantsForFile = selectedByFile.get(relPath);
       if (mutantsForFile !== undefined) {
-        const source = fs.readFileSync(srcAbs, 'utf8');
-        const { output, lineMap: fileLineMap } = rewriteFile(source, mutantsForFile);
-        fs.writeFileSync(destAbs, output, 'utf8');
-        lineMap[relPath] = fileLineMap;
+        const source = stripBom(fs.readFileSync(srcAbs, 'utf8'));
+        const outcome = rewriteAndVerify(source, mutantsForFile);
+        if ('skipReason' in outcome) {
+          allSkipped.push({ file: relPath, line: 0, reason: outcome.skipReason });
+          failedFiles.add(relPath);
+          fs.copyFileSync(srcAbs, destAbs);
+        } else {
+          fs.writeFileSync(destAbs, outcome.output, 'utf8');
+          lineMap[relPath] = outcome.lineMap;
+        }
       } else {
         fs.copyFileSync(srcAbs, destAbs);
       }
@@ -303,6 +354,12 @@ export function generate(options: GenerateOptions): GenerateResult {
       const message = err instanceof Error ? err.message : String(err);
       throw new Error(`${relPath}: ${message}`);
     }
+  }
+
+  // A file whose rewrite was rejected (B2/B2b) was copied unmutated above, so its mutants were
+  // never actually applied -- exclude them from the manifest (their ids stay reserved, §6.4.8).
+  if (failedFiles.size > 0) {
+    selected = selected.filter((m) => !failedFiles.has(m.file));
   }
 
   const findings = lintSchemata(schemataDir);
