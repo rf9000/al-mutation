@@ -480,11 +480,21 @@ and have been removed from this list. What remains genuinely open:
   readiness contract. And resume matches on `(runNo, mutantId)` with nothing binding a run number to the
   mutant set that produced it, so a resumed run after a generator-flag change would adopt rows against
   different mutants; it needs a design decision (resume by `stableKey`, or refuse when the set differs).
-- **The reference map is keyed by object name alone, ignoring object type**, so 55 names already collide in
-  the current AUT (`CTS-CB App Management` is both codeunit 71553717 and page 71553628) and the last file
-  enumerated wins. A test's `Codeunit "…"` can therefore resolve to a page id. This is a **live** wrong-id
-  vector with 55 instances — worth the perspective against the header-resolution defect that consumed three
-  review rounds and had zero live instances.
+- **The reference map was keyed by object name alone, and it was wrong on this very slice.** Found by the
+  final review's focused pass and now fixed. AL ids are per type, so a name claimed by both a codeunit and a
+  page silently overwrote and resolved to the other type's id. `page 72918635 "CTS-CB JPMorgan Assist Setup"`
+  overwrote `codeunit 72918654` of the same name, and that page's id equals the pilot codeunit
+  `72918635 "CTS-CB Auth Share Detection"` — so test codeunits 95179 and 95191, which reference the JPMorgan
+  name and never mention Auth Share Detection anywhere, were attributed to the pilot object. A second
+  mechanism reached the same wrong id independently: the reference pattern had no leading word boundary, so
+  `TestPage "…"` matched as a bare `Page "…"`. At AUT scale: 55 names claimed by more than one object, 36
+  codeunits losing their map slot entirely, 391 of 812 entries resolving to an id owned by something else.
+  **Run 6's score was not corrupted** — all 62 kills came from the genuine covering test 95155, so no false
+  kill occurred; 42 of 157 mutants merely ran three test codeunits instead of one, costing runtime and
+  inflating their timeout budget. But the hazard was real, because §6.1.4's hook marks a mutant `Killed` when
+  *any* test in its job fails. The map is now keyed by `(object type, name)` and references resolve with
+  their own type: `References[72918635]` is `95155` alone, and `References[72918654]` correctly gets 95179
+  and 95191.
 - **The AUT moved four times during this project** (objects deleted, BC 28→29, a mid-run dependent-recompile
   failure, and an upstream commit named "removed comments" landing on the final review day). 306 AUT files
   carry a commented-out `//namespace` declaration; uncommenting them would have silently dropped 246 objects
