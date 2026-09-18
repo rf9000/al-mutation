@@ -1,0 +1,12 @@
+[
+  {
+    "file": "src/MUTFxAll.PermissionSet.al",
+    "line": 0,
+    "reason": "not-a-codeunit"
+  },
+  {
+    "file": "src/MUTFxOrder.Table.al",
+    "line": 0,
+    "reason": "not-a-codeunit"
+  }
+]

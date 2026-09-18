@@ -1,0 +1,28 @@
+[
+  {
+    "id": 1,
+    "stableKey": "7a4905cbe6b0b769",
+    "objectType": "codeunit",
+    "objectId": 50240,
+    "objectName": "Case04 Cu",
+    "procedure": "Compute",
+    "line": 12,
+    "operator": "DEL",
+    "original": "exit(0)",
+    "mutated": "",
+    "file": "src/Case04Cu.Codeunit.al"
+  },
+  {
+    "id": 2,
+    "stableKey": "6293fb20db8d08f2",
+    "objectType": "codeunit",
+    "objectId": 50240,
+    "objectName": "Case04 Cu",
+    "procedure": "Compute",
+    "line": 13,
+    "operator": "DEL",
+    "original": "exit(Value)",
+    "mutated": "",
+    "file": "src/Case04Cu.Codeunit.al"
+  }
+]

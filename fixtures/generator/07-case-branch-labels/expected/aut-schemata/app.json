@@ -1,0 +1,14 @@
+{
+  "id": "77777777-7777-7777-7777-777777777777",
+  "name": "MUT Golden Case 07",
+  "publisher": "Continia Software",
+  "version": "1.0.0.0",
+  "dependencies": [
+    {
+      "id": "6f1d2c3a-8b4e-4d5f-9a6b-7c8d9e0f1a2b",
+      "name": "Mutation Core",
+      "publisher": "Continia Software",
+      "version": "1.0.0.0"
+    }
+  ]
+}

@@ -1,0 +1,108 @@
+{
+  "src/MUTFxOrderMgt.Codeunit.al": [
+    {
+      "mutantIds": [
+        1,
+        2,
+        3
+      ],
+      "startLine": 10,
+      "endLine": 19
+    },
+    {
+      "mutantIds": [
+        4
+      ],
+      "startLine": 21,
+      "endLine": 27
+    },
+    {
+      "mutantIds": [
+        5
+      ],
+      "startLine": 28,
+      "endLine": 34
+    },
+    {
+      "mutantIds": [
+        6,
+        7,
+        8,
+        9,
+        10
+      ],
+      "startLine": 42,
+      "endLine": 55
+    },
+    {
+      "mutantIds": [
+        11
+      ],
+      "startLine": 57,
+      "endLine": 63
+    },
+    {
+      "mutantIds": [
+        12
+      ],
+      "startLine": 64,
+      "endLine": 70
+    },
+    {
+      "mutantIds": [
+        13,
+        14,
+        15
+      ],
+      "startLine": 79,
+      "endLine": 88
+    },
+    {
+      "mutantIds": [
+        16
+      ],
+      "startLine": 90,
+      "endLine": 96
+    },
+    {
+      "mutantIds": [
+        17,
+        18
+      ],
+      "startLine": 98,
+      "endLine": 106
+    },
+    {
+      "mutantIds": [
+        19,
+        20,
+        21
+      ],
+      "startLine": 121,
+      "endLine": 130
+    },
+    {
+      "mutantIds": [
+        22
+      ],
+      "startLine": 132,
+      "endLine": 138
+    },
+    {
+      "mutantIds": [
+        23,
+        24,
+        25
+      ],
+      "startLine": 150,
+      "endLine": 159
+    },
+    {
+      "mutantIds": [
+        26
+      ],
+      "startLine": 161,
+      "endLine": 167
+    }
+  ]
+}

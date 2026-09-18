@@ -1,0 +1,44 @@
+{
+  "src/Case03Cu.Codeunit.al": [
+    {
+      "mutantIds": [
+        1,
+        2,
+        3
+      ],
+      "startLine": 12,
+      "endLine": 21
+    },
+    {
+      "mutantIds": [
+        4,
+        5
+      ],
+      "startLine": 23,
+      "endLine": 31
+    },
+    {
+      "mutantIds": [
+        6,
+        7
+      ],
+      "startLine": 33,
+      "endLine": 41
+    },
+    {
+      "mutantIds": [
+        8,
+        9
+      ],
+      "startLine": 44,
+      "endLine": 52
+    },
+    {
+      "mutantIds": [
+        10
+      ],
+      "startLine": 55,
+      "endLine": 61
+    }
+  ]
+}

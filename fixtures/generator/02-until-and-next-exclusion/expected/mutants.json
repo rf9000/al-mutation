@@ -1,0 +1,54 @@
+[
+  {
+    "id": 1,
+    "stableKey": "d7229451db5f7768",
+    "objectType": "codeunit",
+    "objectId": 50220,
+    "objectName": "Case02 Cu",
+    "procedure": "CountDown",
+    "line": 9,
+    "operator": "REL",
+    "original": "(Remaining <= 0) and Flag",
+    "mutated": "(Remaining < 0) and Flag",
+    "file": "src/Case02Cu.Codeunit.al"
+  },
+  {
+    "id": 2,
+    "stableKey": "53da55ac26eea9c7",
+    "objectType": "codeunit",
+    "objectId": 50220,
+    "objectName": "Case02 Cu",
+    "procedure": "CountDown",
+    "line": 9,
+    "operator": "BOOL",
+    "original": "(Remaining <= 0) and Flag",
+    "mutated": "(Remaining <= 0) or Flag",
+    "file": "src/Case02Cu.Codeunit.al"
+  },
+  {
+    "id": 3,
+    "stableKey": "dd0b08e9a4c13e6d",
+    "objectType": "codeunit",
+    "objectId": 50220,
+    "objectName": "Case02 Cu",
+    "procedure": "CountDown",
+    "line": 9,
+    "operator": "COND",
+    "original": "(Remaining <= 0) and Flag",
+    "mutated": "true",
+    "file": "src/Case02Cu.Codeunit.al"
+  },
+  {
+    "id": 4,
+    "stableKey": "bc2468670901a103",
+    "objectType": "codeunit",
+    "objectId": 50220,
+    "objectName": "Case02 Cu",
+    "procedure": "CountDown",
+    "line": 9,
+    "operator": "COND",
+    "original": "(Remaining <= 0) and Flag",
+    "mutated": "false",
+    "file": "src/Case02Cu.Codeunit.al"
+  }
+]

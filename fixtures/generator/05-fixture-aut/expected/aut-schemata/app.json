@@ -1,0 +1,40 @@
+{
+  "id": "8b3f4e5c-ad6a-4f7b-9c8d-9e0f1a2b3c4d",
+  "name": "MUT Fixture AUT",
+  "publisher": "Continia Software",
+  "version": "1.0.0.1",
+  "brief": "",
+  "description": "",
+  "privacyStatement": "",
+  "EULA": "",
+  "help": "",
+  "url": "",
+  "logo": "",
+  "dependencies": [
+    {
+      "id": "6f1d2c3a-8b4e-4d5f-9a6b-7c8d9e0f1a2b",
+      "name": "Mutation Core",
+      "publisher": "Continia Software",
+      "version": "1.0.0.0"
+    }
+  ],
+  "screenshots": [],
+  "platform": "28.0.0.0",
+  "application": "28.0.0.0",
+  "idRanges": [
+    {
+      "from": 50200,
+      "to": 50299
+    }
+  ],
+  "resourceExposurePolicy": {
+    "allowDebugging": true,
+    "allowDownloadingSource": true,
+    "includeSourceInSymbolFile": true
+  },
+  "runtime": "17.0",
+  "target": "Cloud",
+  "features": [
+    "NoImplicitWith"
+  ]
+}

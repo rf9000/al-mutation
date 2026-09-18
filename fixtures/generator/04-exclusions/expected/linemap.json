@@ -1,0 +1,18 @@
+{
+  "src/Case04Cu.Codeunit.al": [
+    {
+      "mutantIds": [
+        1
+      ],
+      "startLine": 14,
+      "endLine": 20
+    },
+    {
+      "mutantIds": [
+        2
+      ],
+      "startLine": 21,
+      "endLine": 27
+    }
+  ]
+}

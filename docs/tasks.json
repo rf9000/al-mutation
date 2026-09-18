@@ -1,0 +1,637 @@
+[
+  {
+    "id": "T01",
+    "title": "Scaffold repository layout, configs, and toolchain checks",
+    "wave": 0,
+    "dependsOn": [],
+    "model": "sonnet",
+    "specSections": ["§4", "§6.0", "§6.0.1", "§6.5.1", "§9"],
+    "files": {
+      "create": [
+        "core-app/.gitkeep", "core-app-test/.gitkeep", "fixtures/fixture-aut/.gitkeep", "fixtures/fixture-test/.gitkeep",
+        "fixtures/tokenizer/.gitkeep", "fixtures/generator/.gitkeep", "fixtures/coverage/.gitkeep",
+        "generator/.gitkeep", "orchestrator/lib/.gitkeep", "orchestrator/backends/.gitkeep", "orchestrator/tests/.gitkeep",
+        "spikes/.gitkeep", "results/.gitkeep", "docs/issues.md", "docs/spike-baseline.md",
+        "mutation.config.json", "mutation.fixture.config.json", "README.md"
+      ],
+      "modify": [".gitignore"],
+      "readOnly": []
+    },
+    "interfaces": {
+      "consumes": [],
+      "produces": ["mutation.config.json and mutation.fixture.config.json exactly as §6.5.1", "docs/spike-baseline.md with the empty section skeleton of §7.6", "docs/issues.md with the deferred items table of §1.2"]
+    },
+    "steps": [
+      { "n": 1, "do": "Create every directory listed in §6.0 with an empty .gitkeep file." },
+      { "n": 2, "do": "Append `generator/dist/` to .gitignore. Keep all existing lines." },
+      { "n": 3, "do": "Write mutation.config.json with the exact JSON from §6.5.1 and mutation.fixture.config.json with the Tier A differences listed there. Validate both parse.", "run": "powershell -NoProfile -Command \"Get-Content mutation.config.json -Raw | ConvertFrom-Json | Out-Null; Get-Content mutation.fixture.config.json -Raw | ConvertFrom-Json | Out-Null; 'ok'\"", "expect": "ok" },
+      { "n": 4, "do": "Write docs/spike-baseline.md with a heading per section of §7.6, each containing an empty table header `| Metric | Value | Backend | Date | Source task |`. Write docs/issues.md with a heading `# Deferred items and issues` and the table from §1.2 (Item, Reason, plus a column `Opened` = 2026-09-07)." },
+      { "n": 5, "do": "Write README.md: one paragraph on the project, a 'Start here' list pointing to docs/SPEC.md and docs/tasks.json, and the toolchain versions from F15." },
+      { "n": 6, "do": "Install Pester 5 for the current user and verify.", "run": "powershell -NoProfile -Command \"Install-Module Pester -Scope CurrentUser -Force -SkipPublisherCheck -MinimumVersion 5.5 -MaximumVersion 5.99; Import-Module Pester -MinimumVersion 5.0 -MaximumVersion 5.99; (Get-Module Pester).Version.ToString()\"", "expect": "5.x.y" },
+      { "n": 7, "do": "Verify node and npm.", "run": "node --version; npm --version", "expect": "v22.x and 11.x" },
+      { "n": 8, "do": "Stage and commit everything including docs/SPEC.md, docs/tasks.json, docs/AL-MUTATION-TESTING-PLAN.md, .claude/, .gitignore.", "run": "git add -A; git commit -m \"chore: scaffold al-mutation repo layout, configs and spec\"" }
+    ],
+    "acceptance": ["All §6.0 directories exist and are tracked.", "Both config files parse and contain the keys in §6.5.1.", "Pester >= 5.5 imports.", "One commit."],
+    "commit": "chore: scaffold al-mutation repo layout, configs and spec",
+    "guardrails": ["Do not touch anything under the Continia Banking folder.", "Do not create .continia or run continia env use yet."]
+  },
+  {
+    "id": "T02",
+    "title": "DemoPortal backend: environment functions and the Invoke-Continia mock point",
+    "wave": 1,
+    "dependsOn": ["T01"],
+    "model": "sonnet",
+    "specSections": ["§4 items 2 and 6", "§6.5.3", "§9.3", "F11", "F15"],
+    "files": {
+      "create": ["orchestrator/backends/DemoPortal.psm1", "orchestrator/tests/DemoPortal.Environment.Tests.ps1"],
+      "modify": [],
+      "readOnly": [".claude/skills/continia-env-setup/SKILL.md", ".claude/skills/continia-deps/SKILL.md"]
+    },
+    "interfaces": {
+      "consumes": ["Config object from ConvertFrom-Json of mutation.config.json (demoPortal.cliPath, demoPortal.profileId, demoPortal.activationAppId, keepEnvironment)"],
+      "produces": [
+        "function Invoke-Continia([string[]]$Arguments, [int]$TimeoutSec = 600) -> parsed JSON (private; the mock point)",
+        "function Assert-MutEnvironmentAllowed($Env) -> throws unless $Env.Name -match '^mut-' -and -not $Env.Shared",
+        "function Get-MutEnvironment([string]$Name, $Config) -> [pscustomobject]@{Id;Name;Url;Backend='DemoPortal';Shared} or $null",
+        "function New-MutEnvironment([string]$Name, $Config) -> same handle plus CreateDurationSec, StartDurationSec, ActivationInstallDurationSec",
+        "function Remove-MutEnvironment($Env, $Config)",
+        "function Reset-MutEnvironment($Env) -> [pscustomobject]@{DurationSec}"
+      ]
+    },
+    "steps": [
+      { "n": 1, "do": "Write the failing Pester tests. Cover: Get-MutEnvironment returns $null when env list has no match; returns a handle with Shared=$false for a match; Assert-MutEnvironmentAllowed throws for name 'fix-auth-share-sibling-apply' and for Shared=$true; New-MutEnvironment throws on a name without mut- prefix BEFORE calling Invoke-Continia (assert with Should -Invoke -Times 0); New-MutEnvironment calls env create, env start, polls env get until status Running, then deps install-by-id with the activation app id, then env use (assert the argument sequences with Should -Invoke -ParameterFilter); Reset-MutEnvironment calls env stop then env start and returns DurationSec.", "code": "BeforeAll { Import-Module \"$PSScriptRoot/../backends/DemoPortal.psm1\" -Force }\nDescribe 'New-MutEnvironment' {\n  It 'refuses names without the mut- prefix' {\n    Mock -ModuleName DemoPortal Invoke-Continia { throw 'must not be called' }\n    { New-MutEnvironment -Name 'spike-01' -Config $cfg } | Should -Throw\n    Should -Invoke -ModuleName DemoPortal Invoke-Continia -Times 0\n  }\n  It 'creates, starts, polls, installs activation app, and sets workspace env' {\n    Mock -ModuleName DemoPortal Invoke-Continia -ParameterFilter { $Arguments[0] -eq 'env' -and $Arguments[1] -eq 'create' } { [pscustomobject]@{ id = 'E1'; description = 'mut-spike-01' } }\n    Mock -ModuleName DemoPortal Invoke-Continia -ParameterFilter { $Arguments[1] -eq 'get' } { [pscustomobject]@{ id = 'E1'; status = 'Running'; description = 'mut-spike-01'; url = 'https://x/E1'; shared = $false } }\n    Mock -ModuleName DemoPortal Invoke-Continia { [pscustomobject]@{ success = $true } }\n    $h = New-MutEnvironment -Name 'mut-spike-01' -Config $cfg\n    $h.Id | Should -Be 'E1'\n    Should -Invoke -ModuleName DemoPortal Invoke-Continia -ParameterFilter { $Arguments[1] -eq 'install-by-id' -and $Arguments[3] -eq $cfg.demoPortal.activationAppId } -Times 1\n  }\n}" },
+      { "n": 2, "do": "Run the tests and confirm they fail because the module does not exist.", "run": "powershell -NoProfile -Command \"Import-Module Pester -MinimumVersion 5.0 -MaximumVersion 5.99; Invoke-Pester orchestrator/tests/DemoPortal.Environment.Tests.ps1 -Output Detailed\"", "expect": "Failures" },
+      { "n": 3, "do": "Implement orchestrator/backends/DemoPortal.psm1: Set-StrictMode, $ErrorActionPreference='Stop'; a script-scoped $script:CliPath resolved from $Config.demoPortal.cliPath relative to the repo root (two levels above the module); Invoke-Continia runs `& $script:CliPath @Arguments` capturing stdout, joins lines, ConvertFrom-Json; on non-JSON output throws with the raw text. Implement the environment functions per §6.5.3 with a poll loop (Start-Sleep 10, max 60 iterations). Export only the public names listed in interfaces plus placeholders for the functions of later tasks are NOT needed yet — export only what exists." },
+      { "n": 4, "do": "Run the tests until green.", "run": "powershell -NoProfile -Command \"Import-Module Pester -MinimumVersion 5.0 -MaximumVersion 5.99; Invoke-Pester orchestrator/tests/DemoPortal.Environment.Tests.ps1 -Output Detailed\"", "expect": "all passed" },
+      { "n": 5, "do": "Commit.", "run": "git add orchestrator; git commit -m \"feat(orchestrator): DemoPortal backend environment functions with mockable Invoke-Continia\"" }
+    ],
+    "acceptance": ["All tests in DemoPortal.Environment.Tests.ps1 pass without the real CLI being invoked.", "Every exported function that takes $Env calls Assert-MutEnvironmentAllowed first.", "Module has no reference to any environment id or credential."],
+    "commit": "feat(orchestrator): DemoPortal backend environment functions with mockable Invoke-Continia",
+    "guardrails": ["Unit tests must never call the real continia.exe.", "Never print or store passwords."]
+  },
+  {
+    "id": "T03",
+    "title": "Create the spike environment mut-spike-01",
+    "wave": 1,
+    "dependsOn": ["T02"],
+    "model": "sonnet",
+    "specSections": ["§6.6.1", "§6.5.3", "F11", "F16"],
+    "files": { "create": ["spikes/Start-SpikeEnvironment.ps1"], "modify": ["docs/spike-baseline.md"], "readOnly": [] },
+    "interfaces": { "consumes": ["Get-MutEnvironment, New-MutEnvironment from T02"], "produces": ["A running DemoPortal environment named mut-spike-01; its id recorded in docs/spike-baseline.md §Environment; .continia/workspace.json pointing at it (ignored by git)"] },
+    "steps": [
+      { "n": 1, "do": "Write spikes/Start-SpikeEnvironment.ps1: load mutation.config.json, Import-Module orchestrator/backends/DemoPortal.psm1, `$env = Get-MutEnvironment -Name $cfg.environmentName -Config $cfg`; if $null, `New-MutEnvironment`; otherwise `Start-MutEnvironment -Env $env -Config $cfg` (idempotent; brings a Draft or Stopped environment to Running, installs the activation app, sets env use). Print the handle as JSON (without credentials). Append rows to docs/spike-baseline.md §Environment: environment id, CreateDurationSec, StartDurationSec, ActivationInstallDurationSec, Backend=DemoPortal, Date, Source task=T03." },
+      { "n": 2, "do": "Run it. This is the one place the real CLI is called in this task.", "run": "powershell -NoProfile -File spikes/Start-SpikeEnvironment.ps1", "expect": "Handle with Name mut-spike-01 and Status Running; typically 1-3 minutes." },
+      { "n": 3, "do": "Verify the workspace default.", "run": ".tools/continia.exe env current --json", "expect": "id equals the new environment id" },
+      { "n": 4, "do": "Commit the script and the baseline rows.", "run": "git add spikes docs/spike-baseline.md; git commit -m \"feat(spikes): create mut-spike-01 environment and record timings\"" }
+    ],
+    "acceptance": ["`.tools/continia.exe env list --status running --json` contains description mut-spike-01 owned by the current user.", "docs/spike-baseline.md §Environment has the three timing rows."],
+    "commit": "feat(spikes): create mut-spike-01 environment and record timings",
+    "guardrails": ["Never run env use, deploy, or test against any environment other than mut-spike-01.", "Do not delete the environment; keepEnvironment is true for the POC."]
+  },
+  {
+    "id": "T04",
+    "title": "Mutation Core AL app",
+    "wave": 1,
+    "dependsOn": ["T03"],
+    "model": "sonnet",
+    "specSections": ["§6.1", "§6.0.1", "§9.2", "F13", "F14"],
+    "files": {
+      "create": [
+        "core-app/app.json", "core-app/.vscode/settings.json",
+        "core-app/src/MutantStatus.Enum.al", "core-app/src/MutationSetup.Table.al", "core-app/src/Mutant.Table.al", "core-app/src/MutationRun.Table.al", "core-app/src/MutantResult.Table.al",
+        "core-app/src/Mut.Codeunit.al", "core-app/src/TestHooks.Codeunit.al", "core-app/src/Install.Codeunit.al",
+        "core-app/src/MutantsAPI.Page.al", "core-app/src/MutationRunsAPI.Page.al", "core-app/src/MutantResultsAPI.Page.al", "core-app/src/MutationSetupAPI.Page.al"
+      ],
+      "modify": [], "readOnly": ["C:/GeneralDev/AL/Continia Banking Master/Continia Banking/external/BCApps/src/Tools/Test Framework/Test Runner/src/TestRunnerMgt.Codeunit.al"]
+    },
+    "interfaces": { "consumes": ["Running env from T03 (symbols are refreshed from it by continia compile)"], "produces": ["Codeunit 50000 \"MUT Mut\": SetActive(Id: Integer); Active(Id: Integer): Boolean; Reset(); GetActive(): Integer", "API entity sets mutants, mutationRuns, mutantResults, mutationSetup under /api/mutation/core/v1.0", "Table field and API names exactly as §6.1.2 and §6.1.7"] },
+    "steps": [
+      { "n": 1, "do": "Write core-app/app.json with id 6f1d2c3a-8b4e-4d5f-9a6b-7c8d9e0f1a2b, name \"Mutation Core\", publisher \"Continia Software\", version 1.0.0.0, idRanges 50000-50199, the single Test Runner dependency, platform/application 28.0.0.0, runtime 17.0, target Cloud, features [\"NoImplicitWith\"]. Write .vscode/settings.json with al.codeAnalyzers [\"${CodeCop}\", \"${UICop}\"]." },
+      { "n": 2, "do": "Write the enum, the four tables, MUT Mut, MUT Test Hooks (event subscriber signatures copied verbatim from §6.1.4), MUT Install, and the four API pages exactly as §6.1. MUT Mutation Setup gets `procedure GetOrCreate()` that does `if not Get('') then begin Init(); Insert(); end;`." },
+      { "n": 3, "do": "Compile. Fix errors until zero; report warnings.", "run": ".tools/continia.exe compile core-app --json --no-raw-output", "expect": "diagnosticCounts.error = 0" },
+      { "n": 4, "do": "Deploy to mut-spike-01 (workspace default from T03).", "run": ".tools/continia.exe deploy <envId> core-app --json", "expect": "published: true" },
+      { "n": 5, "do": "Commit.", "run": "git add core-app; git commit -m \"feat(core-app): Mutation Core tables, Mut codeunit, test hooks and API pages\"" }
+    ],
+    "acceptance": ["compile reports zero errors.", "deploy reports published true on mut-spike-01.", "`continia env apps <envId> --name Mutation --json` lists Mutation Core 1.0.0.0."],
+    "commit": "feat(core-app): Mutation Core tables, Mut codeunit, test hooks and API pages",
+    "guardrails": ["No dependency other than Microsoft Test Runner.", "Active() must not read the database.", "If the event subscriber does not compile, paste the exact diagnostic into docs/issues.md and stop; do not change the signature by guessing."]
+  },
+  {
+    "id": "T05",
+    "title": "Mutation Core test app and unit tests on the environment",
+    "wave": 1,
+    "dependsOn": ["T04"],
+    "model": "sonnet",
+    "specSections": ["§6.2", "§6.0.1", "§9.2"],
+    "files": { "create": ["core-app-test/app.json", "core-app-test/.vscode/settings.json", "core-app-test/src/MUTMutTests.Codeunit.al"], "modify": [], "readOnly": [] },
+    "interfaces": { "consumes": ["MUT Mut from T04"], "produces": ["Test codeunit 50400 \"MUT Mut Tests\" deployed on mut-spike-01"] },
+    "steps": [
+      { "n": 1, "do": "Write core-app-test/app.json (id 7a2e3d4b-9c5f-4e6a-8b7c-8d9e0f1a2b3c, idRanges 50400-50499, dependencies: Mutation Core 1.0.0.0, Library Assert dd0be2ea-f733-4d65-bb34-a28f4624fb14 28.0.0.0, Test Runner 23de40a6-dfe8-4f80-80db-d70f83ce8caf 28.0.0.0) and the four tests from §6.2 (the fourth, HookErrorIsEmpty, must be the last test procedure in the file) using `Assert: Codeunit Assert` and `MutationCore: Codeunit \"MUT Mut\"`." },
+      { "n": 2, "do": "Compile and deploy.", "run": ".tools/continia.exe deploy <envId> core-app-test --json", "expect": "published: true" },
+      { "n": 3, "do": "Run the tests.", "run": ".tools/continia.exe test run <envId> 50400 --json", "expect": "summary.total = 3, failed = 0" },
+      { "n": 4, "do": "Commit.", "run": "git add core-app-test; git commit -m \"test(core-app): MUT Mut unit tests\"" }
+    ],
+    "acceptance": ["3/3 tests pass on mut-spike-01."],
+    "commit": "test(core-app): MUT Mut unit tests",
+    "guardrails": ["One test job at a time."]
+  },
+  {
+    "id": "T06",
+    "title": "Fixture AUT and fixture test app",
+    "wave": 1,
+    "dependsOn": ["T03", "T07"],
+    "model": "sonnet",
+    "specSections": ["§6.3", "§6.0.1", "§9.2"],
+    "files": {
+      "create": [
+        "fixtures/fixture-aut/app.json", "fixtures/fixture-aut/.vscode/settings.json", "fixtures/fixture-aut/src/MUTFxOrder.Table.al", "fixtures/fixture-aut/src/MUTFxOrderMgt.Codeunit.al", "fixtures/fixture-aut/src/MUTFxAll.PermissionSet.al",
+        "fixtures/fixture-test/app.json", "fixtures/fixture-test/.vscode/settings.json", "fixtures/fixture-test/src/MUTFxOrderTests.Codeunit.al", "fixtures/fixture-test/src/MUTFxU4SpikeTests.Codeunit.al", "fixtures/fixture-test/src/MUTFxU5SpikeTests.Codeunit.al"
+      ],
+      "modify": [], "readOnly": []
+    },
+    "interfaces": { "consumes": [], "produces": ["Codeunit 50200 \"MUT Fx Order Mgt\" with the five procedures of §6.3.1, bodies token-identical to the spec", "Test codeunits 50300 (9 tests), 50301 (U4_Passing, U4_Failing), 50302 (U5_InfiniteLoop)"] },
+    "steps": [
+      { "n": 1, "do": "Write both app.json files (ids and ranges from §6.0.1; fixture-test depends on MUT Fixture AUT 1.0.0.0, Library Assert, Test Runner). The fixture AUT has NO dependencies." },
+      { "n": 2, "do": "Write table 50200 and codeunit 50200 with the exact bodies of §6.3.1. Keep the statement and condition text identical; the generator's expected results depend on them." },
+      { "n": 3, "do": "Write codeunit 50300 with the nine tests of §6.3.2 (use `asserterror` and `Assert.ExpectedError('Quantity must be positive.')` for PostOrder_ZeroQty_Errors; PostOrder_PositiveQty_SetsPosted must call `FxOrder.Get(EntryNo)` again before asserting Posted). Write 50301 and 50302 as specified." },
+      { "n": 4, "do": "Deploy fixture AUT then fixture test.", "run": ".tools/continia.exe deploy <envId> fixtures/fixture-aut --json; .tools/continia.exe deploy <envId> fixtures/fixture-test --json", "expect": "both published: true" },
+      { "n": 5, "do": "Run the baseline suite.", "run": ".tools/continia.exe test run <envId> 50300 --json", "expect": "summary.total = 9, failed = 0" },
+      { "n": 6, "do": "Run 50301 once to confirm it has exactly one failure (this is expected, it is not part of the baseline). Do NOT run 50302.", "run": ".tools/continia.exe test run <envId> 50301 --json", "expect": "total 2, failed 1" },
+      { "n": 7, "do": "Commit.", "run": "git add fixtures; git commit -m \"feat(fixtures): fixture AUT and test app with designed survivors and timeouts\"" }
+    ],
+    "acceptance": ["50300: 9/9 pass.", "50301: 1 pass, 1 fail.", "The five procedure bodies match §6.3.1 token for token."],
+    "commit": "feat(fixtures): fixture AUT and test app with designed survivors and timeouts",
+    "guardrails": ["Never run codeunit 50302 in this task; it loops forever."]
+  },
+  {
+    "id": "T07",
+    "title": "DemoPortal backend: API access (U8)",
+    "wave": 2,
+    "dependsOn": ["T02", "T05"],
+    "model": "sonnet",
+    "specSections": ["§6.5.3 (Get-MutApiBase, Get-MutCompanyId, Invoke-MutApi)", "§6.1.7", "U8"],
+    "files": { "create": ["orchestrator/tests/DemoPortal.Api.Tests.ps1"], "modify": ["orchestrator/backends/DemoPortal.psm1", "docs/spike-baseline.md"], "readOnly": [] },
+    "interfaces": {
+      "consumes": ["Handle from Get-MutEnvironment", "API pages from T04"],
+      "produces": [
+        "function Get-MutApiBase($Env) -> string like 'https://host/tenant' such that <base>/api/v2.0/companies answers 200",
+        "function Get-MutCompanyId($Env) -> GUID string of the first company",
+        "function Invoke-MutApi($Env, [string]$Method, [string]$Path, $Body) -> parsed JSON; Path relative to /api/mutation/core/v1.0/companies(<id>)/; PATCH sends If-Match: *; the setup row is addressed as mutationSetup(0)",
+        "function Grant-MutPermissionSet($Env, [string]$PermissionSetId, [string]$AppId) -> @{Granted;AlreadyHad} via the Automation API users/userPermissions (spec §6.5.3), idempotent"
+      ]
+    },
+    "steps": [
+      { "n": 1, "do": "Write failing Pester tests that mock Invoke-Continia for `env users` (return one user) and mock Invoke-RestMethod inside the module (Mock -ModuleName DemoPortal Invoke-RestMethod): assert Invoke-MutApi builds the URL `<base>/api/mutation/core/v1.0/companies(<id>)/mutationSetup`, uses Basic auth header, sends If-Match on PATCH, and serializes the body with ConvertTo-Json." },
+      { "n": 2, "do": "Implement the three functions. Credentials are read once per session from `env users <id> --json` into a script-scoped variable and are never written to output or files. Get-MutApiBase tries `$Env.Url` first, then `$Env.Url` with '/BC' appended; the first that returns 200 for /api/v2.0/companies wins; otherwise throw with both attempted URLs." },
+      { "n": 3, "do": "Run the unit tests to green.", "run": "powershell -NoProfile -Command \"Import-Module Pester -MinimumVersion 5.0 -MaximumVersion 5.99; Invoke-Pester orchestrator/tests/DemoPortal.Api.Tests.ps1 -Output Detailed\"" },
+      { "n": 4, "do": "Live check against mut-spike-01 (the only live call): GET mutationSetup, PATCH activeMutantId = 7, GET again, PATCH back to 0.", "run": "powershell -NoProfile -Command \"Import-Module ./orchestrator/backends/DemoPortal.psm1; $cfg = Get-Content mutation.config.json -Raw | ConvertFrom-Json; $e = Get-MutEnvironment -Name 'mut-spike-01' -Config $cfg; Invoke-MutApi $e GET 'mutationSetup' | ConvertTo-Json\"", "expect": "value array with one row, activeMutantId 0" },
+      { "n": 5, "do": "Record in docs/spike-baseline.md §U8 the working API base URL pattern (host only, no credentials) and whether '/BC' was needed." },
+      { "n": 6, "do": "Implement Grant-MutPermissionSet per spec §6.5.3 (Automation API: GET companies({cid})/users; GET users({uid})/userPermissions; POST when the set is missing with {permissionSetId, appId, scope: 'System'}). Unit-test it with a mocked Invoke-RestMethod: grants to a user lacking the set, skips a user that already has it. Add `permissionSets` to mutation.config.json and mutation.fixture.config.json exactly as spec §6.5.1." },
+      { "n": 7, "do": "Live: grant 'MUT Core All' (appId 6f1d2c3a-8b4e-4d5f-9a6b-7c8d9e0f1a2b) and 'MUT Fx All' (appId 8b3f4e5c-ad6a-4f7b-9c8d-9e0f1a2b3c4d) to all users of mut-spike-01, then run the fixture suite and expect 9 passed, 0 failed, 0 skipped. Record the outcome in docs/spike-baseline.md §U8.", "run": ".tools/continia.exe test run <envId> 50300 --json", "expect": "summary.passed = 9, skipped = 0" },
+      { "n": 8, "do": "Commit.", "run": "git add orchestrator docs/spike-baseline.md mutation.config.json mutation.fixture.config.json; git commit -m \"feat(orchestrator): Mutation Core API access and permission-set grants for DemoPortal (U8)\"" }
+    ],
+    "acceptance": ["Unit tests pass without network.", "Live GET/PATCH round trip on mutationSetup works and is reverted to 0.", "§U8 row filled."],
+    "commit": "feat(orchestrator): Mutation Core API access and permission-set grants for DemoPortal (U8)",
+    "guardrails": ["Never echo credentials. Redact them in any error message.", "If the API base cannot be found, record every attempted URL pattern in docs/issues.md and stop."]
+  },
+  {
+    "id": "T08",
+    "title": "DemoPortal backend: compile, publish, unpublish, tests, coverage",
+    "wave": 2,
+    "dependsOn": ["T02"],
+    "model": "sonnet",
+    "specSections": ["§6.5.3", "F7", "F8", "F12", "F18"],
+    "files": { "create": ["orchestrator/tests/DemoPortal.Apps.Tests.ps1", "orchestrator/tests/DemoPortal.Tests.Tests.ps1"], "modify": ["orchestrator/backends/DemoPortal.psm1"], "readOnly": [".claude/skills/continia-deploy/SKILL.md", ".claude/skills/continia-test/SKILL.md"] },
+    "interfaces": {
+      "consumes": ["Invoke-Continia, Assert-MutEnvironmentAllowed from T02", "ConvertFrom-MutCoverageCsv from T24 is NOT available yet: Get-MutCoverage returns the raw csv strings in this task and is finished in T24"],
+      "produces": [
+        "Install-MutDependencies($Env, [string]$AppPath) -> JSON",
+        "Compile-MutApp($Env, [string]$Path, [string]$Ruleset) -> [pscustomobject]@{Success;Diagnostics=[{Severity;Code;File;Line;Column;Message}];AppFile;DurationSec}",
+        "Publish-MutApp($Env, [string]$Path, [string]$Ruleset, [switch]$AllowDowngrade, [string]$SyncMode) -> @{Success;Code;Diagnostics;DurationSec}",
+        "Publish-MutAppFile($Env, [string]$AppFile, [string]$SyncMode) -> @{Success;DurationSec}",
+        "Unpublish-MutApp($Env, [string]$AppId, [string]$Version) -> @{Success}",
+        "Invoke-MutTests($Env, [object[]]$Targets, [int]$TimeoutSec, [switch]$Coverage) -> @{Passed;Failed;Tests=[{Codeunit;Function;Result;DurationMs;Error}];DurationMs;JobIds}",
+        "Get-MutCoverageRaw($Env, [string[]]$JobIds) -> [string[]] csv documents"
+      ]
+    },
+    "steps": [
+      { "n": 1, "do": "Write failing tests. Compile-MutApp: given a mocked compile JSON with two diagnostics, returns Diagnostics with mapped property names and Success=$false. Publish-MutApp: passes --allow-downgrade only when the switch is set and --ruleset only when given. Invoke-MutTests: for targets @(95155, 95913, 95913) calls test run exactly twice (distinct codeunits), in order, never in parallel; maps result 'Fail' and errorMessage; sums DurationMs; collects jobId if the JSON has a property named jobId or id (record which). Exit code 1 from the CLI with valid JSON must not throw." },
+      { "n": 2, "do": "Implement. Invoke-Continia must capture stdout even when the exit code is 1 (test failures) — use `$LASTEXITCODE` only for logging. Durations from `durationSeconds * 1000` rounded." },
+      { "n": 3, "do": "Run to green.", "run": "powershell -NoProfile -Command \"Import-Module Pester -MinimumVersion 5.0 -MaximumVersion 5.99; Invoke-Pester orchestrator/tests -Output Detailed\"" },
+      { "n": 4, "do": "Commit.", "run": "git add orchestrator; git commit -m \"feat(orchestrator): DemoPortal compile, publish, test and coverage functions\"" }
+    ],
+    "acceptance": ["All orchestrator tests pass with the CLI mocked.", "Invoke-MutTests never invokes two jobs concurrently (sequential foreach, no Start-Job inside the backend)."],
+    "commit": "feat(orchestrator): DemoPortal compile, publish, test and coverage functions",
+    "guardrails": ["Unit tests never call the real CLI."]
+  },
+  {
+    "id": "T09",
+    "title": "Spike U4: runner events under the DemoPortal test job",
+    "wave": 3,
+    "dependsOn": ["T05", "T06", "T07", "T08"],
+    "model": "sonnet",
+    "specSections": ["§6.6.3", "§5", "U4", "F5"],
+    "files": { "create": ["spikes/u4-runner-events/Invoke-U4Spike.ps1"], "modify": ["docs/spike-baseline.md"], "readOnly": [] },
+    "interfaces": { "consumes": ["Invoke-MutApi, Invoke-MutTests, Get-MutEnvironment"], "produces": ["§U4 rows in docs/spike-baseline.md: eventsFired (yes/no), killedRowPresentAfterFailedTest (yes/no), killingTest value"] },
+    "steps": [
+      { "n": 1, "do": "Write the script per §6.6.3: PATCH setup {activeMutantId 999, currentRunNo 1}; Invoke-MutTests on 50301 with TimeoutSec 300; GET mutantResults; print rows; PATCH setup back to {activeMutantId 0}. Exit 0 if exactly one row with status Killed and killingTest 'MUT Fx U4 Spike Tests:U4_Failing' exists, else exit 1 and print what was found." },
+      { "n": 2, "do": "Run it.", "run": "powershell -NoProfile -File spikes/u4-runner-events/Invoke-U4Spike.ps1", "expect": "exit 0" },
+      { "n": 3, "do": "If exit 1 with zero rows, distinguish 'events did not fire' from 'the after-write was rolled back': on a scratch git branch, add to OnBeforeTestMethodRun a temporary insert of a MUT Mutant Result row (Status Pending, Killing Test = 'BEFORE:' + FunctionName), deploy core-app, rerun the script. If Pending rows appear but no Killed row, events fire and the after-write rolls back. Then `git checkout -- core-app`, redeploy the clean core-app, and record the outcome. Do not redesign here." },
+      { "n": 4, "do": "Append §U4 rows to docs/spike-baseline.md. Delete the spike rows from the environment: DELETE each mutantResults row for runNo 1 via Invoke-MutApi." },
+      { "n": 5, "do": "Commit.", "run": "git add spikes docs/spike-baseline.md; git commit -m \"spike(u4): verify test runner events and result persistence on DemoPortal\"" }
+    ],
+    "acceptance": ["§U4 rows filled with yes/no answers and the observed killingTest string.", "Setup reset to activeMutantId 0."],
+    "commit": "spike(u4): verify test runner events and result persistence on DemoPortal",
+    "guardrails": ["If events do not fire, stop after recording; Gate G0 handles it."]
+  },
+  {
+    "id": "T10",
+    "title": "Spike U1/U3: guard-block compile cost and runtime overhead",
+    "wave": 3,
+    "dependsOn": ["T04"],
+    "model": "sonnet",
+    "specSections": ["§6.6.2", "§6.0.1", "U1", "U3"],
+    "files": { "create": ["spikes/u1-guard-bench/New-GuardBenchApp.ps1", "spikes/u1-guard-bench/app/.gitkeep"], "modify": ["docs/spike-baseline.md", ".gitignore"], "readOnly": [] },
+    "interfaces": { "consumes": ["MUT Mut deployed"], "produces": ["§U1/U3 rows: compileSec, publishSec, guarded100kSec, unguarded100kSec, ratio"] },
+    "steps": [
+      { "n": 1, "do": "Write New-GuardBenchApp.ps1 that generates spikes/u1-guard-bench/app/app.json (id ad5b6a7e-cf8c-4b9d-9eaf-1a2b3c4d5e6f, range 50500-50599, deps Mutation Core, Library Assert, Test Runner) and the two codeunits of §6.6.2 as text. Add `spikes/u1-guard-bench/app/src/` to .gitignore (generated)." },
+      { "n": 2, "do": "Generate, compile with timing, deploy with timing.", "run": "powershell -NoProfile -Command \"& spikes/u1-guard-bench/New-GuardBenchApp.ps1; $t=[Diagnostics.Stopwatch]::StartNew(); .tools/continia.exe compile spikes/u1-guard-bench/app --json --no-raw-output; 'compileSec=' + $t.Elapsed.TotalSeconds; $t.Restart(); .tools/continia.exe deploy <envId> spikes/u1-guard-bench/app --json; 'publishSec=' + $t.Elapsed.TotalSeconds\"" },
+      { "n": 3, "do": "Run the bench tests and read durationSeconds per test.", "run": ".tools/continia.exe test run <envId> 50501 --json --timeout 600" },
+      { "n": 4, "do": "Append §U1/U3 rows. Unpublish the bench app afterwards.", "run": ".tools/continia.exe unpublish <envId> --app-id ad5b6a7e-cf8c-4b9d-9eaf-1a2b3c4d5e6f --json" },
+      { "n": 5, "do": "Commit.", "run": "git add spikes .gitignore docs/spike-baseline.md; git commit -m \"spike(u1,u3): guard block compile cost and runtime overhead\"" }
+    ],
+    "acceptance": ["Five numbers recorded in §U1/U3.", "Bench app unpublished."],
+    "commit": "spike(u1,u3): guard block compile cost and runtime overhead",
+    "guardrails": []
+  },
+  {
+    "id": "T11",
+    "title": "Spike U5/U6: job cancellation, environment reset, publish-over-dependents",
+    "wave": 3,
+    "dependsOn": ["T06", "T08"],
+    "model": "sonnet",
+    "specSections": ["§6.6.4", "U5", "U6", "§6.5.4 step 5"],
+    "files": { "create": ["spikes/u5-u6/Invoke-U5Spike.ps1", "spikes/u5-u6/Invoke-U6Spike.ps1"], "modify": ["docs/spike-baseline.md", "mutation.config.json", "mutation.fixture.config.json"], "readOnly": [] },
+    "interfaces": { "consumes": ["Reset-MutEnvironment, Publish-MutAppFile, Publish-MutApp, Unpublish-MutApp, Invoke-MutTests, Compile-MutApp"], "produces": ["§U5 rows: jobCancelled (yes/no), sessionVisible (yes/no), resetDurationSec", "§U6 rows: option a/b/c success + seconds", "schemata.publishStrategy set in both config files"] },
+    "steps": [
+      { "n": 1, "do": "Write Invoke-U5Spike.ps1 per §6.6.4: Start-Job running `test run <env> 50302 --timeout 30`; Wait-Job -Timeout 60; Stop-Job; then `env sessions <id> --json` (record whether a session is still running); then Reset-MutEnvironment and record DurationSec; then run codeunit 50300 to prove the environment works again." },
+      { "n": 2, "do": "Run it.", "run": "powershell -NoProfile -File spikes/u5-u6/Invoke-U5Spike.ps1" },
+      { "n": 3, "do": "Write Invoke-U6Spike.ps1 per §6.6.4: Compile-MutApp fixtures/fixture-aut; (a) Publish-MutAppFile same version → run 50300; (b) copy fixture-aut to out/u6-bump with version 1.0.0.1, compile, Publish-MutAppFile → run 50300; (c) Unpublish-MutApp fixture test → Publish-MutAppFile of the 1.0.0.0 build → Publish-MutApp fixtures/fixture-test → run 50300. Record success/duration per option; continue to the next option on failure." },
+      { "n": 4, "do": "Run it.", "run": "powershell -NoProfile -File spikes/u5-u6/Invoke-U6Spike.ps1" },
+      { "n": 5, "do": "Set schemata.publishStrategy in both config files to the cheapest option that worked (a: same-version, b: bump-build, c: unpublish-test-app). Append §U5 and §U6 rows." },
+      { "n": 6, "do": "Commit.", "run": "git add spikes docs/spike-baseline.md mutation.config.json mutation.fixture.config.json; git commit -m \"spike(u5,u6): job cancellation, env reset and publish strategy\"" }
+    ],
+    "acceptance": ["§U5 and §U6 filled.", "publishStrategy set and justified in the §U6 table."],
+    "commit": "spike(u5,u6): job cancellation, env reset and publish strategy",
+    "guardrails": ["Ensure fixture AUT 1.0.0.0 and fixture test are installed and 50300 passes at the end of the spike."]
+  },
+  {
+    "id": "T12",
+    "title": "AUT copy, Tier B baseline, U7 and U9",
+    "wave": 3,
+    "dependsOn": ["T03", "T08"],
+    "model": "sonnet",
+    "specSections": ["§6.5.2", "§1.1", "U7", "U9", "F17", "§4 item 1"],
+    "files": { "create": ["orchestrator/lib/AutCopy.psm1", "orchestrator/tests/AutCopy.Tests.ps1", "spikes/tier-b/Invoke-TierBBaseline.ps1", "fixtures/coverage/sample.csv"], "modify": ["docs/spike-baseline.md"], "readOnly": ["C:/GeneralDev/AL/Continia Banking Master/Continia Banking/base-application/**", "C:/GeneralDev/AL/Continia Banking Master/Continia Banking/base-application-test/**", "C:/GeneralDev/AL/Continia Banking Master/Continia Banking/Banking Rulesets/**"] },
+    "interfaces": {
+      "consumes": ["Install-MutDependencies, Publish-MutApp, Invoke-MutTests, Get-MutCoverageRaw"],
+      "produces": ["function Sync-MutAutCopy($Config) -> [pscustomobject]@{AutPath;TestAppPath;RulesetsPath}", "fixtures/coverage/sample.csv (first 200 lines of one real coverage CSV)", "§U7 and §U9 rows and the Tier B baseline table"]
+    },
+    "steps": [
+      { "n": 1, "do": "Write a failing Pester test for Sync-MutAutCopy using a temp source dir with an .alpackages subfolder and a .app file: after sync, the target has the .al files but no .alpackages and no .app; running twice is idempotent; the source is unchanged (compare file hashes before/after)." },
+      { "n": 2, "do": "Implement Sync-MutAutCopy with robocopy per §6.5.2 (treat exit codes 0-7 as success). Run tests to green." },
+      { "n": 3, "do": "Write spikes/tier-b/Invoke-TierBBaseline.ps1: Sync-MutAutCopy; Install-MutDependencies for out/aut-original and for out/test-app; Publish-MutApp out/aut-original with -Ruleset out/rulesets/.cli-ruleset-localdeploy.json -AllowDowngrade (time it); Publish-MutApp out/test-app same ruleset (time it); Invoke-MutTests for 95913 with one function (the first [Test] procedure name in TestAuthGrantedAcc.Codeunit.al) to measure single-job overhead; then Invoke-MutTests for 95155 and 95913 whole; then Get-MutCoverageRaw for the job ids if any. Save the first coverage CSV's first 200 lines to fixtures/coverage/sample.csv. Print all timings." },
+      { "n": 4, "do": "Run it. Expect the AUT deploy to take several minutes.", "run": "powershell -NoProfile -File spikes/tier-b/Invoke-TierBBaseline.ps1", "expect": "95155: 13/13 pass; 95913: 15/15 pass" },
+      { "n": 5, "do": "Append to docs/spike-baseline.md: §Environment (deps install s, AUT deploy s, test app deploy s), §U7 (single-method job s, 95155 s, 95913 s), §U9 (job id field name or 'not exposed'; CSV header line), Tier B baseline table (codeunit, total, passed, failed). If either codeunit fails on the fresh environment, record the failing tests and STOP: a failing baseline blocks Tier B." },
+      { "n": 6, "do": "Commit.", "run": "git add orchestrator spikes fixtures/coverage docs/spike-baseline.md; git commit -m \"feat(orchestrator): AUT copy sync; Tier B baseline with U7/U9 numbers\"" }
+    ],
+    "acceptance": ["Source AUT folder hash-identical before and after (spot-check 5 files with Get-FileHash).", "Both target test codeunits pass.", "sample.csv exists or §U9 says coverage is unavailable and why."],
+    "commit": "feat(orchestrator): AUT copy sync; Tier B baseline with U7/U9 numbers",
+    "guardrails": ["Only Sync-MutAutCopy reads the AUT repo; nothing writes there. Never pass an AUT repo path to continia."]
+  },
+  {
+    "id": "T13",
+    "title": "Hand mutants HM01-HM20 on the Tier B slice",
+    "wave": 4,
+    "dependsOn": ["T12"],
+    "model": "sonnet",
+    "specSections": ["§6.6.5", "Gate G0 in §8"],
+    "files": { "create": ["spikes/hand-mutants/mutants.json", "spikes/hand-mutants/Invoke-HandMutants.ps1", "spikes/hand-mutants/results.json"], "modify": ["docs/spike-baseline.md"], "readOnly": [] },
+    "interfaces": { "consumes": ["Sync-MutAutCopy, Publish-MutApp, Invoke-MutTests"], "produces": ["results.json: [{id, operator, file, line, status, seconds, failedTests[]}]", "Hand mutants table in docs/spike-baseline.md with kill count"] },
+    "steps": [
+      { "n": 1, "do": "Write mutants.json with the 20 rows of §6.6.5 (fields: id, file, line, find, replace, operator, testCodeunits)." },
+      { "n": 2, "do": "Write Invoke-HandMutants.ps1 per §6.6.5. Apply one mutant at a time; verify the `find` text occurs exactly once on the given line of the copy, else abort with 'source drift: <id>'. Restore the exact original line after each mutant even on error (try/finally). Write results.json after every mutant (crash safety)." },
+      { "n": 3, "do": "Run it (expect roughly 20 × (deploy + tests) minutes).", "run": "powershell -NoProfile -File spikes/hand-mutants/Invoke-HandMutants.ps1 -ConfigPath mutation.config.json" },
+      { "n": 4, "do": "Restore the unmutated AUT on the environment (final Publish-MutApp of the clean copy) and rerun 95155 and 95913 to prove the baseline passes again." },
+      { "n": 5, "do": "Append the 20-row table and the kill count to docs/spike-baseline.md §Hand mutants." },
+      { "n": 6, "do": "Commit.", "run": "git add spikes docs/spike-baseline.md; git commit -m \"spike(hand-mutants): 20 hand mutants on the Authentication slice\"" }
+    ],
+    "acceptance": ["20 results recorded.", "Baseline passes after the run.", "Copy is identical to the source again (hash-check the three mutated files)."],
+    "commit": "spike(hand-mutants): 20 hand mutants on the Authentication slice",
+    "guardrails": ["Edit only out/aut-original. Never the source."]
+  },
+  {
+    "id": "T14",
+    "title": "Consolidate spike-baseline.md and draft the G0 recommendation",
+    "wave": 5,
+    "dependsOn": ["T09", "T10", "T11", "T12", "T13"],
+    "model": "sonnet",
+    "specSections": ["§7.6", "§8 Gate G0", "U2", "U7"],
+    "files": { "create": [], "modify": ["docs/spike-baseline.md", "mutation.config.json"], "readOnly": [] },
+    "interfaces": { "consumes": ["All §U rows"], "produces": ["§Recommendation with a DRAFT go/no-go, --max-mutants default, timeouts.jobOverheadSeconds; the human replaces DRAFT with go or no-go"] },
+    "steps": [
+      { "n": 1, "do": "Compute: mutants/day = 86400 / (jobOverheadSeconds + median covering-codeunit duration) from §U7; provisional U2 = (tests in 95155+95913) / 2144 for the three objects. Set timeouts.jobOverheadSeconds in mutation.config.json to the measured single-method job seconds. Propose generator.maxMutants so one run fits in 8 hours." },
+      { "n": 2, "do": "Write §Recommendation: DRAFT go if U4 = yes and hand-mutant kills < 18 and mutants/day >= 200; else DRAFT no-go with the reason. List every number used." },
+      { "n": 3, "do": "Commit.", "run": "git add docs/spike-baseline.md mutation.config.json; git commit -m \"docs(spike): consolidate spike baseline and draft G0 recommendation\"" }
+    ],
+    "acceptance": ["Every section of §7.6 has at least one filled row or the word 'unavailable' with a reason.", "Recommendation is marked DRAFT for a human to confirm."],
+    "commit": "docs(spike): consolidate spike baseline and draft G0 recommendation",
+    "guardrails": ["Do not write 'go' or 'no-go' without the DRAFT marker; the decision is human."]
+  },
+  {
+    "id": "T15",
+    "title": "Generator scaffold and tokenizer",
+    "wave": 1,
+    "dependsOn": ["T01"],
+    "model": "sonnet",
+    "specSections": ["§6.4 (toolchain table)", "§6.4.1", "§9.4"],
+    "files": { "create": ["generator/package.json", "generator/tsconfig.json", "generator/src/tokenizer.ts", "generator/src/types.ts", "generator/test/tokenizer.test.ts", "fixtures/tokenizer/comments-and-strings.al", "fixtures/tokenizer/comments-and-strings.tokens.json", "fixtures/tokenizer/operators.al", "fixtures/tokenizer/operators.tokens.json", "fixtures/tokenizer/preprocessor.al", "fixtures/tokenizer/preprocessor.tokens.json"], "modify": [], "readOnly": [] },
+    "interfaces": { "consumes": [], "produces": ["export type TokenKind, interface Token {kind,text,start,end,line,column} in src/types.ts", "export function tokenize(source: string): Token[] in src/tokenizer.ts", "export const KEYWORDS: ReadonlySet<string>"] },
+    "steps": [
+      { "n": 1, "do": "npm init: package.json {name 'al-mutation-generator', type 'module', scripts {build:'tsc -p .', test:'npm run build && node --test dist/test/'}, devDependencies {typescript:'^5.6.0'}}. tsconfig per §6.4. `npm install`." },
+      { "n": 2, "do": "Write the three golden .al files by hand, each under 25 lines, and their .tokens.json (kind,text,line,column per token) also by hand from §6.4.1 rules. comments-and-strings.al must contain: a line comment containing a quote, a block comment spanning two lines, a string containing // and a doubled '' escape, a quoted identifier with a space. operators.al: `<>`, `<=`, `>=`, `:=`, `::`, `..`, `+=`, and a `<` `>` pair. preprocessor.al: `#if FOO`, `#endif`, `#region`, `#endregion`." },
+      { "n": 3, "do": "Write test/tokenizer.test.ts: for each fixture, tokenize the .al and deepEqual the projection {kind,text,line,column} with the .tokens.json; plus unit tests: `start`/`end` offsets slice back to `text`; unterminated string throws with line number." },
+      { "n": 4, "do": "Run tests, expect failure (module missing).", "run": "cd generator; npm test", "expect": "fail" },
+      { "n": 5, "do": "Implement tokenizer.ts per §6.4.1 (single pass, index-based, longest-match operators)." },
+      { "n": 6, "do": "Run tests to green.", "run": "cd generator; npm test", "expect": "all pass" },
+      { "n": 7, "do": "Commit.", "run": "git add generator fixtures/tokenizer; git commit -m \"feat(generator): AL tokenizer with golden tests\"" }
+    ],
+    "acceptance": ["npm test passes.", "The test file asserts against the .tokens.json fixtures and never writes or regenerates them."],
+    "commit": "feat(generator): AL tokenizer with golden tests",
+    "guardrails": ["No runtime dependencies.", "Never generate the expected .tokens.json from the tokenizer output."]
+  },
+  {
+    "id": "T16",
+    "title": "Generator: object header, procedure spans, simple statements, conditions",
+    "wave": 2,
+    "dependsOn": ["T15"],
+    "model": "sonnet",
+    "specSections": ["§6.4.2", "§6.4.3"],
+    "files": { "create": ["generator/src/procedures.ts", "generator/src/statements.ts", "generator/test/procedures.test.ts", "generator/test/statements.test.ts"], "modify": ["generator/src/types.ts"], "readOnly": ["fixtures/fixture-aut/src/FxOrderMgt.Codeunit.al"] },
+    "interfaces": { "consumes": ["tokenize, Token"], "produces": ["interface ObjectHeader, ProcedureSpan, SimpleStatement, Condition (fields exactly as §6.4.2-3)", "findObjectHeader(tokens): ObjectHeader|null", "findProcedures(tokens): ProcedureSpan[]", "findSimpleStatements(tokens, span): SimpleStatement[]", "findConditions(tokens, span): Condition[]"] },
+    "steps": [
+      { "n": 1, "do": "Write failing tests using inline AL strings: (a) header of `codeunit 50200 \"MUT Fx Order Mgt\"` → {codeunit, 50200, 'MUT Fx Order Mgt'}; (b) a codeunit with an object-level var section, two procedures (one with var, one without) and a trigger OnRun → three spans with correct beginIdx/endIdx and varKeywordIdx null for the var-less one; (c) nested begin/end and a case block inside a procedure → endIdx is the outer end; (d) statements: `if A then X.Insert() else Y.Modify();` yields two simple statements with terminators none and semicolon; a last statement before `end` without `;` has terminator none; a case branch `1: Z.Delete();` yields a statement; (e) conditions: `if (A > 1) and B then` → kind if, position statementList when preceded by begin; `else if C then` → position other; `until Rec.Next() = 0;` → kind until with terminatorIdx at `;`; an until without `;` before `end`." },
+      { "n": 2, "do": "Run tests, expect failure.", "run": "cd generator; npm test" },
+      { "n": 3, "do": "Implement procedures.ts and statements.ts per §6.4.2-3. Paren depth counts `(`/`)` and `[`/`]`." },
+      { "n": 4, "do": "Add a test that runs findProcedures + findConditions + findSimpleStatements over fixtures/fixture-aut/src/FxOrderMgt.Codeunit.al and asserts: 5 procedures; conditions: 4 `if` (all statementList) and 1 `until`; simple statements include exactly the DEL targets of §6.3.3 (exit(true), exit(false) ×2, Error(QtyErr), FxOrder.Modify(true), exit(Batches), exit(Candidate))." },
+      { "n": 5, "do": "Run to green and commit.", "run": "cd generator; npm test; cd ..; git add generator; git commit -m \"feat(generator): procedure spans, statement and condition detection\"" }
+    ],
+    "acceptance": ["All tests pass.", "The `while true do` condition is NOT returned by findConditions."],
+    "commit": "feat(generator): procedure spans, statement and condition detection",
+    "guardrails": []
+  },
+  {
+    "id": "T17",
+    "title": "Generator: condition operators REL, BOOL, NOT, COND",
+    "wave": 3,
+    "dependsOn": ["T16"],
+    "model": "sonnet",
+    "specSections": ["§6.4.4", "§6.4.5"],
+    "files": { "create": ["generator/src/operators/types.ts", "generator/src/operators/rel.ts", "generator/src/operators/bool.ts", "generator/src/operators/not.ts", "generator/src/operators/cond.ts", "generator/src/operators/index.ts", "generator/test/operators.condition.test.ts"], "modify": [], "readOnly": [] },
+    "interfaces": { "consumes": ["Condition, ProcedureSpan, ObjectHeader, Token"], "produces": ["interface MutantCandidate, Operator, type OperatorName (exactly §6.4.4)", "export const REL, BOOL, NOT, COND: Operator", "export const OPERATORS: Record<OperatorName, Operator>; export const OPERATOR_ORDER: OperatorName[] (DEL/INSFLAG/BREAK entries are added in T18; until then index.ts exports only the four)"] },
+    "steps": [
+      { "n": 1, "do": "Write failing tests: REL on `Quantity >= 10` → one candidate mutated `Quantity > 10`; on `(A > 1) and (B <> C)` → two REL candidates (`>=`, `=`); BOOL → one candidate with `or`; NOT on `(Amount > 1000) and (not IsTrusted)` → `(Amount > 1000) and (IsTrusted)`; COND → two candidates `true`/`false`; COND on condition `true` → zero; `original` preserves original spacing; `occurrence` increments for identical (procedure, operator, original, mutated) pairs." },
+      { "n": 2, "do": "Implement. Text of a candidate is built from the original source slice with the target token replaced, keeping all other characters." },
+      { "n": 3, "do": "Run to green and commit.", "run": "cd generator; npm test; cd ..; git add generator; git commit -m \"feat(generator): REL, BOOL, NOT and COND condition operators\"" }
+    ],
+    "acceptance": ["Tests pass.", "No operator touches tokens outside the condition span."],
+    "commit": "feat(generator): REL, BOOL, NOT and COND condition operators",
+    "guardrails": []
+  },
+  {
+    "id": "T18",
+    "title": "Generator: statement operators DEL, INSFLAG, BREAK",
+    "wave": 3,
+    "dependsOn": ["T16"],
+    "model": "sonnet",
+    "specSections": ["§6.4.4", "§6.4.5"],
+    "files": { "create": ["generator/src/operators/del.ts", "generator/src/operators/insflag.ts", "generator/src/operators/break.ts", "generator/test/operators.statement.test.ts"], "modify": ["generator/src/operators/index.ts"], "readOnly": [] },
+    "interfaces": { "consumes": ["SimpleStatement, Operator, MutantCandidate"], "produces": ["export const DEL, INSFLAG, BREAK: Operator", "OPERATORS and OPERATOR_ORDER complete: ['REL','BOOL','NOT','COND','DEL','INSFLAG','BREAK']"] },
+    "steps": [
+      { "n": 1, "do": "Write failing tests: DEL matches `FxOrder.Modify(true)`, `Error(QtyErr)`, `exit(true)`, `exit`, `Rec.DeleteAll()`, `Commit()`, `Message(Txt)`; DEL does not match `Candidate += Base`, `Rec.SetRange(X, Y)`, `Foo.Bar()`; INSFLAG: `FxOrder.Modify(true)` → `FxOrder.Modify(false)`, `Rec.Insert(false)` → `Rec.Insert(true)`, no candidate for `Rec.Insert()`; BREAK: every simple statement → `MutBreak_ThisDoesNotCompile()`; the regexes are case-insensitive (`ERROR(`)." },
+      { "n": 2, "do": "Implement, then complete index.ts with all seven operators in OPERATOR_ORDER." },
+      { "n": 3, "do": "Run to green and commit.", "run": "cd generator; npm test; cd ..; git add generator; git commit -m \"feat(generator): DEL, INSFLAG and BREAK statement operators\"" }
+    ],
+    "acceptance": ["Tests pass."],
+    "commit": "feat(generator): DEL, INSFLAG and BREAK statement operators",
+    "guardrails": []
+  },
+  {
+    "id": "T19",
+    "title": "Generator: exclusions",
+    "wave": 3,
+    "dependsOn": ["T16"],
+    "model": "sonnet",
+    "specSections": ["§6.4.6"],
+    "files": { "create": ["generator/src/exclusions.ts", "generator/test/exclusions.test.ts"], "modify": [], "readOnly": [] },
+    "interfaces": { "consumes": ["Token, Condition, SimpleStatement"], "produces": ["isExcludedFile(relPath: string, source: string): string|null", "isExcludedRegion(tokens: Token[], startIdx: number, endIdx: number): string|null", "isExcludedCondition(tokens: Token[], cond: Condition): string|null", "isExcludedStatement(tokens: Token[], stmt: SimpleStatement): string|null"] },
+    "steps": [
+      { "n": 1, "do": "Write failing tests for every reason string in §6.4.6: not-a-codeunit (a `table 50200 …` file), obsolete-folder, test-codeunit (Subtype = Test, and a `.Test.al` file name), preprocessor-region (a candidate inside #if…#endif is excluded, one after #endif is not), ignore-comment (`// mutation:ignore` on the same line), until-next-loop (`until Rec.Next() = 0`), condition-position (position 'other'), evaluate." },
+      { "n": 2, "do": "Implement. Return the reason string or null; never throw." },
+      { "n": 3, "do": "Run to green and commit.", "run": "cd generator; npm test; cd ..; git add generator; git commit -m \"feat(generator): exclusion rules with reasons\"" }
+    ],
+    "acceptance": ["Tests pass; each reason string appears exactly as in §6.4.6."],
+    "commit": "feat(generator): exclusion rules with reasons",
+    "guardrails": []
+  },
+  {
+    "id": "T20",
+    "title": "Generator: schemata rewrite with the single guard template",
+    "wave": 4,
+    "dependsOn": ["T17", "T18"],
+    "model": "sonnet",
+    "specSections": ["§6.4.7", "F1", "F4"],
+    "files": { "create": ["generator/src/schemata.ts", "generator/test/schemata.test.ts"], "modify": [], "readOnly": [] },
+    "interfaces": { "consumes": ["MutantCandidate with assigned `id: number` (add optional `id?: number` to MutantCandidate; rewriteFile requires it set)"], "produces": ["interface LineMapEntry { mutantIds: number[]; startLine: number; endLine: number }", "rewriteFile(source: string, candidates: MutantCandidate[]): { output: string; lineMap: LineMapEntry[] }"] },
+    "steps": [
+      { "n": 1, "do": "Write failing tests with hand-written expected output strings (exact text) for: (a) one `if` condition with REL+COND×2 → the case block inserted before the `if` with the same indentation, `if MutCond_1 then`, and `MutationCore: Codeunit \"MUT Mut\";` + `MutCond_1: Boolean;` added to the existing var section; (b) a procedure without a var section gets `    var` inserted before `begin`; (c) an `until` condition where the last body statement has no `;` gets `;` inserted before the case block; (d) a DEL on a statement in `then` position followed by `else` → `case … begin end; else S; end else T;` compiles structurally (assert exact text); (e) DEL+INSFLAG on the same statement → one case block with two branches then else; (f) a statement whose terminator is none (last before `end`) → no `;` after our `end`; (g) lineMap entries cover each block's start/end lines in the output and list all ids; (h) two conditions in one procedure get MutCond_1 and MutCond_2." },
+      { "n": 2, "do": "Implement rewriteFile: group candidates by target span; build edits {start,end,text}; apply descending; compute lineMap by re-scanning output for the inserted blocks (track inserted text lengths while applying)." },
+      { "n": 3, "do": "Run to green and commit.", "run": "cd generator; npm test; cd ..; git add generator; git commit -m \"feat(generator): schemata rewrite using case-true-of guard blocks\"" }
+    ],
+    "acceptance": ["Tests pass with exact-text expectations.", "Output never contains `Active(` adjacent to and/or/xor (add an assertion in the tests)."],
+    "commit": "feat(generator): schemata rewrite using case-true-of guard blocks",
+    "guardrails": ["Only the constructs in §4 item 4 may be emitted."]
+  },
+  {
+    "id": "T21",
+    "title": "Generator: manifest, sampling, pipeline, CLI, lint, golden cases",
+    "wave": 5,
+    "dependsOn": ["T19", "T20"],
+    "model": "sonnet",
+    "specSections": ["§6.4.8", "§6.4.9", "§6.4.10", "§6.4.11", "§7.1", "§6.3.3"],
+    "files": { "create": ["generator/src/manifest.ts", "generator/src/generate.ts", "generator/src/lint.ts", "generator/src/cli.ts", "generator/test/manifest.test.ts", "generator/test/lint.test.ts", "generator/test/golden.test.ts", "fixtures/generator/01-if-rel-bool-not-cond/**", "fixtures/generator/02-until-and-next-exclusion/**", "fixtures/generator/03-del-insflag-positions/**", "fixtures/generator/04-exclusions/**", "fixtures/generator/05-fixture-aut/**"], "modify": [], "readOnly": ["fixtures/fixture-aut/**"] },
+    "interfaces": { "consumes": ["all generator modules"], "produces": ["assignIds(candidates): Mutant[] (Mutant = MutantCandidate & {id, stableKey, file})", "stableKey(c): string", "sample(mutants, n, seed): Mutant[]", "generate(options: GenerateOptions): GenerateResult where GenerateOptions = {autDir, outDir, coreAppId, coreAppVersion, autVersion?, maxMutants, seed, onlyObjects: number[], operators: OperatorName[], includeBreak: boolean, excludeStableKeys: string[]} and GenerateResult = {mutants: Mutant[], skipped: {file,line,reason}[], lineMap: Record<string, LineMapEntry[]>}", "CLI `generate` and `lint` exactly as §6.4.9"] },
+    "steps": [
+      { "n": 1, "do": "Write failing tests: ids are 1..N in the order of §6.4.8 across two files; stableKey is 16 hex chars and stable under whitespace changes in the original; sample(…, 3, 1) returns the same 3 ids on every call and different ids for seed 2; excludeStableKeys removes but does not renumber; lint flags `MutationCore.Active(1) and X`, `X or MutationCore.Active(2)`, `Foo(MutationCore.Active(3))` and accepts a valid case block." },
+      { "n": 2, "do": "Create the five golden cases. For 01-04 write small input .al files (with an app.json) and hand-write expected/aut-schemata output and expected/mutants.json from §6.4.7-8. For 05, `input/` is a copy of fixtures/fixture-aut (copy the files into the case folder so the golden case is self-contained) and expected/mutants.json lists the 26 mutants of §6.3.3 (ids 1..26 in spec order, operator, procedure, original, mutated); the expected schemata files for 05 are hand-written as well." },
+      { "n": 3, "do": "Write golden.test.ts: for each case run generate() into a temp dir and compare every file byte-for-byte with expected/; on mismatch print a unified diff of the first differing file." },
+      { "n": 4, "do": "Implement manifest.ts, generate.ts (copy all files except .alpackages/, *.app, .snapshots/; patch app.json per §6.4.9; run lint on output and throw on findings), lint.ts, cli.ts (argument parsing by hand, no deps; exit codes 0/1/2)." },
+      { "n": 5, "do": "Run to green.", "run": "cd generator; npm test", "expect": "all pass" },
+      { "n": 6, "do": "Smoke the CLI on the fixture.", "run": "node generator/dist/src/cli.js generate --aut fixtures/fixture-aut --out out/gen-smoke --core-app-id 6f1d2c3a-8b4e-4d5f-9a6b-7c8d9e0f1a2b --core-app-version 1.0.0.0; node generator/dist/src/cli.js lint --schemata out/gen-smoke/aut-schemata", "expect": "26 mutants in out/gen-smoke/mutants.json; lint exit 0" },
+      { "n": 7, "do": "Commit.", "run": "git add generator fixtures/generator; git commit -m \"feat(generator): manifest, sampling, pipeline, CLI, lint and golden cases\"" }
+    ],
+    "acceptance": ["All golden cases pass byte-for-byte.", "Case 05 yields exactly the 26 mutants of §6.3.3.", "Running generate twice yields identical output (test asserts)."],
+    "commit": "feat(generator): manifest, sampling, pipeline, CLI, lint and golden cases",
+    "guardrails": ["Expected files are hand-written from the spec; do not copy program output into expected/."]
+  },
+  {
+    "id": "T22",
+    "title": "Generator acceptance: fixture schemata compiles and is behaviour-preserving when inactive",
+    "wave": 6,
+    "dependsOn": ["T21", "T04", "T06", "T11"],
+    "model": "sonnet",
+    "specSections": ["§6.4.11 acceptance", "§8 orchestrator acceptance item 4", "§6.5.4 step 5"],
+    "files": { "create": [], "modify": ["docs/spike-baseline.md"], "readOnly": [] },
+    "interfaces": { "consumes": ["CLI generate", "Publish-MutAppFile / strategy from T11"], "produces": ["Evidence rows in docs/spike-baseline.md §Schemata: compileSec, publishSec, inactive suite pass"] },
+    "steps": [
+      { "n": 1, "do": "Generate into out/gen-fixture (same command as T21 step 6, plus `--aut-version` if publishStrategy is bump-build)." },
+      { "n": 2, "do": "Compile the schemata.", "run": ".tools/continia.exe compile out/gen-fixture/aut-schemata --json --no-raw-output", "expect": "error count 0. If not: paste every diagnostic into docs/issues.md and stop — this is a generator bug to fix in T20/T21, not here." },
+      { "n": 3, "do": "Publish per schemata.publishStrategy (use the backend functions from a short inline PowerShell), then PATCH mutationSetup activeMutantId 0 and run codeunit 50300.", "expect": "9/9 pass" },
+      { "n": 4, "do": "Activate one mutant by hand to prove the guard works: PATCH activeMutantId to the id of the IsLargeOrder COND→false mutant (look it up in out/gen-fixture/mutants.json), run 50300, expect IsLargeOrder_Twelve_IsTrue to fail; PATCH back to 0." },
+      { "n": 5, "do": "Record rows and commit.", "run": "git add docs/spike-baseline.md; git commit -m \"test(generator): fixture schemata compiles and passes inactive; guard verified live\"" }
+    ],
+    "acceptance": ["Schemata compiles with zero errors.", "Inactive run 9/9.", "Activated COND→false mutant is killed by IsLargeOrder_Twelve_IsTrue."],
+    "commit": "test(generator): fixture schemata compiles and passes inactive; guard verified live",
+    "guardrails": ["Reset activeMutantId to 0 before finishing."]
+  },
+  {
+    "id": "T23",
+    "title": "Orchestrator: config loading, validation, Docker stub",
+    "wave": 4,
+    "dependsOn": ["T02"],
+    "model": "sonnet",
+    "specSections": ["§6.5.1", "§6.5.3 (Docker.psm1)", "§4 items 2 and 6"],
+    "files": { "create": ["orchestrator/lib/Config.psm1", "orchestrator/tests/Config.Tests.ps1", "orchestrator/backends/Docker.psm1"], "modify": [], "readOnly": [] },
+    "interfaces": { "consumes": [], "produces": ["Get-MutConfig([string]$Path) -> PSCustomObject with all §6.5.1 keys, relative paths resolved to absolute against the repo root, throws on missing keys or environmentName not matching ^mut-", "Get-MutRepoRoot() -> string", "Docker.psm1 exporting every §6.5.3 function name, each throwing NotImplementedException"] },
+    "steps": [
+      { "n": 1, "do": "Write failing tests: valid file loads and resolves coreApp.path to an absolute path; missing `backend` throws naming the key; environmentName 'spike' throws; rulesets null is allowed; Docker functions throw NotImplementedException." },
+      { "n": 2, "do": "Implement. Run to green. Commit.", "run": "powershell -NoProfile -Command \"Import-Module Pester -MinimumVersion 5.0 -MaximumVersion 5.99; Invoke-Pester orchestrator/tests -Output Detailed\"; git add orchestrator; git commit -m \"feat(orchestrator): config loading and Docker backend stub\"" }
+    ],
+    "acceptance": ["Tests pass.", "Config.psm1 contains none of the strings continia, docker, BcContainerHelper (case-insensitive)."],
+    "commit": "feat(orchestrator): config loading and Docker backend stub",
+    "guardrails": []
+  },
+  {
+    "id": "T24",
+    "title": "Orchestrator: reference map, coverage parser, covering-test selection",
+    "wave": 4,
+    "dependsOn": ["T12", "T23"],
+    "model": "sonnet",
+    "specSections": ["§6.5.5", "§7.2", "F8", "U9"],
+    "files": { "create": ["orchestrator/lib/References.psm1", "orchestrator/lib/Coverage.psm1", "orchestrator/tests/References.Tests.ps1", "orchestrator/tests/Coverage.Tests.ps1"], "modify": ["orchestrator/backends/DemoPortal.psm1"], "readOnly": ["fixtures/coverage/sample.csv"] },
+    "interfaces": { "consumes": ["Get-MutCoverageRaw from T08"], "produces": ["Get-MutReferenceMap([string]$AutPath, [string]$TestAppPath) -> hashtable objectId -> int[] testCodeunitIds", "ConvertFrom-MutCoverageCsv([string]$Csv) -> [pscustomobject[]] {ObjectType;ObjectId;LineNo;Hits}", "Get-MutCoveringTests($Mutant, $Coverage, $References, [int[]]$TestCodeunits) -> int[]", "Get-MutCoverage($Env, [string[]]$JobIds) in DemoPortal.psm1 now returns parsed rows (finishes T08)"] },
+    "steps": [
+      { "n": 1, "do": "Write failing tests: reference map from a temp AUT with two codeunits and a temp test app whose one test codeunit references one of them by `Codeunit \"…\"` and the other by `Codeunit::\"…\"` → both mapped; coverage parser parses fixtures/coverage/sample.csv using header names and throws on a CSV with unknown headers; Get-MutCoveringTests prefers coverage rows with Hits > 0, falls back to references, else empty." },
+      { "n": 2, "do": "If fixtures/coverage/sample.csv does not exist (U9 said unavailable), the parser tests use an inline CSV with the header line documented in §U9 or, if none, the conventional BC Code Coverage export headers `Object Type,Object ID,Line No.,No. of Hits,Line` and this is recorded in docs/issues.md as an assumption." },
+      { "n": 3, "do": "Implement; wire Get-MutCoverage in DemoPortal.psm1 to call ConvertFrom-MutCoverageCsv (import Coverage.psm1 from the backend). Run to green. Commit.", "run": "powershell -NoProfile -Command \"Import-Module Pester -MinimumVersion 5.0 -MaximumVersion 5.99; Invoke-Pester orchestrator/tests -Output Detailed\"; git add orchestrator; git commit -m \"feat(orchestrator): reference map, coverage parsing and covering-test selection\"" }
+    ],
+    "acceptance": ["Tests pass.", "Parser uses header names, not positions."],
+    "commit": "feat(orchestrator): reference map, coverage parsing and covering-test selection",
+    "guardrails": []
+  },
+  {
+    "id": "T25",
+    "title": "Orchestrator: Build-Schemata with the compile-error loop",
+    "wave": 5,
+    "dependsOn": ["T21", "T08", "T23"],
+    "model": "sonnet",
+    "specSections": ["§6.5.4 step 4", "§6.4.9"],
+    "files": { "create": ["orchestrator/lib/Schemata.psm1", "orchestrator/tests/Schemata.Tests.ps1"], "modify": [], "readOnly": [] },
+    "interfaces": { "consumes": ["Compile-MutApp (mocked in tests)", "generator CLI (invoked via a private Invoke-MutGenerator function that is the mock point; it calls `node <repo>/generator/dist/src/cli.js generate …`)"], "produces": ["Build-MutSchemata($Config, $Env, [string]$RunDir, [int]$RunNo) -> [pscustomobject]@{SchemataPath;AppFile;Mutants;CompileErrorIds;Iterations}"] },
+    "steps": [
+      { "n": 1, "do": "Write failing tests: with Compile-MutApp mocked to fail once with a diagnostic at file F line 12 where linemap.json maps lines 10-15 to ids [4,5], then succeed → CompileErrorIds = 4,5, Iterations = 2, exclude.json contains their stable keys, generator invoked twice (second time with --exclude-stable-keys); a diagnostic with no mapped block throws; more than 10 iterations throws." },
+      { "n": 2, "do": "Implement. Generator flags come from $Config.generator (maxMutants, seed, onlyObjects, operators, includeBreak) and --aut-version when publishStrategy is bump-build (increment the 4th version component of $Config.aut.version)." },
+      { "n": 3, "do": "Run to green. Commit.", "run": "powershell -NoProfile -Command \"Import-Module Pester -MinimumVersion 5.0 -MaximumVersion 5.99; Invoke-Pester orchestrator/tests -Output Detailed\"; git add orchestrator; git commit -m \"feat(orchestrator): Build-Schemata with compile-error mutant elimination\"" }
+    ],
+    "acceptance": ["Tests pass.", "No `continia` string in Schemata.psm1 (node is fine)."],
+    "commit": "feat(orchestrator): Build-Schemata with compile-error mutant elimination",
+    "guardrails": []
+  },
+  {
+    "id": "T26",
+    "title": "Orchestrator: mutant loop with timeout, results export and summary",
+    "wave": 5,
+    "dependsOn": ["T07", "T08", "T23", "T24"],
+    "model": "sonnet",
+    "specSections": ["§6.5.6", "§7.3", "§7.5", "§5"],
+    "files": { "create": ["orchestrator/lib/MutantLoop.psm1", "orchestrator/lib/Results.psm1", "orchestrator/tests/MutantLoop.Tests.ps1", "orchestrator/tests/Results.Tests.ps1"], "modify": [], "readOnly": [] },
+    "interfaces": { "consumes": ["Invoke-MutApi, Invoke-MutTests, Reset-MutEnvironment (mocked)", "Get-MutCoveringTests"], "produces": ["Invoke-MutMutantLoop($Config, $Env, $Mutants, $Baseline, $Coverage, $References, [int]$RunNo, [string]$RunDir) -> [pscustomobject[]] results {Id;Status;KillingTest;DurationMs;CoveringTests}", "Get-MutTimeoutBudget($Config, [int[]]$CoveringTests, $Baseline) -> int seconds", "Export-MutResults([int]$RunNo, $Config, $Env, $Mutants, $Results, [string]$OutDir) -> paths of results/<RunNo>.json and results/<RunNo>-summary.md", "Get-MutScore($Totals) -> decimal"] },
+    "steps": [
+      { "n": 1, "do": "Write failing tests: budget = max(minSeconds, factor × sum of baseline durations + overhead × count); a mutant with no covering tests → Uncovered without calling Invoke-MutTests; failed test with no API row → POST Killed with killingTest 'Codeunit:Function'; all pass → POST Survived; a job exceeding the budget (mock Invoke-MutTests with Start-Sleep 5 and budget 1) → Stop-Job, Reset-MutEnvironment called once, status Timeout; activeMutantId PATCHed to id before and 0 after every mutant (assert order); results.jsonl gets one line per mutant; score formula with the §7.3 example totals = 0.7692; summary.md contains the Survivors table." },
+      { "n": 2, "do": "Implement. The Start-Job script block receives the backend module path, $Env, $Targets, timeout and config path; it imports the module and calls Invoke-MutTests, returning the result object." },
+      { "n": 3, "do": "Run to green. Commit.", "run": "powershell -NoProfile -Command \"Import-Module Pester -MinimumVersion 5.0 -MaximumVersion 5.99; Invoke-Pester orchestrator/tests -Output Detailed\"; git add orchestrator; git commit -m \"feat(orchestrator): mutant loop with wall-clock timeout, results export and summary\"" }
+    ],
+    "acceptance": ["Tests pass including the real Start-Job timeout test.", "No backend strings in lib/."],
+    "commit": "feat(orchestrator): mutant loop with wall-clock timeout, results export and summary",
+    "guardrails": []
+  },
+  {
+    "id": "T27",
+    "title": "Orchestrator: Invoke-MutationRun.ps1 wiring, isolation lint, fixture end-to-end acceptance",
+    "wave": 6,
+    "dependsOn": ["T22", "T25", "T26"],
+    "model": "sonnet",
+    "specSections": ["§6.5.4", "§8 orchestrator acceptance", "§7.4"],
+    "files": { "create": ["orchestrator/Invoke-MutationRun.ps1", "orchestrator/lib/Run.psm1", "orchestrator/tests/Isolation.Tests.ps1", "orchestrator/tests/ExpectedResults.Tests.ps1", "fixtures/expected-results.json", "results/1.json", "results/1-summary.md"], "modify": ["docs/spike-baseline.md"], "readOnly": [] },
+    "interfaces": { "consumes": ["every lib and backend function"], "produces": ["Invoke-MutationRun.ps1 -ConfigPath <file> [-RunNo N] [-SkipEnvironment] [-SkipBaseline]", "Compare-MutExpectedResults([string]$ResultsPath, [string]$ExpectedPath) -> [pscustomobject[]] mismatches"] },
+    "steps": [
+      { "n": 1, "do": "Write fixtures/expected-results.json by hand from §6.3.3 (26 entries, §7.4 format)." },
+      { "n": 2, "do": "Write Isolation.Tests.ps1: Select-String over Invoke-MutationRun.ps1 and lib/*.psm1 for continia|BcContainerHelper|docker (case-insensitive) must return nothing. Write ExpectedResults.Tests.ps1 for Compare-MutExpectedResults with a small inline results object (one match, one mismatch, one Timeout-or-Killed tolerance)." },
+      { "n": 3, "do": "Implement Run.psm1 (the nine step functions of §6.5.4 composed from the libs; each step writes a marker file `<RunDir>/<step>.done` and skips when present) and Invoke-MutationRun.ps1 (parameters, Import-Module of libs and of the backend named in config, calls the steps, prints the summary path)." },
+      { "n": 4, "do": "Run the fixture end to end.", "run": "powershell -NoProfile -File orchestrator/Invoke-MutationRun.ps1 -ConfigPath mutation.fixture.config.json -RunNo 1", "expect": "results/1.json and results/1-summary.md" },
+      { "n": 5, "do": "Compare.", "run": "powershell -NoProfile -Command \"Import-Module ./orchestrator/lib/Results.psm1; Compare-MutExpectedResults results/1.json fixtures/expected-results.json\"", "expect": "no mismatches (Timeout entries may be Killed if U5 says so; record which)" },
+      { "n": 6, "do": "Compile-error acceptance: set generator.includeBreak true in a copy of the fixture config (out/fixture-break.config.json), run with -RunNo 2, assert every BREAK mutant is CompileError and the run completed; do not commit results/2.*." },
+      { "n": 7, "do": "Record wall-clock and outcome in docs/spike-baseline.md §Fixture run. Commit.", "run": "git add orchestrator fixtures/expected-results.json results/1.json results/1-summary.md docs/spike-baseline.md; git commit -m \"feat(orchestrator): end-to-end run script; fixture acceptance passed\"" }
+    ],
+    "acceptance": ["Isolation test passes.", "26/26 expected statuses match (with the documented Timeout/Killed tolerance).", "BREAK run completes with all BREAK mutants CompileError.", "Inactive schemata run passes 9/9 (step 5 of the run aborts otherwise)."],
+    "commit": "feat(orchestrator): end-to-end run script; fixture acceptance passed",
+    "guardrails": ["If step 3 (baseline) or step 5 (inactive schemata) fails, stop and report; do not weaken the abort."]
+  },
+  {
+    "id": "T28",
+    "title": "Tier B mutation run on the Authentication slice (AUT codeunit 72918635)",
+    "wave": 7,
+    "dependsOn": ["T27", "T13"],
+    "model": "sonnet",
+    "specSections": ["§1.1", "§8 Tier B acceptance", "§7.5"],
+    "files": { "create": ["results/3.json", "results/3-summary.md"], "modify": ["docs/spike-baseline.md"], "readOnly": [] },
+    "interfaces": { "consumes": ["Invoke-MutationRun.ps1"], "produces": ["First real mutation score and survivor list for codeunits 72918635, 72918690, 72918691"] },
+    "steps": [
+      { "n": 1, "do": "Run with the Tier B config (onlyObjects already set).", "run": "powershell -NoProfile -File orchestrator/Invoke-MutationRun.ps1 -ConfigPath mutation.config.json -RunNo 3", "expect": "completes; expect roughly (mutant count × per-mutant seconds from U7)" },
+      { "n": 2, "do": "Cross-check: for each HM01-HM20 find the generator mutant with the same file, line and mutated text in results/3.json; record agreement/disagreement in docs/spike-baseline.md §Tier B run." },
+      { "n": 3, "do": "Commit results and notes.", "run": "git add results/3.json results/3-summary.md docs/spike-baseline.md; git commit -m \"results: first Tier B mutation run on the Authentication slice\"" }
+    ],
+    "acceptance": ["results/3-summary.md lists score, survivors, timeouts, compile errors, wall-clock.", "Hand-mutant cross-check table filled."],
+    "commit": "results: first Tier B mutation run on the Authentication slice",
+    "guardrails": ["Environment must still be mut-spike-01; the run must not create a second environment while keepEnvironment is true."]
+  },
+  {
+    "id": "T29",
+    "title": "Gate G1: full 181-codeunit baseline with coverage (blocked until human 'go')",
+    "wave": 8,
+    "dependsOn": ["T14", "T28"],
+    "model": "sonnet",
+    "specSections": ["§1.1 Gate G1", "§8", "U2"],
+    "files": { "create": ["spikes/gate-g1/Invoke-FullBaseline.ps1"], "modify": ["docs/spike-baseline.md", "mutation.config.json"], "readOnly": [] },
+    "interfaces": { "consumes": ["Everything"], "produces": ["Full baseline pass/fail table, coverage.json for all 181 codeunits, U2 median, updated generator.maxMutants default"] },
+    "steps": [
+      { "n": 1, "do": "Precondition check: docs/spike-baseline.md §Recommendation contains the word `go` without the DRAFT marker. If not, stop and report 'blocked on G0'." },
+      { "n": 2, "do": "Write Invoke-FullBaseline.ps1: enumerate all test codeunit ids in out/test-app (Subtype = Test), run Invoke-MutTests over all of them with -Coverage, save baseline-full.json and coverage-full.json under out/, compute for each AUT codeunit id the fraction of test codeunits covering it and the median." },
+      { "n": 3, "do": "Run it (hours). Record per-codeunit pass/fail, total wall-clock, U2 median in docs/spike-baseline.md. If any test fails, list them; the owning team must fix before the first full mutation run." },
+      { "n": 4, "do": "Set generator.maxMutants in mutation.config.json from the U2/U7 numbers so one run fits in 8 hours, remove generator.onlyObjects (set to []), and commit.", "run": "git add spikes docs/spike-baseline.md mutation.config.json; git commit -m \"gate(g1): full baseline, U2 median and sampling default\"" }
+    ],
+    "acceptance": ["Baseline table complete for 181 codeunits.", "U2 median recorded.", "maxMutants set with the calculation shown."],
+    "commit": "gate(g1): full baseline, U2 median and sampling default",
+    "guardrails": ["Do not start before the human go.", "Sequential jobs only."]
+  }
+]
