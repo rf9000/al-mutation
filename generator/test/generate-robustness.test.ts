@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { generate, rewriteAndVerify } from '../src/generate.js';
+import { generate, rewriteAndVerify as realRewriteAndVerify } from '../src/generate.js';
 import type { GenerateOptions } from '../src/generate.js';
 import { OPERATOR_ORDER } from '../src/operators/index.js';
 import { tokenize } from '../src/tokenizer.js';
@@ -151,7 +151,7 @@ test('rewriteAndVerify: overlapping candidates are turned into a skipReason, not
     target: { kind: 'statement', stmt: overlappingStmt },
   };
 
-  const outcome = rewriteAndVerify(source, [condCandidate, overlappingCandidate]);
+  const outcome = realRewriteAndVerify(source, [condCandidate, overlappingCandidate]);
   assert.ok('skipReason' in outcome, 'expected a skipReason, not a successful rewrite');
   assert.match((outcome as { skipReason: string }).skipReason, /^overlapping-candidates: /);
 });
@@ -191,29 +191,75 @@ test('rewriteAndVerify: a deliberately corrupt mutated replacement fails the re-
     occurrence: 0,
   };
 
-  const outcome = rewriteAndVerify(source, [corruptCandidate]);
+  const outcome = realRewriteAndVerify(source, [corruptCandidate]);
   assert.ok('skipReason' in outcome, 'expected a skipReason, not a successful rewrite');
   assert.match((outcome as { skipReason: string }).skipReason, /^rewrite-verification-failed: /);
 });
 
-test('generate(): a file whose mutants fail rewriteAndVerify is skipped and copied unmutated, run continues (B2)', () => {
+const GOOD_CODEUNIT_2 = `codeunit 50214 "Good2 Cu"
+{
+    Access = Public;
+    var
+        Result: Boolean;
+
+    procedure Check2(Amount: Decimal; IsTrusted: Boolean)
+    begin
+        if (Amount > 1000) and (not IsTrusted) then
+            Result := true;
+    end;
+}
+`;
+
+test('generate(): a file whose mutants fail rewriteAndVerify is skipped, copied unmutated, excluded from mutants.json, and the run continues (B2, review follow-up)', () => {
+  // Fix round 1 (review): the previous version of this test only asserted the HAPPY path (a good
+  // file got mutated) and passed even with the entire skip/copy/exclude block deleted -- it never
+  // actually forced generate()'s failure branch to run. No current operator can make a real
+  // file's candidates trip rewriteAndVerify's checks (B2/B2b are invariant-enforcement, not a
+  // live bug), so this exercises generate()'s own skip/copy/mutants.json-exclusion logic
+  // end-to-end via the GenerateDeps test seam, forcing failure for exactly one of two files.
   const autDir = tmpDir();
   fs.writeFileSync(path.join(autDir, 'app.json'), APP_JSON, 'utf8');
   fs.mkdirSync(path.join(autDir, 'src'));
   fs.writeFileSync(path.join(autDir, 'src', 'Good.Codeunit.al'), GOOD_CODEUNIT, 'utf8');
+  fs.writeFileSync(path.join(autDir, 'src', 'Good2.Codeunit.al'), GOOD_CODEUNIT_2, 'utf8');
 
   const outDir = tmpDir();
-  const result = generate(baseOptions(autDir, outDir));
+  const forcedReason = 'overlapping-candidates: forced failure for test (review follow-up)';
+  const result = generate(baseOptions(autDir, outDir), {
+    rewriteAndVerify: (source, mutants) => {
+      if (mutants.some((m) => m.objectId === 50210)) {
+        return { skipReason: forcedReason };
+      }
+      return realRewriteAndVerify(source, mutants);
+    },
+  });
 
-  // Sanity: the good file still produced its mutants under normal (non-corrupt) conditions.
-  assert.ok(result.mutants.length > 0);
+  // A skip entry was recorded for the forced file, naming it and the reason.
+  const forcedSkip = result.skipped.find((s) => s.file === 'src/Good.Codeunit.al');
+  assert.ok(forcedSkip !== undefined, 'expected a skipped.json entry for the forced-failure file');
+  assert.equal(forcedSkip!.reason, forcedReason);
 
-  // The copied file (no corruption injected here) is byte-identical -- this test only asserts
-  // that the pipeline plumbs rewriteAndVerify's success path through unchanged; the failure
-  // path itself is exercised directly against rewriteAndVerify above (B2/B2b), since no current
-  // operator can produce a genuinely corrupt or overlapping rewrite through the real pipeline.
+  // Its mutants are absent from the manifest (their ids stay reserved, never renumbered).
+  assert.ok(
+    result.mutants.every((m) => m.file !== 'src/Good.Codeunit.al'),
+    'the forced-failure file\'s mutants must not appear in mutants.json',
+  );
+
+  // The forced-failure file is copied through byte-identical (unmutated), not left corrupt or missing.
   const copiedGood = fs.readFileSync(path.join(outDir, 'aut-schemata', 'src', 'Good.Codeunit.al'), 'utf8');
-  assert.notEqual(copiedGood, GOOD_CODEUNIT, 'the good file should have been mutated, not copied verbatim');
+  assert.equal(copiedGood, GOOD_CODEUNIT);
+
+  // The run continued: the OTHER file still got mutated normally.
+  const mutatedGood2 = result.mutants.filter((m) => m.file === 'src/Good2.Codeunit.al');
+  assert.ok(mutatedGood2.length > 0, 'expected the second file to still be mutated after the first failed');
+  const copiedGood2 = fs.readFileSync(path.join(outDir, 'aut-schemata', 'src', 'Good2.Codeunit.al'), 'utf8');
+  assert.notEqual(copiedGood2, GOOD_CODEUNIT_2, 'the second file should have been mutated, not copied verbatim');
+
+  // skipped.json / mutants.json on disk agree with the in-memory result.
+  const skippedOnDisk = JSON.parse(fs.readFileSync(path.join(outDir, 'skipped.json'), 'utf8')) as unknown[];
+  assert.deepEqual(skippedOnDisk, result.skipped);
+  const mutantsOnDisk = JSON.parse(fs.readFileSync(path.join(outDir, 'mutants.json'), 'utf8')) as unknown[];
+  assert.equal(mutantsOnDisk.length, result.mutants.length);
 });
 
 // --- BOM: a leading UTF-8 BOM must not make the whole file drop as a tokenize-error. ---
