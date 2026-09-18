@@ -60,31 +60,42 @@ Describe 'Get-MutScore' {
         Get-MutScore -Totals $totals | Should -Be 0.7692
     }
 
-    It 'returns 0 when the denominator is zero' {
+    It 'returns $null (not 0) when the denominator is zero (review fix round 1: 0.0 is indistinguishable in JSON from "the suite killed nothing")' {
         $totals = [pscustomobject]@{
             total = 2; killed = 0; survived = 0; timeout = 0
             compileError = 1; uncovered = 0; equivalent = 1
         }
 
-        Get-MutScore -Totals $totals | Should -Be 0
+        Get-MutScore -Totals $totals | Should -BeNullOrEmpty
+        $null -eq (Get-MutScore -Totals $totals) | Should -Be $true
     }
 
-    It 'returns 0 when the denominator is negative' {
+    It 'returns $null (not 0) when the denominator is negative' {
         $totals = [pscustomobject]@{
             total = 1; killed = 0; survived = 0; timeout = 0
             compileError = 1; uncovered = 0; equivalent = 1
         }
 
-        Get-MutScore -Totals $totals | Should -Be 0
+        $null -eq (Get-MutScore -Totals $totals) | Should -Be $true
     }
 
-    It 'returns 0 when total is 0' {
+    It 'returns $null (not 0) when total is 0' {
         $totals = [pscustomobject]@{
             total = 0; killed = 0; survived = 0; timeout = 0
             compileError = 0; uncovered = 0; equivalent = 0
         }
 
-        Get-MutScore -Totals $totals | Should -Be 0
+        $null -eq (Get-MutScore -Totals $totals) | Should -Be $true
+    }
+
+    It 'returns $null (not 0) when every mutant errored (denominator collapses to 0 via the error exclusion itself)' {
+        $totals = [pscustomobject]@{
+            total = 5; killed = 0; survived = 0; timeout = 0
+            compileError = 0; uncovered = 0; equivalent = 0
+            error = 5; pending = 0
+        }
+
+        $null -eq (Get-MutScore -Totals $totals) | Should -Be $true
     }
 
     It 'excludes error and pending from the denominator alongside equivalent and compileError' {
@@ -268,6 +279,26 @@ Describe 'Export-MutResults' {
         $summary = Get-Content -Path $paths.SummaryPath -Raw
         $summary | Should -Match '## Errors'
         $summary | Should -Match 'ErroredOne'
+    }
+
+    It 'writes score as JSON null (not 0.0), and Get-MutScore returns $null, when every mutant is Error (the denominator collapses to 0)' {
+        $mutants = @(
+            New-MutTestMutant -Id 1 -Procedure 'ErroredOne'
+            New-MutTestMutant -Id 2 -Procedure 'ErroredTwo'
+        )
+        $results = @(
+            [pscustomobject]@{ Id = 1; Status = 'Error'; KillingTest = $null; DurationMs = $null; CoveringTests = @(); Error = 'API call timed out' }
+            [pscustomobject]@{ Id = 2; Status = 'Error'; KillingTest = $null; DurationMs = $null; CoveringTests = @(); Error = 'API call timed out' }
+        )
+
+        $paths = Export-MutResults -RunNo 7 -Config $script:Config -Env $script:EnvHandle -Mutants $mutants -Results $results `
+            -OutDir $script:OutDir -StartedUtc (Get-Date) -FinishedUtc (Get-Date) -CompileErrorIds @()
+
+        $json = Get-Content -Path $paths.ResultsPath -Raw | ConvertFrom-Json
+        ($null -eq $json.score) | Should -Be $true
+
+        $rawJsonText = Get-Content -Path $paths.ResultsPath -Raw
+        $rawJsonText | Should -Match '"score":\s*null'
     }
 
     It 'throws when a result row carries an unrecognized status, instead of silently exporting it' {

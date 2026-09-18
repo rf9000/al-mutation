@@ -37,7 +37,14 @@ function Get-MutScore {
     <#
         .SYNOPSIS
         §7.3 score formula: (killed + timeout) / (total - equivalent - compileError), rounded
-        to 4 decimal places. Returns 0 when the denominator is not positive.
+        to 4 decimal places. Returns $null (serialized as JSON `null`, per the amended §7.3)
+        when the denominator is not positive -- e.g. every mutant errored, or
+        equivalent+compileError+error+pending together account for the whole run -- rather
+        than 0. `0.0` and "no mutants could contribute a score" are different facts: the
+        former reads as "the suite killed nothing" to anyone (or anything) reading
+        results/<RunNo>.json, silently defeating the very reasoning documented below for
+        excluding Error/Pending from the denominator in the first place. A human reading a
+        Write-Warning can currently tell the difference; a machine parsing the JSON cannot.
 
         Error and Pending are ALSO excluded from the denominator, alongside Equivalent and
         CompileError: an `Error` mutant recorded an infrastructure failure (a timed-out API
@@ -55,7 +62,7 @@ function Get-MutScore {
         (int-like properties; §7.3 totals shape plus the error/pending counts this task adds).
 
         .OUTPUTS
-        [double] rounded to 4 decimal places (0 when the denominator <= 0).
+        [double], or $null when the denominator <= 0 (rounded to 4 decimal places otherwise).
     #>
     param(
         [Parameter(Mandatory = $true)]
@@ -73,7 +80,7 @@ function Get-MutScore {
 
     $denominator = [double]$Totals.total - [double]$Totals.equivalent - [double]$Totals.compileError - [double]$errorCount - [double]$pendingCount
     if ($denominator -le 0) {
-        return 0
+        return $null
     }
 
     $numerator = [double]$Totals.killed + [double]$Totals.timeout
@@ -226,7 +233,11 @@ function Get-MutSummaryMarkdown {
         [string]$WallClock,
         [Parameter(Mandatory = $true)]
         $Totals,
+        # $null is a valid, meaningful value here (review fix round 1: Get-MutScore returns
+        # $null, not 0, when the denominator is not positive) -- AllowNull so Mandatory binding
+        # does not reject it.
         [Parameter(Mandatory = $true)]
+        [AllowNull()]
         $Score,
         [Parameter(Mandatory = $true)]
         [object[]]$MergedRows
