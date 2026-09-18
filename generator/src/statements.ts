@@ -87,6 +87,13 @@ function findStatementStarts(tokens: readonly Token[], span: ProcedureSpan): num
         }
       } else if (tok.text === ';' && parenDepth === 0) {
         mark(i);
+        // Fix round 2 (review): a ternary can never span a depth-0 `;` (an unmatched `?` before
+        // it is stray/uncompilable AL, not a real ternary reaching past this statement), so this
+        // reset is a free cap on damage layered on top of self-balancing, not an alternative to
+        // it -- self-balancing keeps a ternary from leaking past `else`/`end`/`until` (round 1);
+        // this reset keeps a genuinely unmatched `?` from leaking past `;` and poisoning every
+        // following statement in the procedure instead of just corrupting its own.
+        ternaryPending[0] = 0;
       }
       continue;
     }

@@ -557,6 +557,179 @@ test('findSimpleStatements: a ternary outside a case block (statement ends at "e
   }
 });
 
+// --- Fix round 2 (review): the depth-0 `;` reset on ternaryPending[0] is a free cap on damage,
+// complementary to round 1's self-balancing, not an alternative to it. A ternary can never span a
+// depth-0 `;` -- an unmatched `?` reaching one is stray/uncompilable AL, not a real ternary -- so
+// without the reset, one stray `?` poisons every FOLLOWING statement in the procedure (not just
+// its own), because the credit is only ever spent, never capped, until some later `:` consumes it.
+
+test('findSimpleStatements: a stray unmatched "?" does not poison every later statement in the procedure (round 2)', () => {
+  // Exact repro from review round 2: `y := y ? 1;` is not compilable AL (a real ternary needs its
+  // own `:`), but the bookkeeping must still cap its damage to its own statement -- not leak into
+  // the case block that follows and silently un-mark branch `1:`'s statement start.
+  const source = [
+    'codeunit 50916 "P5m Cu"',
+    '{',
+    '    procedure N_StrayQuestion(y: Integer)',
+    '    var',
+    '        Other: Record "Probe Tbl";',
+    '    begin',
+    '        y := y ? 1;',
+    '        case y of',
+    '            1:',
+    '                Other.Insert(true);',
+    '            2:',
+    '                Other.Modify(true);',
+    '        end;',
+    '    end;',
+    '}',
+    '',
+  ].join('\n');
+  const { tokens, span } = oneProcedure(source);
+  const statements = findSimpleStatements(tokens, span);
+
+  const texts = statements.map((s) => textOf(tokens, s.startIdx, s.endIdx));
+  assert.deepEqual(texts, ['y := y ? 1', 'Other . Insert ( true )', 'Other . Modify ( true )']);
+  for (let i = 1; i < statements.length; i++) {
+    assert.ok(statements[i - 1]!.endIdx < statements[i]!.startIdx, 'statement spans must not overlap');
+  }
+});
+
+// --- Round 2 coverage: the other two terminators that legally omit ';' (repeat/until, and a
+// case's own else), which round 1's else/end tests did not exercise. Self-balancing already
+// resolves a ternary's own `?`/`:` pair inline (before any terminator is reached), so these are
+// expected to already pass -- added as regression coverage, per the reviewer's request, not
+// because a live bug was found in these specific shapes.
+
+test('findSimpleStatements: a ternary in repeat...until followed by a case does not swallow the branch label (round 2 coverage)', () => {
+  const source = [
+    'codeunit 50917 "P5n Cu"',
+    '{',
+    '    procedure T3(b: Boolean; c: Boolean; y: Integer)',
+    '    var',
+    '        FxRec: Record "Probe Tbl";',
+    '    begin',
+    '        repeat',
+    '            y := c ? 1 : 2',
+    '        until b;',
+    '        case y of',
+    '            1:',
+    '                FxRec.Insert(true);',
+    '            2:',
+    '                FxRec.Modify(true);',
+    '        end;',
+    '    end;',
+    '}',
+    '',
+  ].join('\n');
+  const { tokens, span } = oneProcedure(source);
+  const statements = findSimpleStatements(tokens, span);
+
+  const texts = statements.map((s) => textOf(tokens, s.startIdx, s.endIdx));
+  assert.deepEqual(texts, ['y := c ? 1 : 2', 'FxRec . Insert ( true )', 'FxRec . Modify ( true )']);
+  for (let i = 1; i < statements.length; i++) {
+    assert.ok(statements[i - 1]!.endIdx < statements[i]!.startIdx, 'statement spans must not overlap');
+  }
+});
+
+test('findSimpleStatements: a ternary as a case branch\'s last statement with no ";" before the case\'s "else" (round 2 coverage)', () => {
+  const source = [
+    'codeunit 50918 "P5o Cu"',
+    '{',
+    '    procedure T4(c: Boolean; y: Integer; z: Integer)',
+    '    var',
+    '        FxRec: Record "Probe Tbl";',
+    '    begin',
+    '        case y of',
+    '            1:',
+    '                z := c ? 1 : 2',
+    '            else',
+    '                FxRec.Insert(true);',
+    '        end;',
+    '    end;',
+    '}',
+    '',
+  ].join('\n');
+  const { tokens, span } = oneProcedure(source);
+  const statements = findSimpleStatements(tokens, span);
+
+  const texts = statements.map((s) => textOf(tokens, s.startIdx, s.endIdx));
+  assert.deepEqual(texts, ['z := c ? 1 : 2', 'FxRec . Insert ( true )']);
+  assert.ok(statements[0]!.endIdx < statements[1]!.startIdx, 'statement spans must not overlap');
+});
+
+test('findSimpleStatements: "?" and ":" inside a string literal or a comment are ignored (round 2 coverage)', () => {
+  const source = [
+    'codeunit 50919 "P5p Cu"',
+    '{',
+    '    procedure T5(y: Integer)',
+    '    var',
+    '        FxRec: Record "Probe Tbl";',
+    '    begin',
+    "        y := StrPos('a?b:c', 'x'); // a comment with ? and :",
+    '        case y of',
+    '            1:',
+    '                FxRec.Insert(true);',
+    '            2:',
+    '                FxRec.Modify(true);',
+    '        end;',
+    '    end;',
+    '}',
+    '',
+  ].join('\n');
+  const { tokens, span } = oneProcedure(source);
+  const statements = findSimpleStatements(tokens, span);
+
+  const texts = statements.map((s) => textOf(tokens, s.startIdx, s.endIdx));
+  assert.deepEqual(texts, [
+    "y := StrPos ( 'a?b:c' , 'x' )",
+    'FxRec . Insert ( true )',
+    'FxRec . Modify ( true )',
+  ]);
+  for (let i = 1; i < statements.length; i++) {
+    assert.ok(statements[i - 1]!.endIdx < statements[i]!.startIdx, 'statement spans must not overlap');
+  }
+});
+
+test('findSimpleStatements: enum, comma-list and range case labels stay safe after a preceding ternary (round 2 coverage)', () => {
+  const source = [
+    'codeunit 50920 "P5q Cu"',
+    '{',
+    '    procedure T6(b: Boolean; c: Boolean; y: Integer; FxRec: Record "Probe Tbl")',
+    '    begin',
+    '        if b then',
+    '            y := c ? 1 : 2',
+    '        else',
+    '            case y of',
+    '                0:',
+    '                    FxRec.Delete(true);',
+    '                1, 2:',
+    '                    FxRec.Insert(true);',
+    '                FxRec."Enum Field"::SomeValue:',
+    '                    FxRec.Modify(true);',
+    '                3 .. 5:',
+    '                    FxRec.Insert(false);',
+    '            end;',
+    '    end;',
+    '}',
+    '',
+  ].join('\n');
+  const { tokens, span } = oneProcedure(source);
+  const statements = findSimpleStatements(tokens, span);
+
+  const texts = statements.map((s) => textOf(tokens, s.startIdx, s.endIdx));
+  assert.deepEqual(texts, [
+    'y := c ? 1 : 2',
+    'FxRec . Delete ( true )',
+    'FxRec . Insert ( true )',
+    'FxRec . Modify ( true )',
+    'FxRec . Insert ( false )',
+  ]);
+  for (let i = 1; i < statements.length; i++) {
+    assert.ok(statements[i - 1]!.endIdx < statements[i]!.startIdx, 'statement spans must not overlap');
+  }
+});
+
 const fixturePath = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
   '../../../fixtures/fixture-aut/src/MUTFxOrderMgt.Codeunit.al',
