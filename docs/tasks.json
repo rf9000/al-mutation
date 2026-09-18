@@ -599,7 +599,7 @@
   },
   {
     "id": "T28",
-    "title": "Tier B mutation run on the three Authentication codeunits",
+    "title": "Tier B mutation run on the Authentication slice (AUT codeunit 72918635)",
     "wave": 7,
     "dependsOn": ["T27", "T13"],
     "model": "sonnet",

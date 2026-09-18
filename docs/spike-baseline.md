@@ -300,7 +300,9 @@ Of the 20 hand mutants in `spikes/hand-mutants/results.json`, 6 are `Drift` (HM0
 the number was captured live before the user directed the project to stay scoped to the one Tier B codeunit
 (see the ledger's M2 entry, 2026-09-17).*
 
-Running the generator with no `--only-objects` filter over the entire real AUT (1,072 `.al` files) produced
+Running the generator with no `--only-objects` filter over the entire real AUT (1,072 `.al` files — the
+later M7/M8 sections say 1,070 because the AUT lost two files between the two measurement dates; same
+kind of upstream drift as the 15,058/15,012 mutant-count drift reconciled below) produced
 **15,058 mutants in ≈90 seconds**. This shows mutant *generation* scales to the whole app without difficulty.
 It does **not** show that compiling or publishing a schemata of that size works: the whole-app schemata compile
 was started and then deliberately stopped by the user before completion, and its scratch output was removed.
@@ -352,8 +354,10 @@ numbers (a single-method job: 9.3s; the whole 13-test codeunit: 10.7s) are too c
 positive, safely-derived "job overhead" by subtraction: if the fixed per-job overhead were, say, 9s, the
 remaining ~0.3s would have to cover all 13 tests' actual execution time, which is implausibly low and would
 turn negative for a slower codeunit — the measurement does not decompose cleanly into "overhead" plus
-"test time." §6.5.6's `perTestFactor` (5×) and `minSeconds` (120, raised from 60 after the fixture-run
-timeout defect in `docs/issues.md`) already carry the safety margin for the timeout budget; adding an
+"test time." §6.5.6's `perTestFactor` (5×) already carries the safety margin for the timeout budget
+(`minSeconds` is **120 in `mutation.fixture.config.json`**, raised from 60 after the fixture-run
+timeout defect in `docs/issues.md`, and **still 60 in `mutation.config.json`** — the Tier B floor was
+never re-tuned, which is safe only because Tier B's baseline is slower than the fixture's); adding an
 unproven subtracted constant on top would only remove margin, not add accuracy.
 
 ## Recommendation (DRAFT — a human decides)
@@ -381,7 +385,9 @@ costs and unproven items below are not part of the rule's own text.
 Run 6 (the current, reproducible measurement — 0 of 157 mutants changed status vs. the pre-scope-fix run 4):
 157 mutants, 62 Killed, 95 Survived, 0 Timeout/CompileError/Uncovered, **score 0.3949**. The hand-mutant
 cross-check (13 of 14 non-drift hand mutants agree with the generator's outcome at the same line) says this
-score is a trustworthy measurement of the real suite, not an artifact of how mutants happen to be generated —
+score is a trustworthy measurement of **this codeunit's slice**, not an artifact of how mutants happen to
+be generated (n = 14, all inside the one codeunit, written by this project — it says nothing about any
+other codeunit) —
 the one disagreement (HM06) is the known, deliberate `else if` operator-coverage gap from SPEC §1.2, not a
 defect (see the Hand-mutant cross-check section above). A 39% kill rate means the existing tests for this one
 codeunit (95155/95179/95191) let roughly 6 in 10 injected faults through undetected — a real, quantified gap
@@ -413,6 +419,34 @@ and have been removed from this list. What remains genuinely open:
 - **The Docker backend** — interface-only stub, throws `NotImplemented`.
 - **A genuinely multi-codeunit mutant *run*, or any second AUT codeunit taken through the full loop** — compile is now proven at whole-project scale (M7/M8), and the pilot proved the full generate→compile→publish→test→record loop end to end, but only for one codeunit (72918635) at a time. Running that full loop across many codeunits, or the whole project, at once has never been attempted — only its compile step has.
 - **The full 181-codeunit baseline (Gate G1)** — unmeasured; blocked until a human writes `go`.
+- **The generator emits invalid AL for case branches with non-numeric labels.** Found in the final
+  pre-merge review and reproduced: in `case <expr> of`, every branch label from the second onward sits at a
+  statement-start position, so a label such as `BLbl:` starts a bogus "simple statement" that runs through
+  the branch body — the two spans overlap, and the rewriter applies edits with no overlap check, emitting
+  `endcase true of` and a duplicated label. The real AUT has **530 overlapping pairs across 98 of 1,070
+  files**. Under the *default* operator set this never corrupts — proven, not assumed: the full-scale build
+  (`out/m8/w-all`, 15,012 mutants, whole AUT) contains zero such artifacts and compiled `success: true,
+  errorCount: 0`, which is why **run 6's score is unaffected**. Under `--include-break` it fires immediately
+  on real code. `--include-break` is a spec'd flag (§6.4.5, §6.4.9) with its own committed config and
+  **cannot currently be run on this AUT**. It is also a plausible partial explanation for run 2's "BREAK
+  collateral CompileError" finding, which was attributed solely to block-granular linemap exclusion.
+- **Guard overhead in hot code — §3's U3 decision rule fired and its mandated mitigation was never
+  applied.** §3 U3 says: if > 2× slowdown, `Active()` becomes a global-variable compare inside the AUT.
+  Measured 22.4× on a synthetic 100k-iteration loop; the mitigation was ruled non-blocking and not
+  implemented. The 0.97× figure on the real suite is evidence that the *pilot's* code is not hot — not
+  that every mutated procedure will be cold.
+- **A compile error condemns every mutant sharing its guard block, not just the offending one.**
+  `linemap.json` is block-granular, not candidate-granular, so any compile error in a shared guard block
+  silently removes its block-mates from the denominator. Measured once, under `--include-break` (run 2: 24
+  CompileError = 15 BREAK + 9 collateral `DEL`/`INSFLAG`). The mechanism is general, not BREAK-specific; the
+  pilot had 0 compile errors, so it never bit — that is luck, not proof.
+- **The restricted test-session identity is still unidentified.** Granting `MUT Core All` to all four
+  enumerable environment users (all already SUPER) changed nothing, so the identity that runs DemoPortal
+  test sessions is none of them. The IsolatedStorage channel routes around it and works, but the underlying
+  mechanism was never established, and §6.1.5b still states a rationale this project disproved.
+- **CRLF source files** — the generator's end-of-line handling has no test coverage at all (zero CRLF bytes
+  in `generator/test/**` or `fixtures/generator/**`). The AUT is 1,023 LF / 46 CRLF / 1 mixed, so the
+  CRLF path has run in production without ever being exercised by a test.
 
 ### DRAFT recommendation
 

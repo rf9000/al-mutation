@@ -6,6 +6,9 @@
 .alpackages/
 out/
 *.app
+# SPEC §6.0/§4.10 allow committing fixture .app files; we deliberately do not, because they are
+# reproducible build output. The un-ignore below is kept so the intent stays visible, and the two
+# lines after it win. No .app file is tracked.
 !fixtures/**/*.app
 fixtures/fixture-aut/*.app
 fixtures/fixture-test/*.app

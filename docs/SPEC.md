@@ -189,7 +189,7 @@ mutation.fixture.config.json  Tier A config                          (§6.5.1)
 |---|---|---|---|---|
 | Mutation Core | `6f1d2c3a-8b4e-4d5f-9a6b-7c8d9e0f1a2b` | Continia Software | 1.0.0.0 | 50000–50199 |
 | Mutation Core Test | `7a2e3d4b-9c5f-4e6a-8b7c-8d9e0f1a2b3c` | Continia Software | 1.0.0.0 | 50400–50499 |
-| MUT Fixture AUT | `8b3f4e5c-ad6a-4f7b-9c8d-9e0f1a2b3c4d` | Continia Software | 1.0.0.0 | 50200–50299 |
+| MUT Fixture AUT | `8b3f4e5c-ad6a-4f7b-9c8d-9e0f1a2b3c4d` | Continia Software | 1.0.0.1 (bumped from 1.0.0.0 by the U6 spike, T11) | 50200–50299 |
 | MUT Fixture Test | `9c4a5f6d-be7b-4a8c-8d9e-0f1a2b3c4d5e` | Continia Software | 1.0.0.0 | 50300–50399 |
 | MUT Guard Bench (spike U1/U3) | `ad5b6a7e-cf8c-4b9d-9eaf-1a2b3c4d5e6f` | Continia Software | 1.0.0.0 | 50500–50599 |
 
@@ -262,10 +262,13 @@ These signatures are copied from `TestRunnerMgt.Codeunit.al` in BCApps (lines 26
 
 #### 6.1.5b PermissionSet 50000 "MUT Core All"
 `Assignable = true; Caption = 'Mutation Core - all'`. Permissions: `tabledata` RIMD and `table` X for all four MUT tables; `codeunit` X for the three codeunits; `page` X for the four API pages.
-**Why:** DemoPortal test sessions run under a restricted user (§6.1.4). A codeunit's `Permissions` property only elevates
-permissions the user already holds indirectly, so the environment users MUST be granted this set (via `Grant-MutPermissionSet`,
-§6.5.3) before the hooks can read the setup row. Without it the hooks swallow a permission error and every mutant looks inactive;
-the `HookErrorIsEmpty` test (§6.2) detects that state.
+**Why (amended — the original rationale was disproved live, T07):** DemoPortal test sessions run under a restricted user (§6.1.4).
+This set was specified on the theory that granting it to the environment users would let the hooks read the setup row. That theory is
+**false**: granting `MUT Core All` to all four enumerable users (all already SUPER) changed nothing, so the identity running a
+DemoPortal test session is none of the environment's own named BC users, and **what it actually is remains unidentified**. The hooks
+instead read the active mutant from Isolated Storage (`DataScope::Module`), which is not subject to table permissions — that is the
+mechanism that works (§6.1.4, U4). This permission set is retained for the API/table access used *outside* the test session; the
+`HookErrorIsEmpty` test (§6.2) detects a hook that swallowed an error.
 
 #### 6.1.6 Custom TestRunner (deferred)
 A `SubType = TestRunner` codeunit that loops over mutants in one session would remove per-job overhead but cannot be used on DemoPortal (F7). Not built in v1; recorded in `docs/issues.md`.
@@ -530,7 +533,7 @@ A DEL branch is `begin end;`. The original terminator (`;` or none) stays after 
 **Declarations.** For every procedure with at least one candidate, add to its `var` section (create `    var` before `begin` if absent):
 `        MutationCore: Codeunit "MUT Mut";` and one `        MutCond_<n>: Boolean;` per condition block. Never add unused declarations (some rulesets treat an unused local as an error). `MutationCore` intentionally does not follow the type-suffix naming convention, and being appended after a procedure's existing locals means it isn't always in var-ordering position either; the schemata compile exempts every style analyzer entirely (not just these two shapes) instead of changing this template or downgrading rules one at a time (§6.5.1, §6.5.4 step 4).
 
-`rewriteFile` computes all edits as `{start, end, text}` on the original source, sorts by `start` descending, and applies them, so offsets stay valid. Two candidates never overlap: a statement candidate and a condition candidate cannot share a span because conditions are not statements. `lineMap` records, for each guard block in the **output**, `{ mutantIds: number[], startLine, endLine }`.
+`rewriteFile` computes all edits as `{start, end, text}` on the original source, sorts by `start` descending, and applies them, so offsets stay valid. Two candidates must never overlap. A statement candidate and a condition candidate cannot share a span because conditions are not statements — but two *statement* candidates can, and did: in `case <expr> of`, every branch label from the second onward sits at a statement-start position, so a non-numeric label (`BLbl:`, `Rec."Date Format Type"::Day:`) started a bogus simple statement running through the branch body. `findSimpleStatements` MUST therefore reject a candidate whose tokens reach a bare `:` (not `:=`, not `::`) at paren-depth 0 before any `;`. **This invariant MUST be enforced, not assumed:** `rewriteFile` MUST throw on an overlapping edit, and MUST re-tokenize each rewritten file and refuse to emit one that no longer tokenizes; `generate` records either failure as a `skipped.json` entry for that file and continues. Before this was enforced the rewriter silently emitted `endcase true of` and reported success (exit 0, lint clean) — `lint` is line-regex only and cannot see it. `lineMap` records, for each guard block in the **output**, `{ mutantIds: number[], startLine, endLine }`.
 
 #### 6.4.8 Ids, stable keys, ordering, sampling
 Enumerate candidates over files sorted by relative path (ordinal), procedures in source order, targets by `start` offset, operators by `OPERATOR_ORDER`, variants in generation order. Ids are `1..N` in that order over the **full** enumeration (before sampling), so an id identifies the same mutant in every run over identical input.
@@ -569,14 +572,14 @@ node generator/dist/src/cli.js lint --schemata <dir>
   "coreApp": { "path": "./core-app", "appId": "6f1d2c3a-8b4e-4d5f-9a6b-7c8d9e0f1a2b", "version": "1.0.0.0" },
   "permissionSets": [ { "id": "MUT Core All", "appId": "6f1d2c3a-8b4e-4d5f-9a6b-7c8d9e0f1a2b" } ],
   "workDir": "./out",
-  "generator": { "maxMutants": 0, "onlyObjects": [72918635, 72918690, 72918691], "seed": 1, "operators": ["REL", "BOOL", "NOT", "COND", "DEL", "INSFLAG"], "includeBreak": false },
+  "generator": { "maxMutants": 0, "onlyObjects": [72918635], "seed": 1, "operators": ["REL", "BOOL", "NOT", "COND", "DEL", "INSFLAG"], "includeBreak": false },
   "schemata": { "publishStrategy": "same-version" },
   "timeouts": { "perTestFactor": 5, "minSeconds": 60, "jobOverheadSeconds": 0 },
   "demoPortal": { "profileId": "cc557829-71df-40ee-9516-98ca954d4b2f", "activationAppId": "c3755ece-dab0-4d16-987d-040661f18522", "cliPath": "./.tools/continia.exe", "settleProbe": { "codeunitId": 95155, "functionName": "UpdatePlaceholderRows_EmptyInputs_BecomesNoMatchingAccounts" } }
 }
 ```
 `demoPortal.settleProbe` (T11b, spike U5) names the codeunit/function `Wait-MutEnvironmentSettled`'s test-readiness probe runs after a real Start-/Reset-MutEnvironment transition; `Get-MutConfig` requires it (`codeunitId` an integer, `functionName` a non-empty string) whenever `backend` is `DemoPortal`.
-`mutation.fixture.config.json` (Tier A) differs in: `aut.sourcePath = "./fixtures/fixture-aut"`, `aut.appId = "8b3f4e5c-ad6a-4f7b-9c8d-9e0f1a2b3c4d"`, `aut.version = "1.0.0.1"` (bumped from the fixture's original `1.0.0.0` once BC refused to reinstall the lower build over an in-session higher one, T11), `testApp.sourcePath = "./fixtures/fixture-test"`, `testApp.appId = "9c4a5f6d-be7b-4a8c-8d9e-0f1a2b3c4d5e"`, `testApp.testCodeunits = [50300]`, `rulesets = null`, `generator.onlyObjects = []`, `demoPortal.settleProbe = { "codeunitId": 50300, "functionName": "IsLargeOrder_Twelve_IsTrue" }`, and `permissionSets` additionally contains `{ "id": "MUT Fx All", "appId": "8b3f4e5c-ad6a-4f7b-9c8d-9e0f1a2b3c4d" }`.
+`mutation.fixture.config.json` (Tier A) differs in: `aut.sourcePath = "./fixtures/fixture-aut"`, `aut.appId = "8b3f4e5c-ad6a-4f7b-9c8d-9e0f1a2b3c4d"`, `aut.version = "1.0.0.1"` (bumped from the fixture's original `1.0.0.0` once BC refused to reinstall the lower build over an in-session higher one, T11), `testApp.sourcePath = "./fixtures/fixture-test"`, `testApp.appId = "9c4a5f6d-be7b-4a8c-8d9e-0f1a2b3c4d5e"`, `testApp.testCodeunits = [50300]`, `rulesets = null`, `timeouts.minSeconds = 120` (raised from 60 after the fixture-run timeout defect, `docs/issues.md` T27; `mutation.config.json` is still 60), `generator.onlyObjects = []`, `demoPortal.settleProbe = { "codeunitId": 50300, "functionName": "IsLargeOrder_Twelve_IsTrue" }`, and `permissionSets` additionally contains `{ "id": "MUT Fx All", "appId": "8b3f4e5c-ad6a-4f7b-9c8d-9e0f1a2b3c4d" }`.
 `schemata.publishStrategy` ∈ `same-version | bump-build | unpublish-test-app` (set after U6). `Get-MutConfig -Path` loads, validates required keys, resolves relative paths against the repo root, and throws on `environmentName` not matching `^mut-`. The schemata compile (§6.5.4 step 4) always writes an empty `al.codeAnalyzers` list into the generated tree's `.vscode/settings.json`, so no style analyzer ever gates it, regardless of `rulesets`; when `rulesets` is also set, a generated sibling ruleset that includes `rulesets.file` is written and passed too, as a harmless second line of defence.
 
 #### 6.5.2 AUT copy (`lib/AutCopy.psm1`)
@@ -623,7 +626,7 @@ Each step is a function in `lib/*.psm1`; the script is idempotent per run number
 9. `Export-Results` — GET all `mutantResults` for `RunNo`, merge with `mutants.json` → `results/<RunNo>.json` (§7.3) and `results/<RunNo>-summary.md` (§7.5). `Remove-MutEnvironment` unless `keepEnvironment`.
 
 #### 6.5.5 Covering-test selection (`lib/References.psm1`, `lib/Coverage.psm1`)
-- `Get-MutReferenceMap -AutPath -TestAppPath` → `references.json`: `{ "<autObjectId>": [<testCodeunitId>, …] }`. Build a name→id map from every AUT `.al` file's first line (`^(codeunit|table|page|report|enum|interface|query|xmlport)\s+(\d+)\s+("[^"]+"|\S+)`), then for each test codeunit file (`Subtype = Test`) collect quoted object names in `Codeunit "…"`, `Record "…"`, `Page "…"`, `Enum "…"`, `Codeunit::"…"`, `Page::"…"`, `Database::"…"` and map them to ids.
+- `Get-MutReferenceMap -AutPath -TestAppPath` → `references.json`: `{ "<autObjectId>": [<testCodeunitId>, …] }`. Build a name→id map from every AUT `.al` file by scanning for the **first line that matches** `^(codeunit|table|page|report|enum|interface|query|xmlport)\s+(\d+)\s+("[^"]+"|\S+)`, skipping blank lines, `//` comments and compiler directives. **Scanning, not testing only the first non-comment line:** real AUT files open with `#pragma warning disable …` or `#if …` (e.g. `BankProcessedItems.Page.al`), and testing one line dropped those objects from the map entirely — their mutants could then only fall through to `Uncovered`, deflating the score with no signal. A file with no matching line anywhere yields no entry. then for each test codeunit file (`Subtype = Test`) collect quoted object names in `Codeunit "…"`, `Record "…"`, `Page "…"`, `Enum "…"`, `Codeunit::"…"`, `Page::"…"`, `Database::"…"` and map them to ids.
 - `ConvertFrom-MutCoverageCsv -Csv` → `[{ObjectType; ObjectId; LineType; LineNo; Hits}]`. **Format pinned by `fixtures/coverage/sample.csv` (U9, 2026-09-08): no header row; five quoted positional columns** `"ObjectType","ObjectId","LineType","LineNo","Hits"` where LineType ∈ `Object | Trigger/Function | Empty | Code`, e.g. `"Codeunit","50000","Code","12","1"`. The parser MUST validate exactly five columns per row and a known ObjectType, and MUST throw otherwise. Only `LineType = Code` rows carry meaningful `Hits`; selection uses those rows.
 - `Get-CoveringTests -Mutant -Coverage -References -TestCodeunits` → `[int[]]` of test codeunit ids: if `Coverage` has rows for `(ObjectId, LineNo)` with `Hits > 0`, the test codeunits whose jobs produced them; else `References[ObjectId]` **intersected with `TestCodeunits`** (order preserved from the reference map); else `@()`. The intersection matters because the reference map is built from AL source (§6.5.5 above) and can name test codeunits that are not in the configured scope; without it, those codeunits would run un-baselined (§6.5.4 step 3 only baselines `TestCodeunits`, so `Get-MutTimeoutBudget`, §6.5.6, would fall back to `minSeconds` for them) and reported coverage would describe tests the run never claimed to include. If the intersection is empty the mutant is `Uncovered` — the honest outcome when the configured suite does not reach it.
 
@@ -717,13 +720,13 @@ one inside `EmitSystemNotMappedRow` after `PlaceholderConsumed := true;`.
 { "runNo": 1, "backend": "DemoPortal", "environmentName": "mut-spike-01", "startedUtc": "…", "finishedUtc": "…",
   "autAppId": "…", "autVersion": "…", "coreAppVersion": "1.0.0.0",
   "generator": { "seed": 1, "maxMutants": 0, "onlyObjects": [], "operators": [] },
-  "totals": { "total": 26, "killed": 17, "survived": 6, "timeout": 3, "compileError": 0, "uncovered": 0, "equivalent": 0 },
+  "totals": { "total": 26, "killed": 17, "survived": 6, "timeout": 3, "compileError": 0, "uncovered": 0, "equivalent": 0, "error": 0, "pending": 0 },
   "score": 0.7692,
   "mutants": [{ "id": 1, "stableKey": "…", "objectId": 50200, "procedure": "IsLargeOrder", "line": 4, "operator": "REL",
                 "original": "…", "mutated": "…", "status": "Survived", "killingTest": null, "durationMs": 4200,
                 "coveringTests": [50300] }] }
 ```
-`score = (killed + timeout) / (total − equivalent − compileError)`, rounded to 4 decimals. `Uncovered` counts as survived in the denominator.
+`score = (killed + timeout) / (total − equivalent − compileError − error − pending)`, rounded to 4 decimals. `Uncovered` counts as survived in the denominator — the suite genuinely did not reach it. `Error` and `Pending` are **excluded** from the denominator: an infrastructure failure (a failed job, a zero-test result, an unhandled exception) is not evidence about the test suite, and leaving it in silently scored every such mutant as a survivor. The totals buckets MUST sum to `total`, and `<RunNo>-summary.md` (§7.5) MUST render an Errors section alongside Survivors/Timeouts/Compile errors/Uncovered.
 
 ### 7.4 `fixtures/expected-results.json`
 ```json
@@ -752,7 +755,7 @@ Sections in this order, each a table with columns `Metric | Value | Backend | Da
 3. `Select-String -Path orchestrator/Invoke-MutationRun.ps1, orchestrator/lib/*.psm1 -Pattern 'continia|BcContainerHelper|docker' -CaseSensitive:$false` returns nothing.
 4. A run with `activeMutantId = 0` on the schemata passes the full fixture suite (zero false kills).
 
-**Tier B acceptance:** `Invoke-MutationRun.ps1 -ConfigPath mutation.config.json` completes on the three target codeunits and `results/<n>-summary.md` lists survivors; the hand-mutant outcomes (HM01–HM20) agree with the generator-run outcomes for the same lines where both exist.
+**Tier B acceptance:** `Invoke-MutationRun.ps1 -ConfigPath mutation.config.json` completes on the Tier B slice (§1.1: AUT codeunit 72918635, covered by test codeunits 95155/95179/95191) and `results/<n>-summary.md` lists survivors; the hand-mutant outcomes (HM01–HM20) agree with the generator-run outcomes for the same lines where both exist.
 
 ---
 
