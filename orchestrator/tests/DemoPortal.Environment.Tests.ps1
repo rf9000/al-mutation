@@ -489,7 +489,8 @@ Describe 'Stop-MutBackendChildProcesses' {
         $env = [pscustomobject]@{ Id = 'E1'; Name = 'fix-auth-share-sibling-apply'; Url = 'https://x'; Backend = 'DemoPortal'; Shared = $false }
         Mock -ModuleName DemoPortal Get-CimInstance { throw 'must not be called' }
 
-        { Stop-MutBackendChildProcesses -Env $env } | Should -Throw
+        { Stop-MutBackendChildProcesses -Env $env } | Should -Throw "*does not match '^mut-'*"
+        Should -Invoke -ModuleName DemoPortal Get-CimInstance -Times 0
     }
 
     It 'stops only continia.exe processes whose ParentProcessId is this session ($PID), and returns the count stopped' {
