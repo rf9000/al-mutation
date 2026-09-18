@@ -287,6 +287,28 @@ Describe 'Get-MutConfig' {
         { Get-MutConfig -Path $path } | Should -Not -Throw
     }
 
+    It 'throws when workDir is a directory junction whose real target lies inside aut.sourcePath (review fix round 1: a plain GetFullPath comparison alone is defeated by a reparse point)' {
+        $autSrc = "$TestDrive/aut-src-junc-$([guid]::NewGuid().ToString('N'))"
+        $autNested = Join-Path $autSrc 'nested'
+        New-Item -ItemType Directory -Path $autNested -Force | Out-Null
+
+        $junctionPath = "$TestDrive/workdir-junction-$([guid]::NewGuid().ToString('N'))"
+        New-Item -ItemType Junction -Path $junctionPath -Target $autNested -Force | Out-Null
+
+        try {
+            $overrides = @{
+                aut     = @{ sourcePath = $autSrc; appId = '8b3f4e5c-ad6a-4f7b-9c8d-9e0f1a2b3c4d'; version = '1.0.0.0' }
+                workDir = $junctionPath
+            }
+            $path = New-MutTestConfigFile -Overrides $overrides
+            { Get-MutConfig -Path $path } | Should -Throw '*workDir*aut.sourcePath*'
+        }
+        finally {
+            # No -Recurse: removes only the junction itself, never the real target's contents.
+            Remove-Item -Path $junctionPath -Force -ErrorAction SilentlyContinue
+        }
+    }
+
     It 'throws when generator.seed is not an integer' {
         $overrides = @{ generator = @{ maxMutants = 0; onlyObjects = @(); seed = 'random'; operators = @('REL'); includeBreak = $false } }
         $path = New-MutTestConfigFile -Overrides $overrides

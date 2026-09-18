@@ -8,6 +8,74 @@ $script:AllowedBackends = @('DemoPortal', 'Docker')  # isolation-lint: allow
 
 $script:AllowedPublishStrategies = @('same-version', 'bump-build', 'unpublish-test-app')
 
+# Review fix round 1: [System.IO.Path]::GetFullPath does NOT resolve reparse points
+# (directory junctions/symlinks), so Assert-MutWorkDirOutsideSources' containment check was
+# defeated by a junction -- workDir pointing at a junction into one of the source trees
+# compared as an unrelated path even though robocopy /MIR would actually write (and prune)
+# inside the real target. GetFinalPathNameByHandleW is the correct way to resolve the true
+# target; .NET Framework (Windows PowerShell 5.1's runtime) has no managed API for it, hence
+# this small P/Invoke helper. Loaded once per session.
+if (-not ('MutFinalPathNative' -as [type])) {
+    Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+using System.Text;
+
+public static class MutFinalPathNative
+{
+    private const uint GENERIC_READ = 0x80000000;
+    private const uint FILE_SHARE_READ = 0x1;
+    private const uint FILE_SHARE_WRITE = 0x2;
+    private const uint OPEN_EXISTING = 3;
+    private const uint FILE_FLAG_BACKUP_SEMANTICS = 0x02000000;
+    private const uint FILE_NAME_NORMALIZED = 0x0;
+
+    [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    private static extern IntPtr CreateFileW(
+        string lpFileName, uint dwDesiredAccess, uint dwShareMode, IntPtr lpSecurityAttributes,
+        uint dwCreationDisposition, uint dwFlagsAndAttributes, IntPtr hTemplateFile);
+
+    [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    private static extern uint GetFinalPathNameByHandleW(
+        IntPtr hFile, StringBuilder lpszFilePath, uint cchFilePath, uint dwFlags);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool CloseHandle(IntPtr hObject);
+
+    // Resolves $path (a path that must exist: a file or a directory) to its final,
+    // reparse-point-free absolute path. Throws Win32Exception on failure.
+    public static string GetFinalPath(string path)
+    {
+        IntPtr handle = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, IntPtr.Zero,
+            OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, IntPtr.Zero);
+        if (handle == new IntPtr(-1))
+        {
+            throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+        }
+        try
+        {
+            var sb = new StringBuilder(4096);
+            uint result = GetFinalPathNameByHandleW(handle, sb, (uint)sb.Capacity, FILE_NAME_NORMALIZED);
+            if (result == 0 || result >= sb.Capacity)
+            {
+                throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+            }
+            string resolved = sb.ToString();
+            if (resolved.StartsWith(@"\\?\") && !resolved.StartsWith(@"\\?\UNC\"))
+            {
+                resolved = resolved.Substring(4);
+            }
+            return resolved;
+        }
+        finally
+        {
+            CloseHandle(handle);
+        }
+    }
+}
+'@ -Language CSharp
+}
+
 function Get-MutRepoRoot {
     <#
         .SYNOPSIS
@@ -117,6 +185,54 @@ function Resolve-MutConfigPath {
     return [System.IO.Path]::GetFullPath([System.IO.Path]::Combine($RepoRoot, $Path))
 }
 
+function Resolve-MutFinalPath {
+    <#
+        .SYNOPSIS
+        Private. Resolves $Path (already made absolute by the caller) to its final,
+        reparse-point-free form via GetFinalPathNameByHandleW, so a directory junction or
+        symlink anywhere in $Path's ancestry compares equal to its real target rather than as
+        an unrelated path (review fix round 1). GetFinalPathNameByHandleW requires something
+        to actually exist at the path it is given; workDir in particular commonly does not
+        exist yet at config-validation time (Sync-MutAutCopy creates it later), so this walks
+        up to the nearest existing ancestor, resolves THAT, and re-appends the non-existent
+        tail segments unchanged (a non-existent tail cannot itself be a reparse point).
+        Falls back to the plain, unresolved $Path on any native-call failure (e.g. a drive
+        that is not reachable in a sandboxed test) or when nothing on the path exists at all,
+        rather than throwing -- config loading must not crash over a filesystem quirk here.
+    #>
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    $full = $Path.TrimEnd('\', '/')
+
+    $tailParts = @()
+    $ancestor = $full
+    while ($ancestor -and -not (Test-Path -LiteralPath $ancestor)) {
+        $parent = [System.IO.Path]::GetDirectoryName($ancestor)
+        if ([string]::IsNullOrEmpty($parent) -or $parent -eq $ancestor) {
+            $ancestor = $null
+            break
+        }
+        $tailParts = @([System.IO.Path]::GetFileName($ancestor)) + $tailParts
+        $ancestor = $parent
+    }
+
+    if (-not $ancestor -or -not (Test-Path -LiteralPath $ancestor)) {
+        return $full
+    }
+
+    try {
+        $resolvedAncestor = [MutFinalPathNative]::GetFinalPath($ancestor).TrimEnd('\', '/')
+    }
+    catch {
+        return $full
+    }
+
+    if ($tailParts.Count -eq 0) {
+        return $resolvedAncestor
+    }
+    return (Join-Path $resolvedAncestor ($tailParts -join '\')).TrimEnd('\', '/')
+}
+
 function Assert-MutWorkDirOutsideSources {
     <#
         .SYNOPSIS
@@ -130,11 +246,13 @@ function Assert-MutWorkDirOutsideSources {
         observation of that guardrail. Paths are resolved to absolute (against $RepoRoot when
         relative) before comparing, since one key may be relative while another is absolute in
         the same config (§6.5.1's own example config does exactly that: aut.sourcePath is
-        absolute, workDir is `./out`).
+        absolute, workDir is `./out`) -- and then resolved past any reparse point
+        (Resolve-MutFinalPath, review fix round 1), since a plain GetFullPath comparison alone
+        is defeated by a directory junction pointing workDir into a source tree.
     #>
     param($Config, [string]$RepoRoot)
 
-    $workDirFull = [System.IO.Path]::GetFullPath((Resolve-MutConfigPath -RepoRoot $RepoRoot -Path $Config.workDir)).TrimEnd('\', '/')
+    $workDirFull = Resolve-MutFinalPath -Path ([System.IO.Path]::GetFullPath((Resolve-MutConfigPath -RepoRoot $RepoRoot -Path $Config.workDir)))
 
     $sources = @(
         [pscustomobject]@{ KeyPath = 'aut.sourcePath'; Path = $Config.aut.sourcePath }
@@ -145,7 +263,7 @@ function Assert-MutWorkDirOutsideSources {
     }
 
     foreach ($source in $sources) {
-        $sourceFull = [System.IO.Path]::GetFullPath((Resolve-MutConfigPath -RepoRoot $RepoRoot -Path $source.Path)).TrimEnd('\', '/')
+        $sourceFull = Resolve-MutFinalPath -Path ([System.IO.Path]::GetFullPath((Resolve-MutConfigPath -RepoRoot $RepoRoot -Path $source.Path)))
 
         $isSamePath = $workDirFull.Equals($sourceFull, [System.StringComparison]::OrdinalIgnoreCase)
         $isNestedInside = $workDirFull.StartsWith($sourceFull + [System.IO.Path]::DirectorySeparatorChar, [System.StringComparison]::OrdinalIgnoreCase)
