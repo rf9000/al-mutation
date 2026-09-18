@@ -139,6 +139,28 @@ test('INSFLAG: an assignment whose RHS happens to end in .Modify(true) is NOT a 
   assert.equal(candidates.length, 0);
 });
 
+test('INSFLAG: a receiver whose own field name is "true value" is not corrupted (review blocker 2)', () => {
+  // With the whole statement anchored (match[0] === the whole text, match.index === 0 always),
+  // `match[0].replace(literal, flipped)` used String.replace's plain-string search, which hits
+  // the FIRST occurrence of "true"/"false" anywhere in the text -- including inside the receiver.
+  // Only the captured literal's own offset may be replaced.
+  const { ctx, stmt } = procedureFixture('Rec."true value".Insert(true)');
+  const candidates = INSFLAG.apply(ctx, stmt);
+
+  assert.equal(candidates.length, 1);
+  assert.equal(candidates[0]!.original, 'Rec."true value".Insert(true)');
+  assert.equal(candidates[0]!.mutated, 'Rec."true value".Insert(false)');
+});
+
+test('INSFLAG: a receiver whose own field name is "false value" is not corrupted (review blocker 2)', () => {
+  const { ctx, stmt } = procedureFixture('Rec."false value".Modify(false)');
+  const candidates = INSFLAG.apply(ctx, stmt);
+
+  assert.equal(candidates.length, 1);
+  assert.equal(candidates[0]!.original, 'Rec."false value".Modify(false)');
+  assert.equal(candidates[0]!.mutated, 'Rec."false value".Modify(true)');
+});
+
 // --- BREAK ---
 
 test('BREAK: every simple statement mutates to MutBreak_ThisDoesNotCompile()', () => {
