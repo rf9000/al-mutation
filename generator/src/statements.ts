@@ -42,6 +42,13 @@ function findStatementStarts(tokens: readonly Token[], span: ProcedureSpan): num
   const starts = new Set<number>();
   let parenDepth = 0;
   const blockStack: Array<'begin' | 'case'> = [];
+  // B1 (live-AUT construct, found while verifying the real-AUT acceptance count): a ternary's
+  // `?`/`:` can appear at paren-depth 0 (the brackets of its own operands balance out before the
+  // `:` is reached), which is indistinguishable from a genuine case-branch-label `:` by bracket
+  // depth alone. Tracked per paren-depth exactly like `looksLikeCaseLabel` below, so an unmatched
+  // `?` "absorbs" the next depth-0 `:` instead of it being misread as ending a branch label (and
+  // marking whatever follows -- the ternary's false branch -- as a bogus second statement start).
+  const ternaryPending: number[] = [0];
 
   const mark = (afterIdx: number): void => {
     const idx = nextSignificantIdx(tokens, afterIdx + 1, span.endIdx);
@@ -55,13 +62,24 @@ function findStatementStarts(tokens: readonly Token[], span: ProcedureSpan): num
     if (tok.kind === 'punct') {
       if (isOpenBracket(tok)) {
         parenDepth++;
+        ternaryPending[parenDepth] = 0;
       } else if (isCloseBracket(tok)) {
         parenDepth--;
       } else if (tok.text === ':' && parenDepth === 0 && blockStack[blockStack.length - 1] === 'case') {
-        mark(i);
+        if ((ternaryPending[0] ?? 0) > 0) {
+          ternaryPending[0] = ternaryPending[0]! - 1;
+        } else {
+          mark(i);
+        }
       } else if (tok.text === ';' && parenDepth === 0) {
         mark(i);
+        ternaryPending[0] = 0; // defensive: a new statement never carries over a pending ternary
       }
+      continue;
+    }
+
+    if (tok.kind === 'operator' && tok.text === '?') {
+      ternaryPending[parenDepth] = (ternaryPending[parenDepth] ?? 0) + 1;
       continue;
     }
 
@@ -89,6 +107,65 @@ function isSimpleStatementStartToken(token: Token): boolean {
 }
 
 /**
+ * B1 fix: a candidate statement start must be rejected when its token
+ * sequence actually forms a `case` branch label rather than a statement --
+ * i.e. scanning forward from `start` at paren-depth 0, a bare `:` (not `:=`,
+ * not `::`) is reached before any `;`/`end`/`else`/`until`. This happens for
+ * every branch label from the SECOND branch onward, because it immediately
+ * follows the previous branch's `;` (a genuine statement-start trigger) --
+ * see findStatementStarts. Labels covered: a plain identifier, a quoted
+ * identifier, an enum-qualified value (`Rec."Date Format Type"::Day:`), and
+ * a comma-separated list (`A, B:`).
+ *
+ * A bare `:` can also close a ternary (`cond ? a : b`, §6.4.1) rather than
+ * terminate a label, so `?`/`:` pairs are tracked per paren-depth and only an
+ * *unmatched* `:` counts as a label terminator (this is what keeps a real
+ * statement like `ok := c ? x : Rec.Modify(true);` from being misdetected as
+ * a label -- see the INSFLAG anchor fix, which relies on this statement
+ * being found intact).
+ */
+function looksLikeCaseLabel(tokens: readonly Token[], start: number, limit: number): boolean {
+  let parenDepth = 0;
+  const ternaryPending: number[] = [0];
+
+  for (let i = start; i <= limit; i++) {
+    const tok = tokens[i]!;
+    if (!isSignificant(tok)) continue;
+
+    if (isOpenBracket(tok)) {
+      parenDepth++;
+      ternaryPending[parenDepth] = 0;
+      continue;
+    }
+    if (isCloseBracket(tok)) {
+      parenDepth--;
+      continue;
+    }
+    if (tok.kind === 'operator' && tok.text === '?') {
+      ternaryPending[parenDepth] = (ternaryPending[parenDepth] ?? 0) + 1;
+      continue;
+    }
+    if (tok.kind === 'punct' && tok.text === ':') {
+      if (parenDepth === 0) {
+        if ((ternaryPending[0] ?? 0) > 0) {
+          ternaryPending[0] = ternaryPending[0]! - 1;
+          continue;
+        }
+        return true;
+      }
+      continue;
+    }
+    if (parenDepth === 0) {
+      if (tok.kind === 'punct' && tok.text === ';') return false;
+      const lower = lowerKeyword(tok);
+      if (lower === 'end' || lower === 'else' || lower === 'until') return false;
+    }
+  }
+
+  return false;
+}
+
+/**
  * §6.4.3: a simple statement starts at a statement-start position with an
  * `identifier`/`quotedIdentifier`/`exit` token (not a compound keyword such
  * as `if`/`while`/`repeat`/`case`/`for`/`foreach`/`begin`) and ends at the
@@ -100,6 +177,7 @@ export function findSimpleStatements(tokens: readonly Token[], span: ProcedureSp
 
   for (const start of findStatementStarts(tokens, span)) {
     if (!isSimpleStatementStartToken(tokens[start]!)) continue;
+    if (looksLikeCaseLabel(tokens, start, span.endIdx)) continue;
 
     let parenDepth = 0;
     let endIdx = start;
@@ -158,6 +236,28 @@ function scanForTerminator(
 const UNTIL_TERMINATOR_KEYWORDS = new Set(['end', 'else', 'until']);
 
 /**
+ * B3 fix: trims comment (and preprocessor) tokens off both ends of a raw
+ * `[startIdx, endIdx]` condition span, so a trailing `// comment` (or a
+ * leading one) can never become the condition's first/last token -- unlike
+ * `findSimpleStatements`, which already excludes comments via `isSignificant`
+ * in its own scan, the raw index arithmetic here (`i + 1` / `terminatorIdx -
+ * 1`) does not. Returns `null` when trimming leaves no tokens (a
+ * comment-only span), so the caller can skip it defensively.
+ */
+function trimToSignificant(
+  tokens: readonly Token[],
+  startIdx: number,
+  endIdx: number,
+): { startIdx: number; endIdx: number } | null {
+  let start = startIdx;
+  let end = endIdx;
+  while (start <= end && !isSignificant(tokens[start]!)) start++;
+  while (end >= start && !isSignificant(tokens[end]!)) end--;
+  if (start > end) return null;
+  return { startIdx: start, endIdx: end };
+}
+
+/**
  * §6.4.3: an `if` condition runs from just after `if` to its matching `then`
  * (paren-depth 0); an `until` condition runs from just after `until` to the
  * first `;`/`end`/`else`/`until` at paren-depth 0. `position` is
@@ -181,6 +281,9 @@ export function findConditions(tokens: readonly Token[], span: ProcedureSpan): C
       );
       if (terminatorIdx === -1) continue; // malformed; skip defensively
 
+      const trimmed = trimToSignificant(tokens, i + 1, terminatorIdx - 1);
+      if (trimmed === null) continue; // comment-only condition; malformed, skip defensively
+
       const prev = previousSignificant(tokens, i - 1);
       const position: 'statementList' | 'other' =
         prev !== undefined &&
@@ -193,8 +296,8 @@ export function findConditions(tokens: readonly Token[], span: ProcedureSpan): C
       conditions.push({
         kind: 'if',
         keywordIdx: i,
-        startIdx: i + 1,
-        endIdx: terminatorIdx - 1,
+        startIdx: trimmed.startIdx,
+        endIdx: trimmed.endIdx,
         terminatorIdx,
         position,
       });
@@ -213,11 +316,14 @@ export function findConditions(tokens: readonly Token[], span: ProcedureSpan): C
     );
     if (terminatorIdx === -1) continue; // malformed; skip defensively
 
+    const trimmedUntil = trimToSignificant(tokens, i + 1, terminatorIdx - 1);
+    if (trimmedUntil === null) continue; // comment-only condition; malformed, skip defensively
+
     conditions.push({
       kind: 'until',
       keywordIdx: i,
-      startIdx: i + 1,
-      endIdx: terminatorIdx - 1,
+      startIdx: trimmedUntil.startIdx,
+      endIdx: trimmedUntil.endIdx,
       terminatorIdx,
       position: 'statementList',
     });

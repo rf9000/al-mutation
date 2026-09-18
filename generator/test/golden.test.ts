@@ -22,6 +22,7 @@ const CASES = [
   '04-exclusions',
   '05-fixture-aut',
   '06-shared-line-if-then',
+  '07-case-branch-labels',
 ];
 
 function baseOptions(autDir: string, outDir: string): GenerateOptions {

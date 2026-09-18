@@ -1,0 +1,54 @@
+[
+  {
+    "id": 1,
+    "stableKey": "e2359dfe37525aad",
+    "objectType": "codeunit",
+    "objectId": 50270,
+    "objectName": "Case07 Cu",
+    "procedure": "Route",
+    "line": 14,
+    "operator": "DEL",
+    "original": "FxRec.Insert(true)",
+    "mutated": "",
+    "file": "src/Case07Cu.Codeunit.al"
+  },
+  {
+    "id": 2,
+    "stableKey": "58dad598a49b4f72",
+    "objectType": "codeunit",
+    "objectId": 50270,
+    "objectName": "Case07 Cu",
+    "procedure": "Route",
+    "line": 14,
+    "operator": "INSFLAG",
+    "original": "FxRec.Insert(true)",
+    "mutated": "FxRec.Insert(false)",
+    "file": "src/Case07Cu.Codeunit.al"
+  },
+  {
+    "id": 3,
+    "stableKey": "2443f97cb9ab6b20",
+    "objectType": "codeunit",
+    "objectId": 50270,
+    "objectName": "Case07 Cu",
+    "procedure": "Route",
+    "line": 16,
+    "operator": "DEL",
+    "original": "FxRec.Modify(true)",
+    "mutated": "",
+    "file": "src/Case07Cu.Codeunit.al"
+  },
+  {
+    "id": 4,
+    "stableKey": "04729d5d91e2f73b",
+    "objectType": "codeunit",
+    "objectId": 50270,
+    "objectName": "Case07 Cu",
+    "procedure": "Route",
+    "line": 16,
+    "operator": "INSFLAG",
+    "original": "FxRec.Modify(true)",
+    "mutated": "FxRec.Modify(false)",
+    "file": "src/Case07Cu.Codeunit.al"
+  }
+]
