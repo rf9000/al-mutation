@@ -13,6 +13,18 @@ $script:ObjectHeaderPattern = '^(codeunit|table|page|report|enum|interface|query
 # scan that does not recognise it.
 $script:PreambleDeclarationPattern = '^(namespace|using)\s+\S'
 
+# Object/extension keywords that are LEGITIMATELY id-less (interface) or out of this task's
+# scope (the *extension kinds, permissionset, controladdin, profile, entitlement, dotnet):
+# none of these will ever match $script:ObjectHeaderPattern, which requires a numeric id
+# between the keyword and the name. Measured on the real AUT (fix round 3): a scan without
+# this set produced 201 warnings on a clean run -- 125 interface, 36 tableextension, 25
+# pageextension, 6 permissionsetextension, 3 reportextension, 3 permissionset, 2
+# enumextension, 1 controladdin -- and every single one was this, not a genuine anomaly. A
+# warning with a 100% false-positive rate trains people to ignore it, which defeats the one
+# real anomaly it exists to catch. Treated as expected-and-silent: still no entry (these
+# objects correctly do not enter nameToId), but no Write-Warning either.
+$script:KnownOutOfScopeObjectPattern = '^(interface|tableextension|pageextension|enumextension|reportextension|permissionsetextension|permissionset|controladdin|profile|entitlement|dotnet)\b'
+
 # Quoted object-name references inside AL code: `Codeunit "…"`, `Record "…"`, `Page "…"`,
 # `Enum "…"`, `Codeunit::"…"`, `Page::"…"`, `Database::"…"` (§6.5.5).
 $script:ReferencePattern = '(?:Codeunit|Record|Page|Enum|Database)(?:::)?\s*"([^"]+)"'
@@ -97,10 +109,20 @@ function Get-MutObjectHeader {
         - `#pragma`/`#if` before the header (confirmed in the real AUT:
           BankProcessedItems.Page.al) is the same class of preamble as namespace/using.
 
-        The warning on the leftover case (first remaining line is neither a header nor
-        recognised preamble) is what keeps a THIRD, still-unanticipated leading construct
-        from silently repeating either failure mode: it converts a silent score deflation
-        into something a human sees.
+        The warning on the leftover case (first remaining line is neither a header, recognised
+        preamble, nor a known out-of-scope keyword) is what keeps a THIRD, still-unanticipated
+        leading construct from silently repeating either failure mode: it converts a silent
+        score deflation into something a human sees.
+
+        Fix round 3: that warning initially fired for every `interface`/`*extension`/
+        `permissionset`/etc. file too -- legitimately id-less or out-of-scope constructs that
+        will never match the header pattern. Measured on the real AUT: 201 warnings on a
+        clean run, 100% false positives (125 interface, 36 tableextension, 25 pageextension,
+        6 permissionsetextension, 3 reportextension, 3 permissionset, 2 enumextension, 1
+        controladdin). A warning that always fires trains people to ignore it, which is
+        exactly how the one real anomaly it exists to catch would also get ignored.
+        $script:KnownOutOfScopeObjectPattern now silences exactly that closed set, still
+        returning $null (these objects correctly never enter nameToId) but without warning.
         .OUTPUTS
         [pscustomobject]@{ ObjectType; Id (int); Name (quotes stripped) }, or $null.
     #>
@@ -134,10 +156,18 @@ function Get-MutObjectHeader {
             }
         }
 
-        # First remaining line after comments and the recognised preamble, and it is NOT an
-        # object header (e.g. a permissionset/enum-extension file, or some other construct
-        # this preamble set does not yet know about): yield no entry, but say so, rather than
-        # silently dropping the file the way a bare $null would.
+        if ([regex]::IsMatch($line, $script:KnownOutOfScopeObjectPattern, 'IgnoreCase')) {
+            # A known, legitimately id-less or out-of-scope declaration (interface,
+            # *extension, permissionset, controladdin, profile, entitlement, dotnet): this is
+            # an EXPECTED $null, not an anomaly, so no warning (fix round 3 -- see
+            # $script:KnownOutOfScopeObjectPattern's comment for why this exists).
+            return $null
+        }
+
+        # First remaining line after comments, the recognised preamble, and the known
+        # out-of-scope keywords, and it is STILL not an object header (some other construct
+        # neither set knows about): yield no entry, but say so, rather than silently dropping
+        # the file the way a bare $null would.
         Write-Warning "Get-MutObjectHeader: '$Path': first non-preamble line does not match an object header ('$line'); this file will not enter the reference map."
         return $null
     }

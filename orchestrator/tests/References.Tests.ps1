@@ -263,7 +263,7 @@ codeunit 50101 "AUT Single Line Comment Codeunit"
         $header.Name | Should -Be 'AUT Same Line Codeunit'
     }
 
-    It 'returns $null (and warns naming the file) for a realistic permissionset whose body has a numeric Permissions list (fix-round-1 regression: must not misread "table 50100 = X" as a header)' {
+    It 'returns $null WITHOUT warning for a realistic permissionset whose body has a numeric Permissions list (fix-round-1 regression guard: must not misread "table 50100 = X" as a header; fix-round-3: permissionset is a known out-of-scope keyword, so this is silent, not a warning)' {
         $path = Join-Path $script:HeaderScratch 'permissionset-with-numeric-permissions.al'
         Set-Content -Path $path -Encoding UTF8 -Value @'
 permissionset 50200 "My Perm Set"
@@ -279,10 +279,10 @@ permissionset 50200 "My Perm Set"
         } -Parameters @{ Path = $path }
 
         $header | Should -BeNullOrEmpty
-        Should -Invoke -ModuleName References Write-Warning -ParameterFilter { $Message -like "*$path*" } -Times 1
+        Should -Invoke -ModuleName References Write-Warning -Times 0
     }
 
-    It 'returns $null (and warns naming the file) for a file whose only object-like content is a permissionset with no numeric Permissions' {
+    It 'returns $null WITHOUT warning for a permissionset with no numeric Permissions either (fix round 3: permissionset is expected-and-silent)' {
         $path = Join-Path $script:HeaderScratch 'no-header.al'
         Set-Content -Path $path -Encoding UTF8 -Value @'
 permissionset 50022 "AUT Permissions"
@@ -297,7 +297,41 @@ permissionset 50022 "AUT Permissions"
         } -Parameters @{ Path = $path }
 
         $header | Should -BeNullOrEmpty
-        Should -Invoke -ModuleName References Write-Warning -ParameterFilter { $Message -like "*$path*" } -Times 1
+        Should -Invoke -ModuleName References Write-Warning -Times 0
+    }
+
+    It 'returns $null WITHOUT warning for an interface declaration (fix round 3: interfaces have no numeric id and can never match the header pattern -- 125 of the AUT''s 201 pre-fix false-positive warnings were exactly this)' {
+        $path = Join-Path $script:HeaderScratch 'interface.al'
+        Set-Content -Path $path -Encoding UTF8 -Value @'
+interface "CTS-CB IAuthentication"
+{
+    procedure DoSomething();
+}
+'@
+
+        $header = InModuleScope References {
+            param($Path)
+            Get-MutObjectHeader -Path $Path
+        } -Parameters @{ Path = $path }
+
+        $header | Should -BeNullOrEmpty
+        Should -Invoke -ModuleName References Write-Warning -Times 0
+    }
+
+    It 'returns $null WITHOUT warning for the other known out-of-scope declaration keywords (tableextension, pageextension, enumextension, reportextension, permissionsetextension, controladdin, profile, entitlement, dotnet)' {
+        $keywords = @('tableextension', 'pageextension', 'enumextension', 'reportextension', 'permissionsetextension', 'controladdin', 'profile', 'entitlement', 'dotnet')
+        foreach ($keyword in $keywords) {
+            $path = Join-Path $script:HeaderScratch "$keyword-scratch.al"
+            Set-Content -Path $path -Encoding UTF8 -Value "$keyword 50000 `"Some Name`" extends `"Some Base`"`n{`n}`n"
+
+            $header = InModuleScope References {
+                param($Path)
+                Get-MutObjectHeader -Path $Path
+            } -Parameters @{ Path = $path }
+
+            $header | Should -BeNullOrEmpty
+        }
+        Should -Invoke -ModuleName References Write-Warning -Times 0
     }
 
     It 'returns $null WITHOUT warning for a genuinely empty file (no first-remaining-line to test at all)' {
