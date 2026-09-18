@@ -26,8 +26,37 @@ $script:PreambleDeclarationPattern = '^(namespace|using)\s+\S'
 $script:KnownOutOfScopeObjectPattern = '^(interface|tableextension|pageextension|enumextension|reportextension|permissionsetextension|permissionset|controladdin|profile|entitlement|dotnet)\b'
 
 # Quoted object-name references inside AL code: `Codeunit "…"`, `Record "…"`, `Page "…"`,
-# `Enum "…"`, `Codeunit::"…"`, `Page::"…"`, `Database::"…"` (§6.5.5).
-$script:ReferencePattern = '(?:Codeunit|Record|Page|Enum|Database)(?:::)?\s*"([^"]+)"'
+# `Enum "…"`, `Codeunit::"…"`, `Page::"…"`, `Database::"…"` (§6.5.5). Group 1 is the reference
+# KEYWORD (fix round 4: the map is now keyed by (object type, name), never name alone -- see
+# Resolve-MutReferenceObjectType -- so a reference must carry its own type to resolve against
+# the right slot). Leading `\b` (fix round 4, found chasing the acceptance check against the
+# real AUT+test-app trees): without it, `TestPage "…"` matches as a "Page" reference, because
+# "Page" is a plain substring of "TestPage" and the pattern had no word boundary in front of
+# the alternation. Live case: SetupGuardBankTest.Codeunit.al's
+# `TestPage "CTS-CB JPMorgan Assist Setup"` handler parameter was misread as `Page "CTS-CB
+# JPMorgan Assist Setup"`, which resolves (correctly, by type) to the PAGE's own id 72918635 --
+# which happens to equal the id of the wholly unrelated pilot codeunit 72918635 "CTS-CB Auth
+# Detection", reproducing the exact class of wrong attribution this fix round exists to close,
+# through a different mechanism (word-boundary-free matching, not type-blind keying).
+$script:ReferencePattern = '\b(Codeunit|Record|Page|Enum|Database)(?:::)?\s*"([^"]+)"'
+
+function Resolve-MutReferenceObjectType {
+    <#
+        .SYNOPSIS
+        Private. Maps a reference-site keyword (`Codeunit "…"`, `Record "…"`, `Database::"…"`,
+        …) to the object-type token used by $script:ObjectHeaderPattern / an object header's
+        ObjectType (§6.5.5, fix round 4): `Record`/`Database` both refer to a `table`;
+        everything else lowercases to its own name (`Codeunit` -> `codeunit`, `Page` ->
+        `page`, `Enum` -> `enum`).
+    #>
+    param([Parameter(Mandatory = $true)][string]$Keyword)
+
+    switch ($Keyword.ToLowerInvariant()) {
+        'record' { return 'table' }
+        'database' { return 'table' }
+        default { return $Keyword.ToLowerInvariant() }
+    }
+}
 
 function Remove-MutAlTrivia {
     <#
@@ -123,6 +152,12 @@ function Get-MutObjectHeader {
         exactly how the one real anomaly it exists to catch would also get ignored.
         $script:KnownOutOfScopeObjectPattern now silences exactly that closed set, still
         returning $null (these objects correctly never enter nameToId) but without warning.
+
+        Fix round 4: the "no remaining line at all" path (below the loop) used to return
+        $null with NO warning -- the one $null path the mandated warning did not cover, and a
+        real one: a header hidden entirely inside a block comment, or an unterminated `/*`,
+        silently vanishes exactly like the anomaly this whole warning mechanism exists to
+        catch. It now warns too.
         .OUTPUTS
         [pscustomobject]@{ ObjectType; Id (int); Name (quotes stripped) }, or $null.
     #>
@@ -150,7 +185,7 @@ function Get-MutObjectHeader {
         $match = [regex]::Match($line, $script:ObjectHeaderPattern, 'IgnoreCase')
         if ($match.Success) {
             return [pscustomobject]@{
-                ObjectType = $match.Groups[1].Value
+                ObjectType = $match.Groups[1].Value.ToLowerInvariant()
                 Id         = [int]$match.Groups[2].Value
                 Name       = $match.Groups[3].Value.Trim('"')
             }
@@ -171,6 +206,15 @@ function Get-MutObjectHeader {
         Write-Warning "Get-MutObjectHeader: '$Path': first non-preamble line does not match an object header ('$line'); this file will not enter the reference map."
         return $null
     }
+
+    # No remaining line at all survived stripping/preamble-skipping (fix round 4): this could
+    # be a genuinely empty or whitespace-only file, comments-only, OR -- more worryingly -- an
+    # object header hidden entirely inside a `/* ... */` block (realistic when someone
+    # comments an object out; it still compiles), or an unterminated `/*` that swallowed the
+    # rest of the file. All of these are the same silent-deflation class the leftover-line
+    # warning above exists to catch, just reached by a different path (no line survives to
+    # even test), so this warns too instead of returning $null unnoticed.
+    Write-Warning "Get-MutObjectHeader: '$Path': no object header found after stripping comments and the recognised preamble (the file may be empty, comments-only, or have its header hidden inside an unterminated or wrapping block comment); this file will not enter the reference map."
     return $null
 }
 
@@ -187,31 +231,72 @@ function Test-MutIsTestCodeunit {
 function Get-MutReferencedNames {
     <#
         .SYNOPSIS
-        Collects every quoted object name referenced via `Codeunit "…"`, `Record "…"`,
-        `Page "…"`, `Enum "…"`, `Codeunit::"…"`, `Page::"…"`, `Database::"…"` in $Content.
+        Collects every quoted object reference (`Codeunit "…"`, `Record "…"`, `Page "…"`,
+        `Enum "…"`, `Codeunit::"…"`, `Page::"…"`, `Database::"…"`) in $Content, WITH each
+        reference's own object type resolved (§6.5.5, fix round 4: the map this feeds is keyed
+        by (object type, name), never name alone, so a reference must carry its type to
+        resolve against the right slot -- see Resolve-MutReferenceObjectType).
+
+        $Content MUST already be trivia-stripped (Remove-MutAlTrivia) by the caller: a
+        commented-out `// Codeunit "AUT A"` must not bind a test to A, on the same terms the
+        header path already strips comments (fix round 4 -- verified live: without this, a
+        commented-out reference still bound a test).
         .OUTPUTS
-        [string[]] names, in file order, not deduplicated.
+        [pscustomobject[]]@{ ObjectType; Name }, in file order, not deduplicated.
     #>
     param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Content)
 
-    $names = @()
+    $references = @()
     foreach ($match in [regex]::Matches($Content, $script:ReferencePattern)) {
-        $names += $match.Groups[1].Value
+        $references += [pscustomobject]@{
+            ObjectType = Resolve-MutReferenceObjectType -Keyword $match.Groups[1].Value
+            Name       = $match.Groups[2].Value
+        }
     }
-    return , $names
+    return , $references
+}
+
+function Get-MutTypeNameKey {
+    <#
+        .SYNOPSIS
+        Private. The composite (object type, name) key both the AUT name map and every
+        reference resolve against (§6.5.5, fix round 4). $ObjectType is assumed already
+        lowercased (Get-MutObjectHeader / Resolve-MutReferenceObjectType both do this).
+    #>
+    param([string]$ObjectType, [string]$Name)
+
+    return "$ObjectType|$Name"
 }
 
 function Get-MutReferenceMap {
     <#
         .SYNOPSIS
-        Builds the reference map for covering-test selection (§6.5.5): a name -> id map is
-        built from every AUT .al file's object header, then every test-app .al file whose
-        content declares `Subtype = Test` is scanned for quoted object-name references; each
-        recognized name is mapped to the AUT object id, and that id accumulates the referencing
-        test codeunit's own id.
+        Builds the reference map for covering-test selection (§6.5.5): a (type, name) -> id
+        map is built from every AUT .al file's object header, then every test-app .al file
+        whose content declares `Subtype = Test` is scanned (from TRIVIA-STRIPPED content, so a
+        commented-out reference cannot bind a test, fix round 4) for quoted, typed object
+        references; each reference resolved against the map contributes the referencing test
+        codeunit's own id to that AUT object's entry.
 
-        Names not found in the AUT name map (references to objects inside the test app itself,
-        e.g. "Library Assert", or to the test codeunit's own name) are silently ignored.
+        Names not found in the AUT (type, name) map (references to objects inside the test app
+        itself, e.g. "Library Assert", or to the test codeunit's own name) are silently
+        ignored.
+
+        KEYED BY (OBJECT TYPE, NAME), NEVER NAME ALONE (fix round 4 -- a live bug on the Tier
+        B slice itself, not hypothetical): AL ids are per type, so a name can be claimed by a
+        codeunit AND a page at once. A name-only map lets the second overwrite the first, then
+        resolves every reference to that name to whichever id wrote last -- possibly a
+        DIFFERENT type's id that happens to equal some unrelated object's own id. Confirmed
+        live: `page 72918635 "CTS-CB JPMorgan Assist Setup"` overwrote `codeunit 72918654` of
+        the same name in a bare name->id map; because the page's id (72918635) equals the
+        pilot codeunit `72918635 "CTS-CB Auth Share Detection"`, two test codeunits that
+        reference the JPMorgan Assist Setup PAGE and never mention Auth Share Detection at all
+        were wrongly attributed as covering tests for the pilot object. On the real AUT: 55
+        names claimed by more than one object, 36 AUT codeunits losing their map slot
+        entirely, 391 of 812 entries resolving to an id that is also some other codeunit's id.
+        A collision WITHIN one type (two objects of the SAME type sharing a name -- not
+        possible for real compiled AL, but not this function's job to assume) is a genuine
+        ambiguity and warns, keeping the first-seen id and discarding the rest.
 
         .PARAMETER AutPath
         Root of the AUT source tree (e.g. `<workDir>/aut-original`), searched recursively for
@@ -231,13 +316,22 @@ function Get-MutReferenceMap {
         [string]$TestAppPath
     )
 
-    $nameToId = @{}
+    $typeNameToId = @{}
+    $sourceFileByKey = @{}
     foreach ($file in @(Get-ChildItem -Path $AutPath -Filter '*.al' -Recurse -File)) {
         $header = Get-MutObjectHeader -Path $file.FullName
         if ($null -eq $header) {
             continue
         }
-        $nameToId[$header.Name] = $header.Id
+
+        $key = Get-MutTypeNameKey -ObjectType $header.ObjectType -Name $header.Name
+        if ($typeNameToId.ContainsKey($key) -and $typeNameToId[$key] -ne $header.Id) {
+            Write-Warning "Get-MutReferenceMap: ambiguous $($header.ObjectType) name '$($header.Name)': both id $($typeNameToId[$key]) ('$($sourceFileByKey[$key])') and id $($header.Id) ('$($file.FullName)') claim it; keeping $($typeNameToId[$key])."
+            continue
+        }
+
+        $typeNameToId[$key] = $header.Id
+        $sourceFileByKey[$key] = $file.FullName
     }
 
     $map = @{}
@@ -253,11 +347,16 @@ function Get-MutReferenceMap {
         }
         $testCodeunitId = $header.Id
 
-        foreach ($name in (Get-MutReferencedNames -Content $content)) {
-            if (-not $nameToId.ContainsKey($name)) {
+        # Trivia-stripped, same terms as the header path (fix round 4): a commented-out
+        # `Codeunit::"X"` must not bind this test to X.
+        $strippedContent = Remove-MutAlTrivia -Content $content
+
+        foreach ($reference in (Get-MutReferencedNames -Content $strippedContent)) {
+            $key = Get-MutTypeNameKey -ObjectType $reference.ObjectType -Name $reference.Name
+            if (-not $typeNameToId.ContainsKey($key)) {
                 continue
             }
-            $autObjectId = $nameToId[$name]
+            $autObjectId = $typeNameToId[$key]
 
             if (-not $map.ContainsKey($autObjectId)) {
                 $map[$autObjectId] = New-Object System.Collections.Generic.List[int]
