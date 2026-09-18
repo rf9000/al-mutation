@@ -309,6 +309,31 @@ Describe 'Get-MutConfig' {
         }
     }
 
+    It 'throws when workDir is LITERALLY nested inside aut.sourcePath even though workDir itself is a junction pointing somewhere else entirely (fix round 2: resolving BOTH operands past reparse points weakened the mirror case -- robocopy /MIR still targets the literal, nested path)' {
+        $autSrc = "$TestDrive/aut-src-mirror-$([guid]::NewGuid().ToString('N'))"
+        New-Item -ItemType Directory -Path $autSrc -Force | Out-Null
+
+        $elsewhereReal = "$TestDrive/elsewhere-real-$([guid]::NewGuid().ToString('N'))"
+        New-Item -ItemType Directory -Path $elsewhereReal -Force | Out-Null
+
+        # workDir's own literal path IS inside aut.sourcePath, but workDir is itself a
+        # junction whose real target is a completely unrelated directory.
+        $workDirJunction = Join-Path $autSrc 'out'
+        New-Item -ItemType Junction -Path $workDirJunction -Target $elsewhereReal -Force | Out-Null
+
+        try {
+            $overrides = @{
+                aut     = @{ sourcePath = $autSrc; appId = '8b3f4e5c-ad6a-4f7b-9c8d-9e0f1a2b3c4d'; version = '1.0.0.0' }
+                workDir = $workDirJunction
+            }
+            $path = New-MutTestConfigFile -Overrides $overrides
+            { Get-MutConfig -Path $path } | Should -Throw '*workDir*aut.sourcePath*'
+        }
+        finally {
+            Remove-Item -Path $workDirJunction -Force -ErrorAction SilentlyContinue
+        }
+    }
+
     It 'throws when generator.seed is not an integer' {
         $overrides = @{ generator = @{ maxMutants = 0; onlyObjects = @(); seed = 'random'; operators = @('REL'); includeBreak = $false } }
         $path = New-MutTestConfigFile -Overrides $overrides
@@ -379,7 +404,7 @@ Describe 'Assert-MutNumberAtLeast / Assert-MutIntegerAtLeast (culture-invariant 
         }
     }
 
-    It 'parses "1.5" as 1.5 (not 15) under da-DK culture when the bound is 1 (must pass, proving the correct magnitude was used)' {
+    It 'rejects "1.5" against a bound of 5 under da-DK culture (fix round 2: the previous version of this test used a bound of 1, which 15 -- the WRONG 2-arg-style parse -- also exceeds, so it passed for the wrong reason; a bound strictly between 1.5 and 15 is required to distinguish them)' {
         $originalCulture = [System.Threading.Thread]::CurrentThread.CurrentCulture
         try {
             [System.Threading.Thread]::CurrentThread.CurrentCulture = [System.Globalization.CultureInfo]::GetCultureInfo('da-DK')
@@ -388,16 +413,16 @@ Describe 'Assert-MutNumberAtLeast / Assert-MutIntegerAtLeast (culture-invariant 
             {
                 InModuleScope Config {
                     param($Obj)
-                    Assert-MutNumberAtLeast -Object $Obj -Name 'value' -KeyPath 'test.value' -Minimum 1 -ExclusiveMinimum
+                    Assert-MutNumberAtLeast -Object $Obj -Name 'value' -KeyPath 'test.value' -Minimum 5 -ExclusiveMinimum
                 } -Parameters @{ Obj = $obj }
-            } | Should -Not -Throw
+            } | Should -Throw '*test.value*greater than 5*'
         }
         finally {
             [System.Threading.Thread]::CurrentThread.CurrentCulture = $originalCulture
         }
     }
 
-    It 'still rejects a non-integer string for Assert-MutIntegerAtLeast under da-DK culture' {
+    It 'still rejects a non-integer string for Assert-MutIntegerAtLeast under da-DK culture (NOTE: this does not actually distinguish the fix -- the 2-arg int overload uses NumberStyles.Integer, which already disallows group separators, so "1.500" was rejected identically before this fix too; kept as a plain regression check, not evidence of the culture bug)' {
         $originalCulture = [System.Threading.Thread]::CurrentThread.CurrentCulture
         try {
             [System.Threading.Thread]::CurrentThread.CurrentCulture = [System.Globalization.CultureInfo]::GetCultureInfo('da-DK')
@@ -412,6 +437,52 @@ Describe 'Assert-MutNumberAtLeast / Assert-MutIntegerAtLeast (culture-invariant 
         }
         finally {
             [System.Threading.Thread]::CurrentThread.CurrentCulture = $originalCulture
+        }
+    }
+}
+
+Describe 'Resolve-MutFinalPath (drive-root handling, review fix round 2)' {
+    <#
+        .SYNOPSIS
+        TrimEnd('\', '/') ran BEFORE the drive-root check, so a config value of "C:\" became
+        "C:" -- which CreateFileW/the Win32 path APIs read as the legacy DOS "current
+        directory on drive C:", not the actual root. Resolving that then returned the
+        PROCESS'S CURRENT DIRECTORY on that drive instead of "C:\" itself, so a drive-root
+        source/workDir value silently compared against the wrong path. Proven here by
+        pointing the process's current directory somewhere that is provably NOT "C:\" and
+        confirming Resolve-MutFinalPath('C:\') does not resolve to it.
+    #>
+    It 'resolves "C:\" to the drive root, not to the process current directory' {
+        # [Environment]::CurrentDirectory, NOT Set-Location: PowerShell's own location and the
+        # process's actual current directory (what CreateFileW's drive-relative resolution
+        # reads) are two different things -- Set-Location alone does not move the latter,
+        # verified by direct experiment.
+        $originalCurrentDirectory = [Environment]::CurrentDirectory
+        try {
+            [Environment]::CurrentDirectory = $env:WINDIR
+
+            $resolved = InModuleScope Config { Resolve-MutFinalPath -Path 'C:\' }
+
+            $resolved | Should -Be 'C:'
+            $resolved | Should -Not -Be $env:WINDIR.TrimEnd('\')
+        }
+        finally {
+            [Environment]::CurrentDirectory = $originalCurrentDirectory
+        }
+    }
+
+    It 'resolves "C:" (no trailing separator) the same way, not as drive-relative to the current directory' {
+        $originalCurrentDirectory = [Environment]::CurrentDirectory
+        try {
+            [Environment]::CurrentDirectory = $env:WINDIR
+
+            $resolved = InModuleScope Config { Resolve-MutFinalPath -Path 'C:' }
+
+            $resolved | Should -Be 'C:'
+            $resolved | Should -Not -Be $env:WINDIR.TrimEnd('\')
+        }
+        finally {
+            [Environment]::CurrentDirectory = $originalCurrentDirectory
         }
     }
 }

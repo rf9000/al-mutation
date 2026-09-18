@@ -23,7 +23,11 @@ using System.Text;
 
 public static class MutFinalPathNative
 {
-    private const uint GENERIC_READ = 0x80000000;
+    // The documented dwDesiredAccess for a handle that will only be passed to
+    // GetFinalPathNameByHandle is 0 (query metadata only, no read/write access requested) --
+    // review fix round 2. Requesting GENERIC_READ made CreateFileW fail (and
+    // Resolve-MutFinalPath silently fall back to the unresolved path, reverting to pre-fix
+    // behaviour) for a directory the caller can traverse but not read.
     private const uint FILE_SHARE_READ = 0x1;
     private const uint FILE_SHARE_WRITE = 0x2;
     private const uint OPEN_EXISTING = 3;
@@ -46,7 +50,7 @@ public static class MutFinalPathNative
     // reparse-point-free absolute path. Throws Win32Exception on failure.
     public static string GetFinalPath(string path)
     {
-        IntPtr handle = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, IntPtr.Zero,
+        IntPtr handle = CreateFileW(path, 0, FILE_SHARE_READ | FILE_SHARE_WRITE, IntPtr.Zero,
             OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, IntPtr.Zero);
         if (handle == new IntPtr(-1))
         {
@@ -211,6 +215,16 @@ function Resolve-MutFinalPath {
 
     $full = $Path.TrimEnd('\', '/')
 
+    # A bare drive letter ("C:", with no trailing separator) is NOT the drive root as far as
+    # CreateFileW/the Win32 path APIs are concerned: it is the legacy DOS "current directory on
+    # drive C:" reference. Trimming the trailing separator off an actual root path (e.g. the
+    # config value "C:\") would silently turn it into that drive-relative form -- resolving to
+    # the process's current directory instead of the real root, and comparing the wrong thing
+    # (review fix round 2). Guard this BEFORE the trim is allowed to stand.
+    if ($full -match '^[A-Za-z]:$') {
+        $full += '\'
+    }
+
     $tailParts = @()
     $ancestor = $full
     while ($ancestor -and -not (Test-Path -LiteralPath $ancestor)) {
@@ -253,13 +267,22 @@ function Assert-MutWorkDirOutsideSources {
         observation of that guardrail. Paths are resolved to absolute (against $RepoRoot when
         relative) before comparing, since one key may be relative while another is absolute in
         the same config (§6.5.1's own example config does exactly that: aut.sourcePath is
-        absolute, workDir is `./out`) -- and then resolved past any reparse point
-        (Resolve-MutFinalPath, review fix round 1), since a plain GetFullPath comparison alone
-        is defeated by a directory junction pointing workDir into a source tree.
+        absolute, workDir is `./out`).
+
+        Checked BOTH as literal (plain GetFullPath) paths AND past any reparse point
+        (Resolve-MutFinalPath): a plain comparison alone is defeated by a directory junction
+        pointing workDir into a source tree (review fix round 1), but resolving BOTH operands
+        past reparse points and comparing ONLY that -- review fix round 1's mistake --
+        weakens the mirror case: a workDir that is LITERALLY nested inside aut.sourcePath but
+        is itself a junction pointing somewhere else entirely would then compare as unrelated
+        and pass, when robocopy /MIR still targets the literal, nested destination path (the
+        junction's OWN location, not its target) and would still prune there. Either
+        comparison flags the config; both run.
     #>
     param($Config, [string]$RepoRoot)
 
-    $workDirFull = Resolve-MutFinalPath -Path ([System.IO.Path]::GetFullPath((Resolve-MutConfigPath -RepoRoot $RepoRoot -Path $Config.workDir)))
+    $workDirLiteral = [System.IO.Path]::GetFullPath((Resolve-MutConfigPath -RepoRoot $RepoRoot -Path $Config.workDir)).TrimEnd('\', '/')
+    $workDirResolved = Resolve-MutFinalPath -Path $workDirLiteral
 
     $sources = @(
         [pscustomobject]@{ KeyPath = 'aut.sourcePath'; Path = $Config.aut.sourcePath }
@@ -270,12 +293,16 @@ function Assert-MutWorkDirOutsideSources {
     }
 
     foreach ($source in $sources) {
-        $sourceFull = Resolve-MutFinalPath -Path ([System.IO.Path]::GetFullPath((Resolve-MutConfigPath -RepoRoot $RepoRoot -Path $source.Path)))
+        $sourceLiteral = [System.IO.Path]::GetFullPath((Resolve-MutConfigPath -RepoRoot $RepoRoot -Path $source.Path)).TrimEnd('\', '/')
+        $sourceResolved = Resolve-MutFinalPath -Path $sourceLiteral
 
-        $isSamePath = $workDirFull.Equals($sourceFull, [System.StringComparison]::OrdinalIgnoreCase)
-        $isNestedInside = $workDirFull.StartsWith($sourceFull + [System.IO.Path]::DirectorySeparatorChar, [System.StringComparison]::OrdinalIgnoreCase)
+        $isContained = {
+            param($WorkDir, $Source)
+            $WorkDir.Equals($Source, [System.StringComparison]::OrdinalIgnoreCase) -or
+                $WorkDir.StartsWith($Source + [System.IO.Path]::DirectorySeparatorChar, [System.StringComparison]::OrdinalIgnoreCase)
+        }
 
-        if ($isSamePath -or $isNestedInside) {
+        if ((& $isContained $workDirLiteral $sourceLiteral) -or (& $isContained $workDirResolved $sourceResolved)) {
             throw "Get-MutConfig: config key 'workDir' ('$($Config.workDir)') must not be, or lie inside, '$($source.KeyPath)' ('$($source.Path)') -- Sync-MutAutCopy's robocopy /MIR would prune files there."
         }
     }
