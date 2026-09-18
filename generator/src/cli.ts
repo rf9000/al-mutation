@@ -78,6 +78,19 @@ function parseRequiredInt(value: string, flagName: string): number {
   return Number.parseInt(value, 10);
 }
 
+/**
+ * Same as `parseRequiredInt`, plus rejects negative values -- `sample()` (§6.4.8) treats any
+ * `n <= 0` as "all" (only `n === 0` is meant to), so a negative --max-mutants silently meant "all"
+ * with no error, the exact silent-ignore failure mode this flag's validation exists to close.
+ */
+function parseNonNegativeInt(value: string, flagName: string): number {
+  const parsed = parseRequiredInt(value, flagName);
+  if (parsed < 0) {
+    throw new UsageError(`--${flagName} must not be negative, got ${JSON.stringify(value)}`);
+  }
+  return parsed;
+}
+
 function runGenerate(args: readonly string[]): number {
   const flags = parseFlags(args);
 
@@ -113,8 +126,8 @@ function runGenerate(args: readonly string[]): number {
       coreAppId,
       coreAppVersion,
       autVersion: flags.get('aut-version'),
-      maxMutants: flags.has('max-mutants') ? parseRequiredInt(flags.get('max-mutants')!, 'max-mutants') : 0,
-      seed: flags.has('seed') ? Number.parseInt(flags.get('seed')!, 10) : 1,
+      maxMutants: flags.has('max-mutants') ? parseNonNegativeInt(flags.get('max-mutants')!, 'max-mutants') : 0,
+      seed: flags.has('seed') ? parseRequiredInt(flags.get('seed')!, 'seed') : 1,
       onlyObjects: parseObjectList(flags.get('only-objects')),
       operators: parseOperatorList(flags.get('operators')),
       includeBreak: flags.has('include-break'),

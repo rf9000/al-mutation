@@ -77,3 +77,23 @@ test('cli generate: missing a required flag still exits with usage error 2', () 
   assert.equal(status, 2);
   assert.match(stderr, /--aut/);
 });
+
+// --- Fix round 1: the two remaining validation holes of the same class bd0eef0 closed. ---
+
+test('cli generate: --seed with a non-numeric value exits non-zero (review follow-up)', () => {
+  const { status, stderr } = runCli(validArgs(tmpDir(), ['--seed', 'abc']));
+  assert.notEqual(status, 0);
+  assert.match(stderr, /seed/i);
+});
+
+test('cli generate: a negative --max-mutants exits non-zero instead of silently meaning "all" (review follow-up)', () => {
+  const { status: negativeStatus, stderr } = runCli(validArgs(tmpDir(), ['--max-mutants', '-10']));
+  assert.notEqual(negativeStatus, 0);
+  assert.match(stderr, /max-mutants/i);
+
+  // Sanity: a genuinely capped run (a small positive value) still produces fewer mutants than
+  // the uncapped baseline, so this isn't accidentally rejecting valid input too.
+  const { status: cappedStatus, stdout: cappedStdout } = runCli(validArgs(tmpDir(), ['--max-mutants', '1']));
+  assert.equal(cappedStatus, 0);
+  assert.match(cappedStdout, /^generated 1 mutants, /);
+});
