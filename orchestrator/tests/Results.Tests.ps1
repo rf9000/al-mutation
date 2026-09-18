@@ -86,6 +86,26 @@ Describe 'Get-MutScore' {
 
         Get-MutScore -Totals $totals | Should -Be 0
     }
+
+    It 'excludes error and pending from the denominator alongside equivalent and compileError' {
+        $totals = [pscustomobject]@{
+            total = 30; killed = 17; survived = 6; timeout = 3
+            compileError = 2; uncovered = 0; equivalent = 2
+            error = 1; pending = 1
+        }
+
+        # denom = 30 - 2 - 2 - 1 - 1 = 24; numerator = 17 + 3 = 20 -> 0.8333
+        Get-MutScore -Totals $totals | Should -Be 0.8333
+    }
+
+    It 'treats a Totals object with no error/pending property as 0 of each (backward compatible)' {
+        $totals = [pscustomobject]@{
+            total = 26; killed = 17; survived = 6; timeout = 3
+            compileError = 0; uncovered = 0; equivalent = 0
+        }
+
+        Get-MutScore -Totals $totals | Should -Be 0.7692
+    }
 }
 
 Describe 'Export-MutResults' {
@@ -204,6 +224,46 @@ Describe 'Export-MutResults' {
         $summary | Should -Match 'BadCompile'
         $summary | Should -Match 'Uncovered'
         $summary | Should -Match '\b1\b'
+    }
+
+    It 'includes Error and Pending mutants: buckets sum to total, both excluded from the score denominator, and an Errors section is rendered' {
+        $mutants = @(
+            New-MutTestMutant -Id 1 -Procedure 'KilledOne'
+            New-MutTestMutant -Id 2 -Procedure 'SurvivedOne'
+            New-MutTestMutant -Id 3 -Procedure 'TimedOutOne'
+            New-MutTestMutant -Id 4 -Procedure 'ErroredOne'
+            New-MutTestMutant -Id 5 -Procedure 'NeverRan'
+        )
+        $results = @(
+            [pscustomobject]@{ Id = 1; Status = 'Killed'; KillingTest = 'C:F1'; DurationMs = 100; CoveringTests = @(95155) }
+            [pscustomobject]@{ Id = 2; Status = 'Survived'; KillingTest = $null; DurationMs = 200; CoveringTests = @(95155) }
+            [pscustomobject]@{ Id = 3; Status = 'Timeout'; KillingTest = $null; DurationMs = $null; CoveringTests = @(95913) }
+            [pscustomobject]@{ Id = 4; Status = 'Error'; KillingTest = $null; DurationMs = $null; CoveringTests = @(95155); Error = 'API call timed out' }
+            # Mutant 5 has no Results row and is not in CompileErrorIds -> Pending.
+        )
+
+        $paths = Export-MutResults -RunNo 6 -Config $script:Config -Env $script:EnvHandle -Mutants $mutants -Results $results `
+            -OutDir $script:OutDir -StartedUtc (Get-Date) -FinishedUtc (Get-Date) -CompileErrorIds @()
+
+        $json = Get-Content -Path $paths.ResultsPath -Raw | ConvertFrom-Json
+
+        $json.totals.total | Should -Be 5
+        $json.totals.error | Should -Be 1
+        $json.totals.pending | Should -Be 1
+
+        $bucketSum = $json.totals.killed + $json.totals.survived + $json.totals.timeout + $json.totals.compileError +
+            $json.totals.uncovered + $json.totals.equivalent + $json.totals.error + $json.totals.pending
+        $bucketSum | Should -Be $json.totals.total
+
+        # denom = 5 - equivalent(0) - compileError(0) - error(1) - pending(1) = 3; numerator = killed(1) + timeout(1) = 2 -> 0.6667
+        $json.score | Should -Be 0.6667
+
+        ($json.mutants | Where-Object { $_.id -eq 4 }).status | Should -Be 'Error'
+        ($json.mutants | Where-Object { $_.id -eq 5 }).status | Should -Be 'Pending'
+
+        $summary = Get-Content -Path $paths.SummaryPath -Raw
+        $summary | Should -Match '## Errors'
+        $summary | Should -Match 'ErroredOne'
     }
 
     It 'throws when a result row carries an unrecognized status, instead of silently exporting it' {

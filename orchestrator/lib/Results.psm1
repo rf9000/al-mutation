@@ -39,9 +39,20 @@ function Get-MutScore {
         §7.3 score formula: (killed + timeout) / (total - equivalent - compileError), rounded
         to 4 decimal places. Returns 0 when the denominator is not positive.
 
+        Error and Pending are ALSO excluded from the denominator, alongside Equivalent and
+        CompileError: an `Error` mutant recorded an infrastructure failure (a timed-out API
+        call, a dropped connection, an unexpected exception in the loop, §6.5.6) rather than any
+        observation of whether the test suite would have caught the mutation, and a `Pending`
+        mutant was never run at all. Counting either as a de-facto survivor -- which is what
+        leaving them in the denominator while never reaching the numerator does -- scores every
+        infrastructure hiccup as evidence the test suite is weak, which it is not: it is evidence
+        the *run* was incomplete. Both are still counted and reported (Get-MutTotals,
+        Get-MutSummaryMarkdown's Errors section) so an infrastructure failure is visible and can
+        be retried or investigated; it is simply never treated as a killed/survived signal.
+
         .PARAMETER Totals
-        An object with .total, .killed, .timeout, .equivalent, .compileError (int-like
-        properties; §7.3 totals shape).
+        An object with .total, .killed, .timeout, .equivalent, .compileError, .error, .pending
+        (int-like properties; §7.3 totals shape plus the error/pending counts this task adds).
 
         .OUTPUTS
         [double] rounded to 4 decimal places (0 when the denominator <= 0).
@@ -51,7 +62,16 @@ function Get-MutScore {
         $Totals
     )
 
-    $denominator = [double]$Totals.total - [double]$Totals.equivalent - [double]$Totals.compileError
+    $errorCount = 0
+    if (Test-MutHasProperty $Totals 'error') {
+        $errorCount = $Totals.error
+    }
+    $pendingCount = 0
+    if (Test-MutHasProperty $Totals 'pending') {
+        $pendingCount = $Totals.pending
+    }
+
+    $denominator = [double]$Totals.total - [double]$Totals.equivalent - [double]$Totals.compileError - [double]$errorCount - [double]$pendingCount
     if ($denominator -le 0) {
         return 0
     }
@@ -140,7 +160,12 @@ function Get-MutMergedMutantRows {
 function Get-MutTotals {
     <#
         .SYNOPSIS
-        Private. Tallies the §7.3 totals object from the merged mutant rows.
+        Private. Tallies the §7.3 totals object from the merged mutant rows, plus `error` and
+        `pending` counts (this task's addition to §7.3: without them, an `Error` mutant --
+        produced by Invoke-MutMutantLoop on an infrastructure failure, §6.5.6 -- sat in the
+        denominator, never reached the numerator, and appeared in no bucket at all, so the
+        buckets did not sum to `total` and every infrastructure failure silently scored as a
+        survivor). See Get-MutScore for why both are excluded from the score denominator.
     #>
     param(
         [Parameter(Mandatory = $true)]
@@ -155,6 +180,8 @@ function Get-MutTotals {
         compileError = @($MergedRows | Where-Object { $_.status -eq 'CompileError' }).Count
         uncovered    = @($MergedRows | Where-Object { $_.status -eq 'Uncovered' }).Count
         equivalent   = @($MergedRows | Where-Object { $_.status -eq 'Equivalent' }).Count
+        error        = @($MergedRows | Where-Object { $_.status -eq 'Error' }).Count
+        pending      = @($MergedRows | Where-Object { $_.status -eq 'Pending' }).Count
     }
 }
 
@@ -222,11 +249,20 @@ function Get-MutSummaryMarkdown {
     $lines += Format-MutMarkdownTableRow @('Wall clock', $WallClock)
     $lines += ''
 
+    $totalsError = 0
+    if (Test-MutHasProperty $Totals 'error') {
+        $totalsError = $Totals.error
+    }
+    $totalsPending = 0
+    if (Test-MutHasProperty $Totals 'pending') {
+        $totalsPending = $Totals.pending
+    }
+
     $lines += '## Totals'
     $lines += ''
-    $lines += Format-MutMarkdownTableRow @('Total', 'Killed', 'Survived', 'Timeout', 'Compile error', 'Uncovered', 'Equivalent')
-    $lines += Format-MutMarkdownTableRow @('---', '---', '---', '---', '---', '---', '---')
-    $lines += Format-MutMarkdownTableRow @("$($Totals.total)", "$($Totals.killed)", "$($Totals.survived)", "$($Totals.timeout)", "$($Totals.compileError)", "$($Totals.uncovered)", "$($Totals.equivalent)")
+    $lines += Format-MutMarkdownTableRow @('Total', 'Killed', 'Survived', 'Timeout', 'Compile error', 'Uncovered', 'Equivalent', 'Error', 'Pending')
+    $lines += Format-MutMarkdownTableRow @('---', '---', '---', '---', '---', '---', '---', '---', '---')
+    $lines += Format-MutMarkdownTableRow @("$($Totals.total)", "$($Totals.killed)", "$($Totals.survived)", "$($Totals.timeout)", "$($Totals.compileError)", "$($Totals.uncovered)", "$($Totals.equivalent)", "$totalsError", "$totalsPending")
     $lines += ''
 
     $lines += '## Score'
@@ -283,6 +319,24 @@ function Get-MutSummaryMarkdown {
             $lines += Format-MutMarkdownTableRow @(
                 "$($row.id)", "$($row.objectId)", $row.procedure, "$($row.line)", $row.operator,
                 "$($row.original) -> $($row.mutated)"
+            )
+        }
+    }
+    $lines += ''
+
+    $lines += '## Errors'
+    $lines += ''
+    $errors = @($MergedRows | Where-Object { $_.status -eq 'Error' })
+    if ($errors.Count -eq 0) {
+        $lines += '_None._'
+    }
+    else {
+        $lines += Format-MutMarkdownTableRow @('Id', 'Object', 'Procedure', 'Line', 'Operator', 'Original -> Mutated', 'Covering tests')
+        $lines += Format-MutMarkdownTableRow @('---', '---', '---', '---', '---', '---', '---')
+        foreach ($row in $errors) {
+            $lines += Format-MutMarkdownTableRow @(
+                "$($row.id)", "$($row.objectId)", $row.procedure, "$($row.line)", $row.operator,
+                "$($row.original) -> $($row.mutated)", (($row.coveringTests) -join ', ')
             )
         }
     }
