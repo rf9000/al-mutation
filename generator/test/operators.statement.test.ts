@@ -161,6 +161,21 @@ test('INSFLAG: a receiver whose own field name is "false value" is not corrupted
   assert.equal(candidates[0]!.mutated, 'Rec."false value".Modify(true)');
 });
 
+test('INSFLAG: a PLAIN-IDENTIFIER receiver variable named "trueRec" is not corrupted (review round 2 coverage)', () => {
+  // The previous two tests only covered a quoted-identifier receiver ("true value"/"false
+  // value"). This is the plain-identifier variant of the same "substring of a longer word"
+  // shape: `match[0].replace(literal, flipped)` (the pre-25c4beb code) replaced the FIRST
+  // occurrence of "true" in the whole statement text, which is the "true" prefix of "trueRec"
+  // itself, not the flag -- corrupting it to `falseRec."false".Modify(true)` (receiver renamed,
+  // flag left untouched). The offset-based replace must not have this failure mode either.
+  const { ctx, stmt } = procedureFixture('trueRec."false".Modify(true)');
+  const candidates = INSFLAG.apply(ctx, stmt);
+
+  assert.equal(candidates.length, 1);
+  assert.equal(candidates[0]!.original, 'trueRec."false".Modify(true)');
+  assert.equal(candidates[0]!.mutated, 'trueRec."false".Modify(false)');
+});
+
 // --- BREAK ---
 
 test('BREAK: every simple statement mutates to MutBreak_ThisDoesNotCompile()', () => {
