@@ -92,6 +92,20 @@ Describe 'Invoke-MutTests' {
         Should -Invoke -ModuleName DemoPortal Invoke-Continia -ParameterFilter { $TimeoutSec -eq 90 } -Times 1
     }
 
+    It 'does not throw under StrictMode when the response omits tests entirely (the shape most likely on a 0-tests result)' {
+        Mock -ModuleName DemoPortal Invoke-Continia {
+            [pscustomobject]@{
+                summary = [pscustomobject]@{ total = 0; passed = 0; failed = 0; skipped = 0; durationSeconds = 0.0; codeunitName = 'X' }
+            }
+        }
+
+        $result = Invoke-MutTests -Env $envHandle -Targets @([pscustomobject]@{ CodeunitId = 95155; Function = $null }) -TimeoutSec 30
+
+        $result.Passed | Should -Be 0
+        $result.Failed | Should -Be 0
+        $result.Tests.Count | Should -Be 0
+    }
+
     It 'maps result Fail, carries errorMessage, and sums Passed/Failed/DurationMs across jobs' {
         Mock -ModuleName DemoPortal Invoke-Continia -ParameterFilter { $Arguments[3] -eq 95155 } {
             [pscustomobject]@{

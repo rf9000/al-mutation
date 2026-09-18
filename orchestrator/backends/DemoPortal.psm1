@@ -910,7 +910,11 @@ function Compile-MutApp {
         }
     }
 
-    $diagnostics = ConvertTo-MutDiagnosticList -Diagnostics $result.diagnostics
+    $diagnosticsRaw = $null
+    if (Test-MutHasProperty $result 'diagnostics') {
+        $diagnosticsRaw = $result.diagnostics
+    }
+    $diagnostics = ConvertTo-MutDiagnosticList -Diagnostics $diagnosticsRaw
 
     $errorCount = 0
     if ((Test-MutHasProperty $result 'diagnosticCounts') -and (Test-MutHasProperty $result.diagnosticCounts 'error')) {
@@ -1007,6 +1011,22 @@ function Publish-MutApp {
     }
 
     $row = @($result) | Select-Object -First 1
+
+    if ($null -eq $row) {
+        # An empty-array CLI response (no rows at all) is not the same as a row that reported
+        # failure: without this branch, every Test-MutHasProperty guard below is false against a
+        # $null $row and the function returns Success=$false with a null Code, ErrorMessage and
+        # an empty Diagnostics list -- verbatim the empty-diagnostics shape M6 was written to
+        # eliminate (Run.psm1's caller then throws "publishing aut-original failed. Code: ;
+        # Message: ; Diagnostics: []", which names nothing actionable).
+        return [pscustomobject]@{
+            Success      = $false
+            Code         = $null
+            Diagnostics  = @()
+            DurationSec  = $durationSec
+            ErrorMessage = "Publish-MutApp: deploy returned no rows for '$Path' (empty array response)."
+        }
+    }
 
     $diagnostics = @()
     if (Test-MutHasProperty $row 'diagnostics') {
@@ -1366,7 +1386,11 @@ function Invoke-MutTests {
             }
         }
 
-        foreach ($t in @($response.tests)) {
+        $responseTests = $null
+        if (Test-MutHasProperty $response 'tests') {
+            $responseTests = $response.tests
+        }
+        foreach ($t in @($responseTests)) {
             if ($null -eq $t) {
                 continue
             }

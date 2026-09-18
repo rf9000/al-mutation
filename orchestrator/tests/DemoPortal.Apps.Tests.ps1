@@ -129,6 +129,21 @@ Describe 'Compile-MutApp' {
         $result.Success | Should -Be $true
     }
 
+    It 'does not throw under StrictMode when the response omits diagnostics entirely (a clean compile)' {
+        $dir = "$TestDrive/compile-no-diagnostics-field"
+        New-Item -ItemType Directory -Path $dir | Out-Null
+        New-MutTestAppFile -Dir $dir -Name 'ok.app' -LastWriteTime (Get-Date) | Out-Null
+
+        Mock -ModuleName DemoPortal Invoke-Continia {
+            [pscustomobject]@{ diagnosticCounts = [pscustomobject]@{ error = 0 } }
+        }
+
+        $result = Compile-MutApp -Env $envHandle -Path $dir
+
+        $result.Success | Should -Be $true
+        $result.Diagnostics.Count | Should -Be 0
+    }
+
     It 'reports Success=$false when diagnosticCounts.error is 0 but no app file was produced' {
         $dir = "$TestDrive/compile-no-app"
         New-Item -ItemType Directory -Path $dir | Out-Null
@@ -280,6 +295,17 @@ Describe 'Publish-MutApp' {
 
         $result.Success | Should -Be $false
         $result.Code | Should -Be 'compile-failed'
+    }
+
+    It 'reports Success=$false with a real "no rows returned" ErrorMessage, not a null Code/Message/empty Diagnostics, when the response is an empty array' {
+        Mock -ModuleName DemoPortal Invoke-Continia { @() }
+
+        $result = Publish-MutApp -Env $envHandle -Path $script:dir
+
+        $result.Success | Should -Be $false
+        $result.Diagnostics.Count | Should -Be 0
+        $result.ErrorMessage | Should -Not -BeNullOrEmpty
+        $result.ErrorMessage | Should -BeLike "*no rows*$($script:dir)*"
     }
 
     It 'returns Success=$false with Code and ErrorMessage from the single-object run-level failure shape (M6)' {
