@@ -272,17 +272,18 @@ function toManifestEntry(m: Mutant): Record<string, unknown> {
 }
 
 /**
- * Test-only seam for the per-file rewrite step (defaults to the real `rewriteAndVerify`). No
- * current operator can make a real file's candidates trip `rewriteAndVerify`'s overlap or
- * re-tokenize checks (that is the point of B2/B2b being invariant-enforcement, not a live bug),
- * so this is how a test exercises `generate()`'s own skip/copy/mutants.json-exclusion branch
- * end-to-end without faking the assertions. The CLI never passes this.
+ * @internal Test-only seam for the per-file rewrite step (defaults to the real
+ * `rewriteAndVerify`). No current operator can make a real file's candidates trip
+ * `rewriteAndVerify`'s overlap or re-tokenize checks (that is the point of B2/B2b being
+ * invariant-enforcement, not a live bug), so this is how a test exercises `generate()`'s own
+ * skip/copy/mutants.json-exclusion branch end-to-end without faking the assertions. Not part of
+ * the CLI-facing contract (§6.4.9 lists only `--aut`/`--out`/etc.) -- the CLI never passes this.
  */
 export interface GenerateDeps {
   rewriteAndVerify: typeof rewriteAndVerify;
 }
 
-const defaultDeps: GenerateDeps = { rewriteAndVerify };
+const defaultDeps: GenerateDeps = Object.freeze({ rewriteAndVerify });
 
 /** §6.4.9: the whole generator pipeline — pure enumeration plus file I/O against `options.autDir`/`options.outDir`. */
 export function generate(options: GenerateOptions, deps: GenerateDeps = defaultDeps): GenerateResult {
