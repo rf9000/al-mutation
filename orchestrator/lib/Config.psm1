@@ -82,7 +82,7 @@ function Assert-MutConfigShape {
     }
 
     Assert-MutNonEmptyString $Config 'environmentName' 'environmentName'
-    if ($Config.environmentName -notmatch '^mut-') {
+    if ($Config.environmentName -cnotmatch '^mut-') {
         throw "Get-MutConfig: config key 'environmentName' ('$($Config.environmentName)') must match '^mut-'."
     }
 

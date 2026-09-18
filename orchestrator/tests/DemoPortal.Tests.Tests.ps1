@@ -178,7 +178,18 @@ Describe 'Invoke-MutTests' {
     It 'refuses an environment not named mut-*' {
         Mock -ModuleName DemoPortal Invoke-Continia { throw 'must not be called' }
 
-        { Invoke-MutTests -Env $badEnv -Targets @([pscustomobject]@{ CodeunitId = 95155; Function = $null }) -TimeoutSec 30 } | Should -Throw
+        { Invoke-MutTests -Env $badEnv -Targets @([pscustomobject]@{ CodeunitId = 95155; Function = $null }) -TimeoutSec 30 } | Should -Throw "*does not match '^mut-'*"
+        Should -Invoke -ModuleName DemoPortal Invoke-Continia -Times 0
+    }
+
+    It 'refuses a case-variant of the mut- prefix (MUT-, Mut-, mUt-)' {
+        Mock -ModuleName DemoPortal Invoke-Continia { throw 'must not be called' }
+
+        foreach ($badName in @('MUT-prod', 'Mut-prod', 'mUt-prod')) {
+            $caseEnv = [pscustomobject]@{ Id = 'E1'; Name = $badName; Url = 'https://x'; Backend = 'DemoPortal'; Shared = $false }
+            { Invoke-MutTests -Env $caseEnv -Targets @([pscustomobject]@{ CodeunitId = 95155; Function = $null }) -TimeoutSec 30 } | Should -Throw "*does not match '^mut-'*"
+        }
+        Should -Invoke -ModuleName DemoPortal Invoke-Continia -Times 0
     }
 }
 
@@ -337,7 +348,18 @@ Describe 'Get-MutCoverageRaw' {
     It 'refuses an environment not named mut-*' {
         Mock -ModuleName DemoPortal Invoke-Continia { throw 'must not be called' }
 
-        { Get-MutCoverageRaw -Env $badEnv -JobIds @('JOB-1') } | Should -Throw
+        { Get-MutCoverageRaw -Env $badEnv -JobIds @('JOB-1') } | Should -Throw "*does not match '^mut-'*"
+        Should -Invoke -ModuleName DemoPortal Invoke-Continia -Times 0
+    }
+
+    It 'refuses a case-variant of the mut- prefix (MUT-, Mut-, mUt-)' {
+        Mock -ModuleName DemoPortal Invoke-Continia { throw 'must not be called' }
+
+        foreach ($badName in @('MUT-prod', 'Mut-prod', 'mUt-prod')) {
+            $caseEnv = [pscustomobject]@{ Id = 'E1'; Name = $badName; Url = 'https://x'; Backend = 'DemoPortal'; Shared = $false }
+            { Get-MutCoverageRaw -Env $caseEnv -JobIds @('JOB-1') } | Should -Throw "*does not match '^mut-'*"
+        }
+        Should -Invoke -ModuleName DemoPortal Invoke-Continia -Times 0
     }
 }
 
@@ -387,6 +409,17 @@ Describe 'Get-MutCoverage (T24: Get-MutCoverageRaw + ConvertFrom-MutCoverageCsv,
     It 'refuses an environment not named mut-*' {
         Mock -ModuleName DemoPortal Invoke-Continia { throw 'must not be called' }
 
-        { Get-MutCoverage -Env $badEnv -JobIds @('JOB-1') } | Should -Throw
+        { Get-MutCoverage -Env $badEnv -JobIds @('JOB-1') } | Should -Throw "*does not match '^mut-'*"
+        Should -Invoke -ModuleName DemoPortal Invoke-Continia -Times 0
+    }
+
+    It 'refuses a case-variant of the mut- prefix (MUT-, Mut-, mUt-)' {
+        Mock -ModuleName DemoPortal Invoke-Continia { throw 'must not be called' }
+
+        foreach ($badName in @('MUT-prod', 'Mut-prod', 'mUt-prod')) {
+            $caseEnv = [pscustomobject]@{ Id = 'E1'; Name = $badName; Url = 'https://x'; Backend = 'DemoPortal'; Shared = $false }
+            { Get-MutCoverage -Env $caseEnv -JobIds @('JOB-1') } | Should -Throw "*does not match '^mut-'*"
+        }
+        Should -Invoke -ModuleName DemoPortal Invoke-Continia -Times 0
     }
 }

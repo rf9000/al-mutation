@@ -132,6 +132,14 @@ Describe 'Get-MutConfig' {
         { Get-MutConfig -Path $path } | Should -Throw '*environmentName*'
     }
 
+    It "throws for a case-variant of the mut- prefix (MUT-, Mut-, mUt-): the match must be case-sensitive" {
+        foreach ($badName in @('MUT-prod', 'Mut-prod', 'mUt-prod')) {
+            $overrides = @{ environmentName = $badName }
+            $path = New-MutTestConfigFile -Overrides $overrides
+            { Get-MutConfig -Path $path } | Should -Throw '*environmentName*'
+        }
+    }
+
     It 'throws naming the key when testApp.testCodeunits is empty' {
         $overrides = @{ testApp = @{ sourcePath = './fixtures/fixture-test'; appId = '9c4a5f6d-be7b-4a8c-8d9e-0f1a2b3c4d5e'; testCodeunits = @() } }
         $path = New-MutTestConfigFile -Overrides $overrides

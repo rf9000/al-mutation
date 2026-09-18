@@ -72,6 +72,21 @@ Describe 'Assert-MutEnvironmentAllowed' {
         $env = [pscustomobject]@{ Id = 'E1'; Name = 'mut-spike-01'; Url = 'https://x'; Backend = 'DemoPortal'; Shared = $true }
         { Assert-MutEnvironmentAllowed $env } | Should -Throw
     }
+
+    It 'throws for a case-variant of the mut- prefix: -match is case-insensitive by default, so this MUST use -cnotmatch' {
+        # A regression test for the guard being written with a case-insensitive comparison
+        # (`-notmatch`), which lets 'MUT-PROD', 'Mut-prod', etc. slip past a guard meant to
+        # allow only the literal lower-case 'mut-' prefix.
+        foreach ($badName in @('MUT-prod', 'Mut-prod', 'mUt-prod')) {
+            $env = [pscustomobject]@{ Id = 'E1'; Name = $badName; Url = 'https://x'; Backend = 'DemoPortal'; Shared = $false }
+            { Assert-MutEnvironmentAllowed $env } | Should -Throw "*does not match '^mut-'*"
+        }
+    }
+
+    It 'allows the literal lower-case mut- prefix' {
+        $env = [pscustomobject]@{ Id = 'E1'; Name = 'mut-spike-01'; Url = 'https://x'; Backend = 'DemoPortal'; Shared = $false }
+        { Assert-MutEnvironmentAllowed $env } | Should -Not -Throw
+    }
 }
 
 Describe 'New-MutEnvironment' {
@@ -82,7 +97,16 @@ Describe 'New-MutEnvironment' {
     It 'refuses names without the mut- prefix' {
         Mock -ModuleName DemoPortal Invoke-Continia { throw 'must not be called' }
 
-        { New-MutEnvironment -Name 'spike-01' -Config $cfg } | Should -Throw
+        { New-MutEnvironment -Name 'spike-01' -Config $cfg } | Should -Throw "*does not match '^mut-'*"
+        Should -Invoke -ModuleName DemoPortal Invoke-Continia -Times 0
+    }
+
+    It 'refuses a case-variant of the mut- prefix (MUT-, Mut-, mUt-)' {
+        Mock -ModuleName DemoPortal Invoke-Continia { throw 'must not be called' }
+
+        foreach ($badName in @('MUT-prod', 'Mut-prod', 'mUt-prod')) {
+            { New-MutEnvironment -Name $badName -Config $cfg } | Should -Throw "*does not match '^mut-'*"
+        }
         Should -Invoke -ModuleName DemoPortal Invoke-Continia -Times 0
     }
 

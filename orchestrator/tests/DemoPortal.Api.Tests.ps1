@@ -90,7 +90,18 @@ Describe 'Invoke-MutApi' {
         $badEnv = [pscustomobject]@{ Id = 'E1'; Name = 'fix-auth'; Url = 'https://x'; Backend = 'DemoPortal'; Shared = $false }
         Mock -ModuleName DemoPortal Invoke-RestMethod { throw 'must not be called' }
 
-        { Invoke-MutApi -Env $badEnv -Method 'GET' -Path 'mutationSetup' } | Should -Throw
+        { Invoke-MutApi -Env $badEnv -Method 'GET' -Path 'mutationSetup' } | Should -Throw "*does not match '^mut-'*"
+        Should -Invoke -ModuleName DemoPortal Invoke-RestMethod -Times 0
+    }
+
+    It 'refuses a case-variant of the mut- prefix (MUT-, Mut-, mUt-)' {
+        Mock -ModuleName DemoPortal Invoke-RestMethod { throw 'must not be called' }
+
+        foreach ($badName in @('MUT-prod', 'Mut-prod', 'mUt-prod')) {
+            $caseEnv = [pscustomobject]@{ Id = 'E1'; Name = $badName; Url = 'https://x'; Backend = 'DemoPortal'; Shared = $false }
+            { Invoke-MutApi -Env $caseEnv -Method 'GET' -Path 'mutationSetup' } | Should -Throw "*does not match '^mut-'*"
+        }
+        Should -Invoke -ModuleName DemoPortal Invoke-RestMethod -Times 0
     }
 }
 
@@ -192,7 +203,19 @@ Describe 'Grant-MutPermissionSet' {
 
     It 'refuses an environment not named mut-*' {
         $badEnv = [pscustomobject]@{ Id = 'E1'; Name = 'fix-auth'; Url = 'https://x'; Backend = 'DemoPortal'; Shared = $false }
+        Mock -ModuleName DemoPortal Invoke-RestMethod { throw 'must not be called' }
 
-        { Grant-MutPermissionSet -Env $badEnv -PermissionSetId 'MUT Core All' -AppId 'APP1' } | Should -Throw
+        { Grant-MutPermissionSet -Env $badEnv -PermissionSetId 'MUT Core All' -AppId 'APP1' } | Should -Throw "*does not match '^mut-'*"
+        Should -Invoke -ModuleName DemoPortal Invoke-RestMethod -Times 0
+    }
+
+    It 'refuses a case-variant of the mut- prefix (MUT-, Mut-, mUt-)' {
+        Mock -ModuleName DemoPortal Invoke-RestMethod { throw 'must not be called' }
+
+        foreach ($badName in @('MUT-prod', 'Mut-prod', 'mUt-prod')) {
+            $caseEnv = [pscustomobject]@{ Id = 'E1'; Name = $badName; Url = 'https://x'; Backend = 'DemoPortal'; Shared = $false }
+            { Grant-MutPermissionSet -Env $caseEnv -PermissionSetId 'MUT Core All' -AppId 'APP1' } | Should -Throw "*does not match '^mut-'*"
+        }
+        Should -Invoke -ModuleName DemoPortal Invoke-RestMethod -Times 0
     }
 }

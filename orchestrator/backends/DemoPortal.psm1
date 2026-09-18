@@ -179,7 +179,7 @@ function Assert-MutEnvironmentAllowed {
     if (-not $Env) {
         throw 'Assert-MutEnvironmentAllowed: $Env is null.'
     }
-    if ($Env.Name -notmatch '^mut-') {
+    if ($Env.Name -cnotmatch '^mut-') {
         throw "Assert-MutEnvironmentAllowed: environment name '$($Env.Name)' does not match '^mut-'; refusing to target it."
     }
     if ($Env.Shared) {
@@ -467,7 +467,7 @@ function New-MutEnvironment {
         $Config
     )
 
-    if ($Name -notmatch '^mut-') {
+    if ($Name -cnotmatch '^mut-') {
         throw "New-MutEnvironment: name '$Name' does not match '^mut-'; refusing to create it."
     }
 

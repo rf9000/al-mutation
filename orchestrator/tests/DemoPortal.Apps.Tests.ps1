@@ -46,7 +46,18 @@ Describe 'Install-MutDependencies' {
     It 'refuses an environment not named mut-*' {
         Mock -ModuleName DemoPortal Invoke-Continia { throw 'must not be called' }
 
-        { Install-MutDependencies -Env $badEnv -AppPath 'C:/out/aut-original' } | Should -Throw
+        { Install-MutDependencies -Env $badEnv -AppPath 'C:/out/aut-original' } | Should -Throw "*does not match '^mut-'*"
+        Should -Invoke -ModuleName DemoPortal Invoke-Continia -Times 0
+    }
+
+    It 'refuses a case-variant of the mut- prefix (MUT-, Mut-, mUt-)' {
+        Mock -ModuleName DemoPortal Invoke-Continia { throw 'must not be called' }
+
+        foreach ($badName in @('MUT-prod', 'Mut-prod', 'mUt-prod')) {
+            $caseEnv = [pscustomobject]@{ Id = 'E1'; Name = $badName; Url = 'https://x'; Backend = 'DemoPortal'; Shared = $false }
+            { Install-MutDependencies -Env $caseEnv -AppPath 'C:/out/aut-original' } | Should -Throw "*does not match '^mut-'*"
+        }
+        Should -Invoke -ModuleName DemoPortal Invoke-Continia -Times 0
     }
 }
 
@@ -155,7 +166,18 @@ Describe 'Compile-MutApp' {
     It 'refuses an environment not named mut-*' {
         Mock -ModuleName DemoPortal Invoke-Continia { throw 'must not be called' }
 
-        { Compile-MutApp -Env $badEnv -Path "$TestDrive/whatever" } | Should -Throw
+        { Compile-MutApp -Env $badEnv -Path "$TestDrive/whatever" } | Should -Throw "*does not match '^mut-'*"
+        Should -Invoke -ModuleName DemoPortal Invoke-Continia -Times 0
+    }
+
+    It 'refuses a case-variant of the mut- prefix (MUT-, Mut-, mUt-)' {
+        Mock -ModuleName DemoPortal Invoke-Continia { throw 'must not be called' }
+
+        foreach ($badName in @('MUT-prod', 'Mut-prod', 'mUt-prod')) {
+            $caseEnv = [pscustomobject]@{ Id = 'E1'; Name = $badName; Url = 'https://x'; Backend = 'DemoPortal'; Shared = $false }
+            { Compile-MutApp -Env $caseEnv -Path "$TestDrive/whatever" } | Should -Throw "*does not match '^mut-'*"
+        }
+        Should -Invoke -ModuleName DemoPortal Invoke-Continia -Times 0
     }
 
     It 'forwards TimeoutSec to Invoke-Continia, defaulting to 900' {
@@ -299,7 +321,18 @@ Describe 'Publish-MutApp' {
     It 'refuses an environment not named mut-*' {
         Mock -ModuleName DemoPortal Invoke-Continia { throw 'must not be called' }
 
-        { Publish-MutApp -Env $badEnv -Path $script:dir } | Should -Throw
+        { Publish-MutApp -Env $badEnv -Path $script:dir } | Should -Throw "*does not match '^mut-'*"
+        Should -Invoke -ModuleName DemoPortal Invoke-Continia -Times 0
+    }
+
+    It 'refuses a case-variant of the mut- prefix (MUT-, Mut-, mUt-)' {
+        Mock -ModuleName DemoPortal Invoke-Continia { throw 'must not be called' }
+
+        foreach ($badName in @('MUT-prod', 'Mut-prod', 'mUt-prod')) {
+            $caseEnv = [pscustomobject]@{ Id = 'E1'; Name = $badName; Url = 'https://x'; Backend = 'DemoPortal'; Shared = $false }
+            { Publish-MutApp -Env $caseEnv -Path $script:dir } | Should -Throw "*does not match '^mut-'*"
+        }
+        Should -Invoke -ModuleName DemoPortal Invoke-Continia -Times 0
     }
 
     It 'forwards TimeoutSec to Invoke-Continia, defaulting to 900' {
@@ -376,7 +409,18 @@ Describe 'Publish-MutAppFile' {
     It 'refuses an environment not named mut-*' {
         Mock -ModuleName DemoPortal Invoke-Continia { throw 'must not be called' }
 
-        { Publish-MutAppFile -Env $badEnv -AppFile 'C:/out/schemata.app' } | Should -Throw
+        { Publish-MutAppFile -Env $badEnv -AppFile 'C:/out/schemata.app' } | Should -Throw "*does not match '^mut-'*"
+        Should -Invoke -ModuleName DemoPortal Invoke-Continia -Times 0
+    }
+
+    It 'refuses a case-variant of the mut- prefix (MUT-, Mut-, mUt-)' {
+        Mock -ModuleName DemoPortal Invoke-Continia { throw 'must not be called' }
+
+        foreach ($badName in @('MUT-prod', 'Mut-prod', 'mUt-prod')) {
+            $caseEnv = [pscustomobject]@{ Id = 'E1'; Name = $badName; Url = 'https://x'; Backend = 'DemoPortal'; Shared = $false }
+            { Publish-MutAppFile -Env $caseEnv -AppFile 'C:/out/schemata.app' } | Should -Throw "*does not match '^mut-'*"
+        }
+        Should -Invoke -ModuleName DemoPortal Invoke-Continia -Times 0
     }
 }
 
@@ -414,6 +458,17 @@ Describe 'Unpublish-MutApp' {
     It 'refuses an environment not named mut-*' {
         Mock -ModuleName DemoPortal Invoke-Continia { throw 'must not be called' }
 
-        { Unpublish-MutApp -Env $badEnv -AppId 'x' } | Should -Throw
+        { Unpublish-MutApp -Env $badEnv -AppId 'x' } | Should -Throw "*does not match '^mut-'*"
+        Should -Invoke -ModuleName DemoPortal Invoke-Continia -Times 0
+    }
+
+    It 'refuses a case-variant of the mut- prefix (MUT-, Mut-, mUt-)' {
+        Mock -ModuleName DemoPortal Invoke-Continia { throw 'must not be called' }
+
+        foreach ($badName in @('MUT-prod', 'Mut-prod', 'mUt-prod')) {
+            $caseEnv = [pscustomobject]@{ Id = 'E1'; Name = $badName; Url = 'https://x'; Backend = 'DemoPortal'; Shared = $false }
+            { Unpublish-MutApp -Env $caseEnv -AppId 'x' } | Should -Throw "*does not match '^mut-'*"
+        }
+        Should -Invoke -ModuleName DemoPortal Invoke-Continia -Times 0
     }
 }
