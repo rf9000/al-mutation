@@ -307,6 +307,15 @@ Describe 'Invoke-MutTests -Coverage (T24, U9 raw/xUnit path)' {
         { Invoke-MutTests -Env $envHandle -Targets @([pscustomobject]@{ CodeunitId = 95155; Function = $null }) -TimeoutSec 30 -Coverage } |
             Should -Throw '*ExitCode=1*could not reach the runner service*'
     }
+
+    It 'throws naming the exit code, rather than accepting the XML, when the CLI exits with a code other than 0 or 1 even though stdout happens to contain parseable xUnit XML (fix-round-1: ExitCode was never checked)' {
+        Mock -ModuleName DemoPortal Invoke-Continia {
+            [pscustomobject]@{ ExitCode = 2; StdOut = "Test job started: 1`n$script:SampleXunitXml"; StdErr = 'panic: recovered from an unexpected state' }
+        }
+
+        { Invoke-MutTests -Env $envHandle -Targets @([pscustomobject]@{ CodeunitId = 95155; Function = $null }) -TimeoutSec 30 -Coverage } |
+            Should -Throw '*ExitCode=2*recovered from an unexpected state*'
+    }
 }
 
 Describe 'Invoke-Continia -AllowNonZeroExit' {

@@ -1340,15 +1340,20 @@ function Invoke-MutTests {
                 $jobIds += $jobId
             }
 
+            # F18: `test run --raw` exits 0 when every test passed and 1 when at least one
+            # failed, in both cases with valid xUnit XML on stdout -- so 0 and 1 are the only
+            # expected exit codes here. Any other exit code, OR stdout with no parseable XML
+            # at all (whatever the exit code), must NOT silently fall through to a clean
+            # Passed=0/Failed=0 result: that shape is indistinguishable from "this codeunit
+            # genuinely has zero tests" and lets a real CLI-level failure masquerade as a
+            # passing baseline (the class of bug U5/T09 and the baseline retry guard at
+            # MutantLoop.psm1:593 were written to catch; this call site had no equivalent
+            # guard). Surface the exit code and stderr so the caller sees a real failure
+            # instead.
             $xmlStart = $response.StdOut.IndexOf('<')
-            if ($xmlStart -lt 0) {
-                # Do NOT silently fall through to a clean Passed=0/Failed=0 result: that shape is
-                # indistinguishable from "this codeunit genuinely has zero tests" and lets a
-                # non-zero exit / unparseable --raw response masquerade as a passing baseline
-                # (the class of bug U5/T09 and the baseline retry guard at MutantLoop.psm1:593
-                # were written to catch; this call site had no equivalent guard). Surface the
-                # exit code and stderr so the caller sees a real failure instead.
-                throw "Invoke-MutTests: coverage run for codeunit $($target.CodeunitId) produced no parseable xUnit XML on stdout (ExitCode=$($response.ExitCode)). StdOut: $($response.StdOut); StdErr: $($response.StdErr)"
+            $hasUnexpectedExitCode = ($response.ExitCode -ne 0) -and ($response.ExitCode -ne 1)
+            if ($xmlStart -lt 0 -or $hasUnexpectedExitCode) {
+                throw "Invoke-MutTests: coverage run for codeunit $($target.CodeunitId) produced no parseable xUnit XML on stdout, or exited with an unexpected code (ExitCode=$($response.ExitCode); only 0 and 1 are expected). StdOut: $($response.StdOut); StdErr: $($response.StdErr)"
             }
 
             [xml]$xmlDoc = $response.StdOut.Substring($xmlStart)
