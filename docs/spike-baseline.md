@@ -474,6 +474,12 @@ and have been removed from this list. What remains genuinely open:
   enumerable environment users (all already SUPER) changed nothing, so the identity that runs DemoPortal
   test sessions is none of them. The IsolatedStorage channel routes around it and works, but the underlying
   mechanism was never established, and §6.1.5b still states a rationale this project disproved.
+- **The pipeline cannot survive an upstream interface-surface change.** Twice now (run 5, `AL0185`; run 7,
+  `AL0582`) a run has aborted at `Publish-MutBaseline` because the *installed* test suite predates a change
+  to the AUT's public surface, and BC's dependent recompile of it fails. Both times a human had to unpublish
+  the test app before a run would start. `Publish-MutBaseline` should detect this and unpublish-then-retry.
+  At pilot scale it is an annoyance; at the 8-hour or 88-hour scale discussed above it means a long run can
+  die at its first real step for a reason that has nothing to do with mutation testing.
 - **Two known defects are recorded but deliberately unfixed** (`docs/issues.md`): `mutation.config.json`'s
   settle probe targets the AUT's own test codeunit, which cannot exist before the AUT is deployed — it cost
   ~10 minutes on a fresh environment and still ships as the default, because the real fix changes the shared

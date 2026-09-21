@@ -1,0 +1,15 @@
+{
+  "backend": "DemoPortal",
+  "environmentName": "mut-spike-02",
+  "keepEnvironment": true,
+  "aut": { "sourcePath": "C:/GeneralDev/AL/Continia Banking Master/Continia Banking/base-application", "appId": "83461f48-dd16-49ea-b00c-e656830c640f", "version": "29.0.0.0" },
+  "testApp": { "sourcePath": "C:/GeneralDev/AL/Continia Banking Master/Continia Banking/base-application-test", "appId": "02b81fad-90fa-4cdc-a414-5bda25e96db0", "testCodeunits": [95058, 95110, 95121, 95155] },
+  "rulesets": { "sourcePath": "C:/GeneralDev/AL/Continia Banking Master/Continia Banking/Banking Rulesets", "file": ".cli-ruleset-localdeploy.json" },
+  "coreApp": { "path": "./core-app", "appId": "6f1d2c3a-8b4e-4d5f-9a6b-7c8d9e0f1a2b", "version": "1.0.0.0" },
+  "permissionSets": [ { "id": "MUT Core All", "appId": "6f1d2c3a-8b4e-4d5f-9a6b-7c8d9e0f1a2b" } ],
+  "workDir": "./out",
+  "generator": { "maxMutants": 0, "onlyObjects": [71553757, 72282417, 72918630, 72918635], "seed": 1, "operators": ["REL", "BOOL", "NOT", "COND", "DEL", "INSFLAG"], "includeBreak": false },
+  "schemata": { "publishStrategy": "same-version" },
+  "timeouts": { "perTestFactor": 5, "minSeconds": 60, "jobOverheadSeconds": 0 },
+  "demoPortal": { "profileId": "ff24b00b-ea9b-4311-8191-81b8370f0a0a", "activationAppId": "c3755ece-dab0-4d16-987d-040661f18522", "cliPath": "./.tools/continia.exe", "settleProbe": { "codeunitId": 95155, "functionName": "UpdatePlaceholderRows_EmptyInputs_BecomesNoMatchingAccounts" } }
+}
