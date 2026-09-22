@@ -629,3 +629,75 @@ Describe 'Publish-MutBaseline error surfacing (M6)' {
         Test-Path (Join-Path $script:RunDir 'baseline.json') | Should -Be $false
     }
 }
+
+Describe 'Publish-MutBaseline: Mutation Core test app (coreAppTest)' {
+    <#
+        .SYNOPSIS
+        demoPortal.settleProbe needs a target that exists independently of the AUT. Mutation
+        Core's own test app is that target: it depends only on Mutation Core and the Microsoft
+        test libraries, so it survives the AUT test app being unpublished and republished
+        around the schemata swap, and it does not change when the AUT's test suite changes.
+        It must therefore be published immediately after Mutation Core and BEFORE the AUT.
+    #>
+    BeforeEach {
+        $script:WorkDir = "$TestDrive/work-$([guid]::NewGuid().ToString('N'))"
+        $script:RunDir = Join-Path $script:WorkDir 'runs/1'
+        New-Item -ItemType Directory -Path $script:RunDir -Force | Out-Null
+        $script:Config = New-MutRunTestConfig -WorkDir $script:WorkDir
+        $script:PublishedPaths = New-Object System.Collections.ArrayList
+
+        Mock -ModuleName Run Install-MutDependencies { }
+        Mock -ModuleName Run Grant-MutPermissionSet { }
+        Mock -ModuleName Run Publish-MutApp {
+            $null = $script:PublishedPaths.Add($Path)
+            [pscustomobject]@{ Success = $true; Code = $null; Diagnostics = @(); DurationSec = 0.1 }
+        }
+        # Stop the pipeline right after the publishes, so these tests stay focused on publish
+        # ORDER and do not need a whole baseline/coverage fixture.
+        Mock -ModuleName Run Invoke-MutTests { throw 'stop-after-publishes' }
+    }
+
+    It 'publishes the core test app after Mutation Core and before the AUT when configured' {
+        $script:Config | Add-Member -NotePropertyName 'coreAppTest' -NotePropertyValue ([pscustomobject]@{
+            path  = 'C:/repo/core-app-test'
+            appId = '7a2e3d4b-9c5f-4e6a-8b7c-8d9e0f1a2b3c'
+        }) -Force
+
+        { Publish-MutBaseline -Config $script:Config -Env $script:EnvHandle -RunDir $script:RunDir } |
+            Should -Throw '*stop-after-publishes*'
+
+        $paths = @($script:PublishedPaths)
+        $coreIdx = [array]::FindIndex([string[]]$paths, [Predicate[string]] { param($p) $p -like '*core-app' })
+        $coreTestIdx = [array]::FindIndex([string[]]$paths, [Predicate[string]] { param($p) $p -like '*core-app-test' })
+        $autIdx = [array]::FindIndex([string[]]$paths, [Predicate[string]] { param($p) $p -like '*aut-original' })
+
+        $coreTestIdx | Should -BeGreaterThan $coreIdx
+        $autIdx | Should -BeGreaterThan $coreTestIdx
+    }
+
+    It 'does not publish a core test app when coreAppTest is absent (it is optional)' {
+        { Publish-MutBaseline -Config $script:Config -Env $script:EnvHandle -RunDir $script:RunDir } |
+            Should -Throw '*stop-after-publishes*'
+
+        @($script:PublishedPaths) | Where-Object { $_ -like '*core-app-test' } | Should -BeNullOrEmpty
+    }
+
+    It 'names coreAppTest.path in the throw when publishing the core test app fails' {
+        $script:Config | Add-Member -NotePropertyName 'coreAppTest' -NotePropertyValue ([pscustomobject]@{
+            path  = 'C:/repo/core-app-test'
+            appId = '7a2e3d4b-9c5f-4e6a-8b7c-8d9e0f1a2b3c'
+        }) -Force
+
+        Mock -ModuleName Run Publish-MutApp {
+            if ($Path -like '*core-app-test') {
+                [pscustomobject]@{ Success = $false; Code = 'publish-failed'; Diagnostics = @(); DurationSec = 0.1; ErrorMessage = 'core test app rejected' }
+            }
+            else {
+                [pscustomobject]@{ Success = $true; Code = $null; Diagnostics = @(); DurationSec = 0.1 }
+            }
+        }
+
+        { Publish-MutBaseline -Config $script:Config -Env $script:EnvHandle -RunDir $script:RunDir } |
+            Should -Throw '*coreAppTest.path*core test app rejected*'
+    }
+}

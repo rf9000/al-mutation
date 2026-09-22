@@ -190,10 +190,22 @@ function Resolve-MutConfigPath {
     if ([string]::IsNullOrEmpty($Path)) {
         return $Path
     }
-    if ([System.IO.Path]::IsPathRooted($Path)) {
-        return $Path
+
+    # Expand %VAR% first, so a shipped config can point at a machine-specific checkout without
+    # hard-coding one person's drive layout (e.g. "%AUT_ROOT%/base-application" -- the example
+    # name is vendor-neutral because §4 guardrail 6 forbids this file naming the backend tool).
+    # ExpandEnvironmentVariables leaves an UNSET variable as the literal "%VAR%" text rather
+    # than throwing or emptying it, which would then surface as a confusing "path not found"
+    # much later; catch that here and name the variable.
+    $expanded = [System.Environment]::ExpandEnvironmentVariables($Path)
+    if ($expanded -match '%([A-Za-z_][A-Za-z0-9_]*)%') {
+        throw "Get-MutConfig: path '$Path' references environment variable '%$($Matches[1])%', which is not set on this machine. Set it, or replace the reference with a literal path."
     }
-    return [System.IO.Path]::GetFullPath([System.IO.Path]::Combine($RepoRoot, $Path))
+
+    if ([System.IO.Path]::IsPathRooted($expanded)) {
+        return $expanded
+    }
+    return [System.IO.Path]::GetFullPath([System.IO.Path]::Combine($RepoRoot, $expanded))
 }
 
 function Resolve-MutFinalPath {
@@ -358,6 +370,14 @@ function Assert-MutConfigShape {
     Assert-MutNonEmptyString $Config.coreApp 'appId' 'coreApp.appId'
     Assert-MutNonEmptyString $Config.coreApp 'version' 'coreApp.version'
 
+    # coreAppTest is OPTIONAL: a config that omits it simply does not get Mutation Core's own
+    # test app published, and demoPortal.settleProbe must then point somewhere else. When it IS
+    # present both keys are required, because a half-specified app cannot be published.
+    if ((Test-MutHasProperty $Config 'coreAppTest') -and ($null -ne $Config.coreAppTest)) {
+        Assert-MutNonEmptyString $Config.coreAppTest 'path' 'coreAppTest.path'
+        Assert-MutNonEmptyString $Config.coreAppTest 'appId' 'coreAppTest.appId'
+    }
+
     Assert-MutRequiredKey $Config 'workDir' 'workDir'
     if ([string]::IsNullOrWhiteSpace([string]$Config.workDir)) {
         throw "Get-MutConfig: config key 'workDir' must be a non-empty string."
@@ -441,6 +461,9 @@ function Get-MutConfig {
     $repoRoot = Get-MutRepoRoot
 
     $config.coreApp.path = Resolve-MutConfigPath -RepoRoot $repoRoot -Path $config.coreApp.path
+    if ((Test-MutHasProperty $config 'coreAppTest') -and ($null -ne $config.coreAppTest)) {
+        $config.coreAppTest.path = Resolve-MutConfigPath -RepoRoot $repoRoot -Path $config.coreAppTest.path
+    }
     $config.workDir = Resolve-MutConfigPath -RepoRoot $repoRoot -Path $config.workDir
     $config.aut.sourcePath = Resolve-MutConfigPath -RepoRoot $repoRoot -Path $config.aut.sourcePath
     $config.testApp.sourcePath = Resolve-MutConfigPath -RepoRoot $repoRoot -Path $config.testApp.sourcePath
@@ -451,6 +474,16 @@ function Get-MutConfig {
 
     if ($config.backend -eq 'DemoPortal') {
         $config.demoPortal.cliPath = Resolve-MutConfigPath -RepoRoot $repoRoot -Path $config.demoPortal.cliPath
+    }
+
+    # `onlyObjects` silently narrows a run to a handful of objects. The shipped configs carry
+    # pilot values, so a second reader who does not open the config first gets a plausible score
+    # for 1 codeunit while believing they measured the application. A score is only meaningful
+    # alongside what it was computed over, so say the scope out loud at load time rather than
+    # leaving it to be discovered in the config file.
+    $onlyObjects = @($config.generator.onlyObjects)
+    if ($onlyObjects.Count -gt 0) {
+        Write-Warning "Get-MutConfig: generator.onlyObjects scopes this run to $($onlyObjects.Count) object(s) -- $($onlyObjects -join ', '). Every other object in the AUT is excluded by config, not by the mutation testing. Set onlyObjects to [] to run the whole AUT."
     }
 
     return $config

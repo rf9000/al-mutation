@@ -440,6 +440,19 @@ function Publish-MutBaseline {
         throw "Publish-MutBaseline: publishing Mutation Core (coreApp.path) failed. Code: $($coreResult.Code); Message: $($coreResult.ErrorMessage); Diagnostics: $(($coreResult.Diagnostics | ConvertTo-Json -Depth 10 -Compress))"
     }
 
+    # Mutation Core's own test app, when configured. It depends only on Mutation Core and the
+    # Microsoft test libraries -- never on the AUT -- which is the whole point: it gives
+    # demoPortal.settleProbe a target that survives the AUT test app being unpublished and
+    # republished around the schemata swap (Publish-MutSchemata), and that does not change when
+    # the AUT's own test suite changes. Published here, immediately after Mutation Core and
+    # BEFORE the AUT, so the probe target exists for every step from this point on.
+    if ((Test-MutHasProperty $Config 'coreAppTest') -and ($null -ne $Config.coreAppTest)) {
+        $coreTestResult = Publish-MutApp -Env $Env -Path $Config.coreAppTest.path -AllowDowngrade
+        if (-not $coreTestResult.Success) {
+            throw "Publish-MutBaseline: publishing Mutation Core Test (coreAppTest.path) failed. Code: $($coreTestResult.Code); Message: $($coreTestResult.ErrorMessage); Diagnostics: $(($coreTestResult.Diagnostics | ConvertTo-Json -Depth 10 -Compress))"
+        }
+    }
+
     $autPublishParams = @{ Env = $Env; Path = $autPath; AllowDowngrade = $true }
     if ($rulesetFile) { $autPublishParams['Ruleset'] = $rulesetFile }
     $autResult = Publish-MutApp @autPublishParams

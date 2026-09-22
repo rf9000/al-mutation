@@ -559,3 +559,76 @@ Describe 'Docker backend' {
         }
     }
 }
+
+Describe 'Get-MutConfig: coreAppTest (optional Mutation Core test app)' {
+    It 'accepts a config that omits coreAppTest entirely' {
+        $path = New-MutTestConfigFile
+        $cfg = Get-MutConfig -Path $path
+        $cfg.PSObject.Properties['coreAppTest'] | Should -BeNullOrEmpty
+    }
+
+    It 'resolves coreAppTest.path to an absolute path when present' {
+        $path = New-MutTestConfigFile -Overrides @{
+            coreAppTest = [ordered]@{ path = './core-app-test'; appId = '7a2e3d4b-9c5f-4e6a-8b7c-8d9e0f1a2b3c' }
+        }
+        $cfg = Get-MutConfig -Path $path
+        [System.IO.Path]::IsPathRooted($cfg.coreAppTest.path) | Should -BeTrue
+        $cfg.coreAppTest.path | Should -BeLike '*core-app-test'
+    }
+
+    It 'throws when coreAppTest is present but has no path' {
+        $path = New-MutTestConfigFile -Overrides @{
+            coreAppTest = [ordered]@{ appId = '7a2e3d4b-9c5f-4e6a-8b7c-8d9e0f1a2b3c' }
+        }
+        { Get-MutConfig -Path $path } | Should -Throw -ExpectedMessage "*coreAppTest.path*"
+    }
+
+    It 'throws when coreAppTest is present but has no appId' {
+        $path = New-MutTestConfigFile -Overrides @{
+            coreAppTest = [ordered]@{ path = './core-app-test' }
+        }
+        { Get-MutConfig -Path $path } | Should -Throw -ExpectedMessage "*coreAppTest.appId*"
+    }
+}
+
+Describe 'Get-MutConfig: environment-variable expansion in paths' {
+    AfterEach {
+        Remove-Item Env:\MUT_TEST_AUT_ROOT -ErrorAction SilentlyContinue
+    }
+
+    It 'expands %VAR% in a sourcePath so a shipped config need not hard-code a drive layout' {
+        $env:MUT_TEST_AUT_ROOT = 'C:/GeneralDev/AL/SomeCheckout'
+        $path = New-MutTestConfigFile -Overrides @{
+            aut = [ordered]@{ sourcePath = '%MUT_TEST_AUT_ROOT%/base-application'; appId = '8b3f4e5c-ad6a-4f7b-9c8d-9e0f1a2b3c4d'; version = '1.0.0.0' }
+        }
+        $cfg = Get-MutConfig -Path $path
+        # An already-rooted path is returned as-is (see 'leaves already-absolute paths untouched'),
+        # so expansion preserves whichever separators the config itself used.
+        $cfg.aut.sourcePath | Should -Be 'C:/GeneralDev/AL/SomeCheckout/base-application'
+    }
+
+    It 'throws naming the variable when it is not set, rather than leaving a literal %VAR% to fail later' {
+        Remove-Item Env:\MUT_TEST_AUT_ROOT -ErrorAction SilentlyContinue
+        $path = New-MutTestConfigFile -Overrides @{
+            aut = [ordered]@{ sourcePath = '%MUT_TEST_AUT_ROOT%/base-application'; appId = '8b3f4e5c-ad6a-4f7b-9c8d-9e0f1a2b3c4d'; version = '1.0.0.0' }
+        }
+        { Get-MutConfig -Path $path } | Should -Throw -ExpectedMessage "*MUT_TEST_AUT_ROOT*"
+    }
+}
+
+Describe 'Get-MutConfig: onlyObjects scope is announced, not silent' {
+    It 'warns naming the count and the object ids when the run is scoped' {
+        $path = New-MutTestConfigFile -Overrides @{
+            generator = [ordered]@{ maxMutants = 0; onlyObjects = @(72918635, 95110); seed = 1; operators = @('REL'); includeBreak = $false }
+        }
+        Get-MutConfig -Path $path -WarningVariable warnings -WarningAction SilentlyContinue | Out-Null
+        ($warnings -join ' ') | Should -BeLike '*2 object(s)*'
+        ($warnings -join ' ') | Should -BeLike '*72918635, 95110*'
+    }
+
+    It 'stays silent when onlyObjects is empty (whole AUT)' {
+        $path = New-MutTestConfigFile
+        Get-MutConfig -Path $path -WarningVariable warnings -WarningAction SilentlyContinue | Out-Null
+        ($warnings | Where-Object { $_ -like '*onlyObjects*' }) | Should -BeNullOrEmpty
+    }
+}

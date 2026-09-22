@@ -16,12 +16,28 @@ one-codeunit slice of the real AUT (Tier B) — codeunit 72918635, exercised by 
 
 `mutation.config.json` records the **pilot** configuration, not a general default. Before any other run,
 replace the absolute `sourcePath` values, `environmentName` (`mut-spike-02` is one person's sandbox) and
-`demoPortal.profileId`, and review `generator.onlyObjects` — it silently scopes a run to codeunit 72918635,
-so a second user would get 157 mutants with no signal that the other 450 codeunits were excluded by config.
+`demoPortal.profileId`, and review `generator.onlyObjects`.
 
-Known hazard: `demoPortal.settleProbe` points at the AUT's own test codeunit 95155, which does not exist
-until the AUT is deployed — on a brand-new environment this fails after ~10 minutes of probing. See
-`docs/issues.md`.
+Any `path`/`sourcePath` may use `%VAR%` environment-variable references, so a config need not hard-code one
+person's drive layout:
+
+```json
+"aut": { "sourcePath": "%AUT_ROOT%/base-application", "appId": "...", "version": "29.0.0.0" }
+```
+
+A referenced variable that is not set fails at config load, naming the variable, rather than surfacing much
+later as a confusing "path not found".
+
+`generator.onlyObjects` no longer scopes a run silently: `Get-MutConfig` warns at load time with the count and
+the object ids, because a score means nothing without the scope it was computed over. Set it to `[]` to run
+the whole AUT.
+
+`demoPortal.settleProbe` targets Mutation Core's own test app (codeunit 50400 / `HookErrorIsEmpty`), published
+by `coreAppTest` in pipeline step 3 immediately after Mutation Core and before the AUT. That target depends
+only on Mutation Core, so it survives the AUT test app being unpublished and republished around the schemata
+swap, and it does not move when the AUT's own test suite changes. It previously pointed at the AUT's test
+codeunit 95155, which does not exist until the AUT is deployed — see `docs/issues.md` for the residual case
+(a first-ever run on a brand-new environment still probes before step 3, so that one check stays non-fatal).
 
 ## Toolchain
 
