@@ -450,6 +450,12 @@ Describe 'Invoke-MutMutantLoop' {
         Mock -ModuleName MutantLoop Invoke-MutTestsWithBudget {
             [pscustomobject]@{ TimedOut = $false; ErrorMessage = 'boom from job'; Result = $null }
         }
+        # F3b (IMPORTANT 1): a job ErrorMessage now also triggers the environment-confirm-and-
+        # retry path (before consuming the last attempt), same as an empty result -- the
+        # environment genuinely IS fine here (Running, probe passes), so this exercises the
+        # "confirmed serving but still erroring" case, not a recovery.
+        Mock -ModuleName MutantLoop Get-MutEnvironment { [pscustomobject]@{ Id = 'E1'; Name = 'mut-spike-01'; Status = 'Running' } }
+        Mock -ModuleName MutantLoop Start-MutEnvironment { [pscustomobject]@{ Id = 'E1'; Name = 'mut-spike-01'; Status = 'Running'; StartDurationSec = 0 } }
 
         $mutantA = [pscustomobject]@{ id = 20; objectId = 50000; line = 4 }
         $mutantB = [pscustomobject]@{ id = 21; objectId = 60000; line = 4 }
@@ -463,6 +469,8 @@ Describe 'Invoke-MutMutantLoop' {
         $results[0].Error | Should -Be 'boom from job'
         # Loop continued: mutant 21 (uncovered) was still processed.
         $results[1].Status | Should -Be 'Uncovered'
+
+        Should -Invoke -ModuleName MutantLoop Start-MutEnvironment -Times 1
     }
 
     It 'PATCHes activeMutantId to the mutant id before running tests, and back to 0 after (Survived path)' {
@@ -500,7 +508,7 @@ Describe 'Invoke-MutMutantLoop' {
         $callLog[-1] | Should -BeLike 'API:PATCH:*'
     }
 
-    It 'PATCHes activeMutantId back to 0 after a timeout too' {
+    It 'PATCHes activeMutantId to 0 BEFORE Reset-MutEnvironment on a timeout too (F3b BLOCKER 1: the reset''s own probe must not run a real test job with this mutant still active), and again after' {
         Mock -ModuleName MutantLoop Invoke-MutTestsWithBudget {
             $global:MutCallLog += 'TESTS'
             [pscustomobject]@{ TimedOut = $true; ErrorMessage = $null; Result = $null }
@@ -510,14 +518,15 @@ Describe 'Invoke-MutMutantLoop' {
 
         Invoke-MutMutantLoop -Config $script:Config -Env $script:EnvHandle -Mutants @($mutant) `
             -Baseline $script:Baseline -Coverage $script:Coverage -References $script:References `
-            -RunNo 7 -RunDir $script:RunDir -BackendModulePath 'unused.psm1' | Out-Null
+            -RunNo 7 -RunDir $script:RunDir -BackendModulePath 'unused.psm1' -WarningAction SilentlyContinue | Out-Null
 
-        # order: GET (M3 upfront resume-fetch) -> PATCH(id) -> TESTS -> RESET -> SETTLE -> PATCH(0)
-        $global:MutCallLog | Should -Be @('API:GET:mutantResults?$filter=runNo eq 7', 'API:PATCH:mutationSetup(0)', 'TESTS', 'RESET', 'SETTLE', 'API:PATCH:mutationSetup(0)')
+        # order: GET (M3 upfront resume-fetch) -> PATCH(id) -> TESTS -> PATCH(0, F3b: before the
+        # reset's own probe) -> RESET -> SETTLE -> PATCH(0, the usual per-mutant deactivate)
+        $global:MutCallLog | Should -Be @('API:GET:mutantResults?$filter=runNo eq 7', 'API:PATCH:mutationSetup(0)', 'TESTS', 'API:PATCH:mutationSetup(0)', 'RESET', 'SETTLE', 'API:PATCH:mutationSetup(0)')
 
         Should -Invoke -ModuleName MutantLoop Invoke-MutApi -ParameterFilter {
             $Method -eq 'PATCH' -and $Body.activeMutantId -eq 0
-        } -Times 1
+        } -Times 2
     }
 
     It 'processes mutants in id order regardless of input order' {
@@ -645,6 +654,102 @@ Describe 'Invoke-MutMutantLoop' {
         Should -Invoke -ModuleName MutantLoop Start-MutEnvironment -Times 1
     }
 
+    It 'F3b BLOCKER 1 (V9): deactivates the mutant before the recovery probe and re-activates it before the retry -- PATCH sequence id, 0, id, 0, not the pre-fix id, 0' {
+        # Verified live by the reviewer: Confirm-MutEnvironmentServing's Start-MutEnvironment
+        # call runs a REAL test job, and Mutation Core's OnAfterTestMethodRun records a Killed
+        # row for any failing test while a mutant is active, with no check that it covers that
+        # mutant -- probing with the wrong mutant still active could misattribute a false kill.
+        # The default Invoke-MutApi mock (BeforeEach) logs the PATH, which is identical
+        # ('mutationSetup(0)') for activate and deactivate -- this test needs the BODY, so it
+        # supplies its own mock recording activeMutantId values in call order instead.
+        $script:MutPatchSequence = New-Object System.Collections.Generic.List[object]
+        Mock -ModuleName MutantLoop Invoke-MutApi {
+            param($Env, $Method, $Path, $Body)
+            if ($Method -eq 'PATCH' -and $Path -eq 'mutationSetup(0)') {
+                $script:MutPatchSequence.Add($Body.activeMutantId)
+            }
+            if ($Method -eq 'GET') {
+                return [pscustomobject]@{ value = @() }
+            }
+            return $null
+        }
+
+        $script:MutBlockerCallCount = 0
+        Mock -ModuleName MutantLoop Invoke-MutTestsWithBudget {
+            $script:MutBlockerCallCount++
+            if ($script:MutBlockerCallCount -eq 1) {
+                return [pscustomobject]@{
+                    TimedOut = $false; ErrorMessage = $null
+                    Result   = [pscustomobject]@{ Passed = 0; Failed = 0; DurationMs = 0; Tests = @() }
+                }
+            }
+            return [pscustomobject]@{
+                TimedOut = $false; ErrorMessage = $null
+                Result   = [pscustomobject]@{
+                    Passed = 1; Failed = 0; DurationMs = 12
+                    Tests  = @([pscustomobject]@{ Codeunit = 'C'; Function = 'F'; Result = 'Pass'; DurationMs = 12; Error = $null })
+                }
+            }
+        }
+        Mock -ModuleName MutantLoop Get-MutEnvironment { [pscustomobject]@{ Id = 'E1'; Name = 'mut-spike-01'; Status = 'Stopped' } }
+        Mock -ModuleName MutantLoop Start-MutEnvironment { [pscustomobject]@{ Id = 'E1'; Name = 'mut-spike-01'; Status = 'Running'; StartDurationSec = 9 } }
+
+        $mutant = [pscustomobject]@{ id = 71; objectId = 50000; line = 4 }
+
+        Invoke-MutMutantLoop -Config $script:Config -Env $script:EnvHandle -Mutants @($mutant) `
+            -Baseline $script:Baseline -Coverage $script:Coverage -References $script:References `
+            -RunNo 15 -RunDir $script:RunDir -BackendModulePath 'unused.psm1' -WarningAction SilentlyContinue | Out-Null
+
+        # 71 (activate) -> 0 (deactivate, before the probe) -> 71 (re-activate, before the retry)
+        # -> 0 (the usual per-mutant deactivate after the result). NOT the pre-fix `71, 0`.
+        # Joined to a string for comparison: a direct array-vs-array `Should -Be` on this
+        # List[object]'s contents intermittently throws a PS 5.1 interpreter/DLR ArgumentException
+        # ("Argumenttyperne stemmer ikke overens") unrelated to the actual values here.
+        ($script:MutPatchSequence -join ',') | Should -Be '71,0,71,0'
+    }
+
+    It 'F3b IMPORTANT 4: the ''Running but the readiness probe failed'' branch is also capped and eventually aborts the run (this branch was previously untested and silently disable-able)' {
+        # If Get-MutEnvironment always reports Running but Start-MutEnvironment (the probe)
+        # always throws, every recovery attempt takes the "$wasRunning" branch inside
+        # Confirm-MutEnvironmentServing/Request-MutEnvironmentRecoveryBudget -- distinct code
+        # from the "not Running" branch the other cap test exercises.
+        Mock -ModuleName MutantLoop Invoke-MutTestsWithBudget {
+            [pscustomobject]@{
+                TimedOut = $false; ErrorMessage = $null
+                Result   = [pscustomobject]@{ Passed = 0; Failed = 0; DurationMs = 0; Tests = @() }
+            }
+        }
+        Mock -ModuleName MutantLoop Get-MutEnvironment { [pscustomobject]@{ Id = 'E1'; Name = 'mut-spike-01'; Status = 'Running' } }
+        Mock -ModuleName MutantLoop Start-MutEnvironment { throw 'continia: test-readiness probe never reported summary.total -gt 0' }
+
+        $mutants = @(
+            [pscustomobject]@{ id = 91; objectId = 50000; line = 4 }
+            [pscustomobject]@{ id = 92; objectId = 50000; line = 4 }
+            [pscustomobject]@{ id = 93; objectId = 50000; line = 4 }
+            [pscustomobject]@{ id = 94; objectId = 50000; line = 4 }
+        )
+
+        $caught = $null
+        try {
+            Invoke-MutMutantLoop -Config $script:Config -Env $script:EnvHandle -Mutants $mutants `
+                -Baseline $script:Baseline -Coverage $script:Coverage -References $script:References `
+                -RunNo 16 -RunDir $script:RunDir -BackendModulePath 'unused.psm1' -WarningAction SilentlyContinue | Out-Null
+        }
+        catch {
+            $caught = $_
+        }
+
+        $caught | Should -Not -BeNullOrEmpty
+        $caught.CategoryInfo.Category | Should -Be ([System.Management.Automation.ErrorCategory]::LimitsExceeded)
+
+        # Mutants 91-93 each hit the probe failure (recorded as an ordinary per-mutant Error,
+        # each spending one recovery); mutant 94's identical failure finds the cap already spent
+        # and aborts the run instead.
+        $partialRows = @($caught.TargetObject)
+        $partialRows.Count | Should -Be 3
+        ($partialRows | ForEach-Object { $_.Status }) | Should -Be @('Error', 'Error', 'Error')
+    }
+
     It 'F3 (I6, run 8): caps environment recoveries per run -- after the cap is hit, the run throws rather than continuing to error out mutants one at a time' {
         # Every mutant's environment re-check reports NOT Running, and every test run comes back
         # empty (a persistently broken environment): the first $script:MaxEnvironmentRecoveries
@@ -667,10 +772,26 @@ Describe 'Invoke-MutMutantLoop' {
             [pscustomobject]@{ id = 84; objectId = 50000; line = 4 }
         )
 
-        { Invoke-MutMutantLoop -Config $script:Config -Env $script:EnvHandle -Mutants $mutants `
+        $caught = $null
+        try {
+            Invoke-MutMutantLoop -Config $script:Config -Env $script:EnvHandle -Mutants $mutants `
                 -Baseline $script:Baseline -Coverage $script:Coverage -References $script:References `
-                -RunNo 14 -RunDir $script:RunDir -BackendModulePath 'unused.psm1' -WarningAction SilentlyContinue } |
-            Should -Throw '*MUT_ENVIRONMENT_RECOVERY_CAP_EXCEEDED*'
+                -RunNo 14 -RunDir $script:RunDir -BackendModulePath 'unused.psm1' -WarningAction SilentlyContinue | Out-Null
+        }
+        catch {
+            $caught = $_
+        }
+
+        $caught | Should -Not -BeNullOrEmpty
+        # F3b (Minors): identified by a distinct ErrorCategory, never by matching the exception
+        # message text.
+        $caught.CategoryInfo.Category | Should -Be ([System.Management.Automation.ErrorCategory]::LimitsExceeded)
+
+        # F3b (IMPORTANT 3): the rows completed so far (mutants 81-83) travel with the thrown
+        # error via TargetObject, so the pipeline can still export a partial result.
+        $partialRows = @($caught.TargetObject)
+        $partialRows.Count | Should -Be 3
+        ($partialRows | ForEach-Object { $_.Id }) | Should -Be @(81, 82, 83)
 
         # Only the first 3 (the cap) mutants were ever recorded -- the 4th aborted the run before
         # it could be written.

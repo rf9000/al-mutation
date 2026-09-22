@@ -64,7 +64,12 @@ if (-not (Get-Command -Name 'Start-MutEnvironment' -ErrorAction SilentlyContinue
 # rather than a config key -- three lost environments in one run is a reason to stop, not a
 # dial to tune per run.
 $script:MaxEnvironmentRecoveries = 3
-$script:MutEnvironmentRecoveryCapExceededMarker = 'MUT_ENVIRONMENT_RECOVERY_CAP_EXCEEDED'
+# FIX (F3b, Minors): a custom ErrorCategory ([System.Management.Automation.ErrorCategory]::
+# LimitsExceeded) identifies the recovery-cap-exceeded throw, not string-matching a marker
+# prefix in the exception message -- see Request-MutEnvironmentRecoveryBudget and the
+# per-mutant catch in Invoke-MutMutantLoop. $script:MutEnvironmentRecoveryCapErrorId is only the
+# ErrorRecord's ErrorId (cosmetic/diagnostic; never matched against).
+$script:MutEnvironmentRecoveryCapErrorId = 'MutEnvironmentRecoveryCapExceeded'
 # Initialized here (not lazily inside Invoke-MutMutantLoop only) because Set-StrictMode
 # -Version Latest throws on a bare read of a $script: variable that was never assigned at all,
 # as opposed to one that is $null -- same reasoning as DemoPortal.psm1's own module-scoped cache
@@ -86,14 +91,45 @@ function Test-MutHasProperty {
     return $null -ne $Object.PSObject.Properties[$Name]
 }
 
+function Request-MutEnvironmentRecoveryBudget {
+    <#
+        .SYNOPSIS
+        Private. Spends one recovery slot against $script:MaxEnvironmentRecoveries for the life
+        of one Invoke-MutMutantLoop call (F3b IMPORTANT 1: shared by every way an environment
+        loss can present -- an empty/erroring result recovered via Confirm-MutEnvironmentServing,
+        below, AND a Timeout's Reset-MutEnvironment, in Invoke-MutMutantLoop itself -- a dead
+        environment presenting as repeated Timeouts must not reset forever, uncounted).
+
+        Throws (an ErrorRecord categorized LimitsExceeded, per F3b Minors -- callers match on
+        that category, never on the exception's message text) instead of spending a slot once
+        the cap is already spent, so the caller aborts the run rather than limping on. Otherwise
+        increments the counter and Write-Warnings once, naming the mutant and why.
+    #>
+    param(
+        [Parameter(Mandatory = $true)]
+        [int]$MutantId,
+        [Parameter(Mandatory = $true)]
+        [string]$Context
+    )
+
+    if ($script:MutEnvironmentRecoveryCount -ge $script:MaxEnvironmentRecoveries) {
+        $message = "Invoke-MutMutantLoop: mutant $MutantId -- $Context, after $($script:MutEnvironmentRecoveryCount) prior environment recoveries this run (cap $($script:MaxEnvironmentRecoveries)). A run that has lost its environment this many times is not producing a trustworthy score; aborting rather than continuing."
+        $exception = [System.Exception]::new($message)
+        throw [System.Management.Automation.ErrorRecord]::new($exception, $script:MutEnvironmentRecoveryCapErrorId, [System.Management.Automation.ErrorCategory]::LimitsExceeded, $null)
+    }
+    $script:MutEnvironmentRecoveryCount++
+    Write-Warning "Invoke-MutMutantLoop: mutant $MutantId -- $Context; recovering (recovery $($script:MutEnvironmentRecoveryCount) of $($script:MaxEnvironmentRecoveries) this run)."
+}
+
 function Confirm-MutEnvironmentServing {
     <#
         .SYNOPSIS
         FIX (F3, run 8, 2026-09-22 -- finding I6): called by Invoke-MutMutantLoop when a test
-        run comes back with zero total tests, before the loop consumes its last retry. Run 8
-        fired 46 test jobs in a row at an environment that reported Running but was not actually
-        serving, and every one of them was silently recorded as a legitimate empty result -- the
-        loop never asked whether the environment was still alive.
+        run comes back with a non-real result (zero total tests, or a job ErrorMessage -- F3b
+        IMPORTANT 1), before the loop consumes its last retry. Run 8 fired 46 test jobs in a row
+        at an environment that reported Running but was not actually serving, and every one of
+        them was silently recorded as a legitimate result -- the loop never asked whether the
+        environment was still alive.
 
         Re-checks status via Get-MutEnvironment, then ALWAYS calls Start-MutEnvironment -- it is
         idempotent (starts only when not already Running) but, as of the companion DemoPortal
@@ -101,19 +137,26 @@ function Confirm-MutEnvironmentServing {
         is what actually confirms the environment is serving rather than merely reporting
         Running (the exact gap run 8 fell through).
 
-        Recovery attempts (the environment was found NOT Running) are counted against
-        $script:MaxEnvironmentRecoveries for the life of one Invoke-MutMutantLoop call. Once the
-        cap is exceeded, this throws an exception whose message is prefixed with
-        $script:MutEnvironmentRecoveryCapExceededMarker -- Invoke-MutMutantLoop's per-mutant
-        try/catch recognizes that prefix and re-throws it, aborting the whole run rather than
-        recording one more Error and limping on to the next mutant. A confirmation of an
-        already-Running, already-serving environment costs nothing against the cap.
+        FIX (F3b BLOCKER 1): the CALLER must PATCH `activeMutantId = 0` before calling this and
+        re-PATCH the real mutant id back afterward -- this function runs a REAL test job (the
+        probe) and Mutation Core's OnAfterTestMethodRun records a Killed row for ANY failing
+        test while a mutant is active, with no check that the failing test covers that mutant.
+        Probing with the wrong mutant still active would misattribute a kill exactly like the
+        reference-map defect this project already fixed once, one layer down. This function
+        does not do that PATCHing itself, because it has no RunNo and must not assume one PATCH
+        shape -- see Invoke-MutMutantLoop's own call sites.
+
+        Recovery attempts (the environment was found NOT Running, or found Running but its
+        probe then failed) are spent from $script:MaxEnvironmentRecoveries via
+        Request-MutEnvironmentRecoveryBudget, above -- see its own doc comment for the cap
+        throw. A confirmation of an already-Running, already-serving environment costs nothing
+        against the cap.
 
         .OUTPUTS
-        [bool] $true when the environment was already Running and confirmed serving without a
-        restart; $false when it was not Running and had to be recovered (started, waited on, and
-        probed) before returning. Either way, a return (rather than a throw) means the
-        environment is now confirmed serving. Never returns when it cannot confirm that --
+        The environment handle Start-MutEnvironment returns once it has confirmed the
+        environment is serving (F3b Minors: the caller must keep using THIS handle from here on,
+        not the one it passed in -- Start-MutEnvironment re-fetches status and this is the
+        freshest confirmed-serving handle available). Never returns without one --
         Start-MutEnvironment's own probe failure, or the recovery cap, propagates instead.
     #>
     param(
@@ -125,39 +168,36 @@ function Confirm-MutEnvironmentServing {
         $MutantId
     )
 
-    $recheck = Get-MutEnvironment -Name $Env.Name -Config $Config
+    # FIX (F3b Minors): guarded the same way $recheck.Status already was -- $Env is always this
+    # module's own handle shape in practice, but a bare $Env.Name read was the one inconsistent
+    # unguarded property access under Set-StrictMode in this function.
+    $envName = $null
+    if (Test-MutHasProperty $Env 'Name') { $envName = $Env.Name }
+
+    $recheck = Get-MutEnvironment -Name $envName -Config $Config
     $statusText = if (Test-MutHasProperty $recheck 'Status') { $recheck.Status } else { 'unknown' }
     $targetEnv = if ($null -ne $recheck) { $recheck } else { $Env }
     $wasRunning = ($statusText -eq 'Running')
 
     if (-not $wasRunning) {
-        if ($script:MutEnvironmentRecoveryCount -ge $script:MaxEnvironmentRecoveries) {
-            throw "$($script:MutEnvironmentRecoveryCapExceededMarker): mutant $MutantId got an empty test result and the environment is not Running (status '$statusText'), after $($script:MutEnvironmentRecoveryCount) prior recoveries this run (cap $($script:MaxEnvironmentRecoveries)). A run that has lost its environment this many times is not producing a trustworthy score; aborting rather than continuing."
-        }
-        $script:MutEnvironmentRecoveryCount++
-        Write-Warning "Invoke-MutMutantLoop: mutant $MutantId got an empty test result and the environment is not Running (status '$statusText'); recovering it (recovery $($script:MutEnvironmentRecoveryCount) of $($script:MaxEnvironmentRecoveries) this run)."
+        Request-MutEnvironmentRecoveryBudget -MutantId $MutantId -Context "got a non-real test result and the environment is not Running (status '$statusText')"
     }
 
     try {
         # Idempotent: starts only if $targetEnv is not already Running, but always probes
         # test-readiness now regardless (the companion DemoPortal fix) -- this call is what
         # actually confirms "serving", not the status check above.
-        Start-MutEnvironment -Env $targetEnv -Config $Config | Out-Null
+        return (Start-MutEnvironment -Env $targetEnv -Config $Config)
     }
     catch {
         if ($wasRunning) {
             # The status check said Running, but the readiness probe itself failed -- also a
-            # genuine environment-recovery event, counted the same way.
-            if ($script:MutEnvironmentRecoveryCount -ge $script:MaxEnvironmentRecoveries) {
-                throw "$($script:MutEnvironmentRecoveryCapExceededMarker): mutant $MutantId -- the environment reports Running but its readiness probe failed, after $($script:MutEnvironmentRecoveryCount) prior recoveries this run (cap $($script:MaxEnvironmentRecoveries)). A run that has lost its environment this many times is not producing a trustworthy score; aborting rather than continuing. Probe error: $($_.Exception.Message)"
-            }
-            $script:MutEnvironmentRecoveryCount++
-            Write-Warning "Invoke-MutMutantLoop: mutant $MutantId -- the environment reports Running but its readiness probe failed (recovery $($script:MutEnvironmentRecoveryCount) of $($script:MaxEnvironmentRecoveries) this run): $($_.Exception.Message)"
+            # genuine environment-recovery event, counted the same way (F3b IMPORTANT 4: this
+            # branch is exercised by its own dedicated test).
+            Request-MutEnvironmentRecoveryBudget -MutantId $MutantId -Context "the environment reports Running but its readiness probe failed: $($_.Exception.Message)"
         }
         throw
     }
-
-    return $wasRunning
 }
 
 function Get-MutTimeoutBudget {
@@ -741,17 +781,29 @@ function Invoke-MutMutantLoop {
                 $outcome = Invoke-MutTestsWithBudget -Env $Env -Targets $targets -TimeoutSec $innerTimeoutSec -BudgetSec $budget -BackendModulePath $BackendModulePath
                 $isEmptyResult = (-not $outcome.TimedOut) -and (-not $outcome.ErrorMessage) -and ($null -ne $outcome.Result) -and
                     (([int]$outcome.Result.Passed + [int]$outcome.Result.Failed) -eq 0)
+                # FIX (F3b IMPORTANT 1): a dead environment does not only present as an empty
+                # result -- the reviewer reproduced it presenting as a job ErrorMessage too (10/10
+                # mutants, zero environment checks, garbage score, no abort). Treat both the same
+                # way before consuming the retry; TimedOut is deliberately excluded here -- it has
+                # its own handling (Reset-MutEnvironment) below and is never retried in this loop.
+                $isRecoverableOutcome = $isEmptyResult -or ((-not $outcome.TimedOut) -and [bool]$outcome.ErrorMessage)
 
-                # FIX (F3, run 8 -- finding I6): before consuming the last retry on an empty
-                # result, find out whether the environment itself is the reason -- a `Running`
-                # status alone is not proof of that (see Confirm-MutEnvironmentServing's own doc
-                # comment). This can throw (recovery cap exceeded, or the probe itself failing
-                # this attempt); either way that propagates out of this try, through this
-                # mutant's own catch below, and is handled there.
-                if ($isEmptyResult -and $attempt -lt $maxAttempts) {
-                    Confirm-MutEnvironmentServing -Env $Env -Config $Config -MutantId $mutant.id | Out-Null
+                if ($isRecoverableOutcome -and $attempt -lt $maxAttempts) {
+                    # FIX (F3b BLOCKER 1): deactivate before Confirm-MutEnvironmentServing's real
+                    # probe test job runs -- Mutation Core records a Killed row for ANY failing
+                    # test while a mutant is active, without checking it covers that mutant, so
+                    # probing with THIS mutant still active could misattribute a false kill to it.
+                    # Re-activate before the retry (also closes V9: the mutant was previously left
+                    # deactivated across the retry, observed PATCH sequence `42, 0`).
+                    Invoke-MutApi -Env $Env -Method 'PATCH' -Path 'mutationSetup(0)' -Body @{ activeMutantId = 0; currentRunNo = $RunNo } | Out-Null
+                    # This can throw (recovery cap exceeded, or the probe itself failing this
+                    # attempt); either way that propagates out of this try, through this mutant's
+                    # own catch below, and is handled there. On success, keep using the (possibly
+                    # refreshed) handle it returns for the rest of this run (F3b Minors).
+                    $Env = Confirm-MutEnvironmentServing -Env $Env -Config $Config -MutantId $mutant.id
+                    Invoke-MutApi -Env $Env -Method 'PATCH' -Path 'mutationSetup(0)' -Body @{ activeMutantId = $mutant.id; currentRunNo = $RunNo } | Out-Null
                 }
-            } while ($isEmptyResult -and $attempt -lt $maxAttempts)
+            } while ($isRecoverableOutcome -and $attempt -lt $maxAttempts)
 
             $status = $null
             $killingTest = $null
@@ -759,6 +811,14 @@ function Invoke-MutMutantLoop {
             $errorMessage = $null
 
             if ($outcome.TimedOut) {
+                # FIX (F3b BLOCKER 1): same hazard as above -- Reset-MutEnvironment's own probe
+                # (when given -Config) runs a real test job, and this mutant is still active.
+                Invoke-MutApi -Env $Env -Method 'PATCH' -Path 'mutationSetup(0)' -Body @{ activeMutantId = 0; currentRunNo = $RunNo } | Out-Null
+                # FIX (F3b IMPORTANT 1): count a timeout-triggered reset against the same
+                # recovery cap -- the reviewer reproduced 5/5 Timeouts with zero environment
+                # checks and each one resetting uncounted; a dead environment must not be allowed
+                # to reset forever just because it happens to present as a timeout.
+                Request-MutEnvironmentRecoveryBudget -MutantId $mutant.id -Context 'a test run timed out'
                 Reset-MutEnvironment -Env $Env -Config $Config | Out-Null
                 Start-MutPostResetSettle
                 $status = 'Timeout'
@@ -877,20 +937,26 @@ function Invoke-MutMutantLoop {
             # deactivate, record Status 'Error' with the exception message, and move on.
             $caughtMessage = $_.Exception.Message
 
-            # FIX (F3, run 8 -- finding I6): the one exception this catch must NOT swallow into
-            # a per-mutant Error -- Confirm-MutEnvironmentServing's recovery-cap exceeded throw,
-            # recognized by its marker prefix. Re-thrown so it aborts the whole run rather than
-            # limping through the rest of the mutants one Error at a time (the brief's whole
-            # point of having a cap).
-            if ($caughtMessage -like "$($script:MutEnvironmentRecoveryCapExceededMarker)*") {
-                throw
-            }
-
+            # FIX (F3b Minors): deactivate (best-effort) BEFORE deciding whether to re-throw --
+            # previously the recovery-cap-exceeded re-throw (below) happened first, leaving the
+            # last mutant active in the environment on an aborted run.
             try {
                 Invoke-MutApi -Env $Env -Method 'PATCH' -Path 'mutationSetup(0)' -Body @{ activeMutantId = 0; currentRunNo = $RunNo } | Out-Null
             }
             catch {
                 # Deactivation itself failing must not mask the original error or abort the run.
+            }
+
+            # FIX (F3, run 8 -- finding I6; F3b Minors: matched on a distinct ErrorCategory, not
+            # a string-matched marker prefix): the one exception this catch must NOT swallow into
+            # a per-mutant Error -- Request-MutEnvironmentRecoveryBudget's recovery-cap-exceeded
+            # throw. Re-thrown, with the rows completed so far attached as TargetObject (F3b
+            # IMPORTANT 3: so the pipeline can still export a partial result and tell the operator
+            # how much finished), so it aborts the whole run rather than limping through the rest
+            # of the mutants one Error at a time (the brief's whole point of having a cap).
+            if ($_.CategoryInfo.Category -eq [System.Management.Automation.ErrorCategory]::LimitsExceeded) {
+                $enriched = [System.Management.Automation.ErrorRecord]::new($_.Exception, $script:MutEnvironmentRecoveryCapErrorId, [System.Management.Automation.ErrorCategory]::LimitsExceeded, $rows)
+                throw $enriched
             }
 
             $errorRow = [pscustomobject]@{

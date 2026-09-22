@@ -301,6 +301,16 @@ function Ensure-MutEnvironment {
         real `env start` was needed, so it is now called unconditionally whenever an environment
         was found, Running or not.
 
+        FIX (F3b IMPORTANT 2): that unconditional probe now hard-requires its target codeunit
+        (the AUT's own test codeunit, per both shipped configs) to already exist -- but this step
+        runs BEFORE Publish-MutBaseline (§6.5.4 step 3), which is what installs it. A fresh
+        environment, one whose test app was unpublished, or a -SkipEnvironment run would die here
+        every time, before the baseline that would make the target exist ever got a chance to
+        run. Start-MutEnvironment is now called with -RequireProbe $false here: an unconfirmed
+        probe is a warning, not fatal, at this pre-baseline point. The mutant loop's own
+        in-loop confirmation (Confirm-MutEnvironmentServing, MutantLoop.psm1), which only ever
+        runs after the baseline has installed the target, stays strict (does not pass this).
+
         .OUTPUTS
         The environment handle (§6.5.3 shape, plus whatever extra properties the backend adds).
     #>
@@ -325,8 +335,9 @@ function Ensure-MutEnvironment {
         $env = New-MutEnvironment -Name $Config.environmentName -Config $Config
     }
     else {
-        # FIX (F3, I6): unconditional -- see this function's own FIX note above.
-        $env = Start-MutEnvironment -Env $env -Config $Config
+        # FIX (F3, I6): unconditional; FIX (F3b IMPORTANT 2): -RequireProbe $false -- see this
+        # function's own FIX notes above.
+        $env = Start-MutEnvironment -Env $env -Config $Config -RequireProbe $false
     }
 
     if ($alreadyDone) {
@@ -866,6 +877,20 @@ function Export-MutResultsStep {
         §6.5.4 step 9. Export-MutResults into the repo's `results/` directory, then
         Remove-MutEnvironment unless $Config.keepEnvironment.
 
+        .PARAMETER AllowPartial
+        FIX (F3b IMPORTANT 3): set by Invoke-MutRunPipeline when the mutant loop aborted on the
+        environment-recovery cap rather than completing every mutant (MutantLoop.psm1's
+        Invoke-MutMutantLoop threw instead of returning). $Results is then necessarily missing a
+        row for every mutant that had not run yet; Get-MutMergedMutantRows (Results.psm1)
+        already renders a mutant with no row as 'Pending' rather than throwing, so the export
+        itself needs no change. This switch only changes what happens AROUND it: `export.done`
+        is NOT written (a later, genuinely complete re-invocation for the same -RunNo must still
+        export for real, not find a marker and skip itself) and Remove-MutEnvironment is NOT
+        called (the environment that just failed to recover 3 times is not torn down out from
+        under an operator who is about to look at it, regardless of $Config.keepEnvironment).
+        The already-exists check against `export.done` still applies even with -AllowPartial, so
+        a partial export can never clobber a real, already-completed one.
+
         .OUTPUTS
         [pscustomobject]@{ ResultsPath; SummaryPath } (Export-MutResults' own return shape).
     #>
@@ -889,7 +914,8 @@ function Export-MutResultsStep {
         [Parameter(Mandatory = $true)]
         $FinishedUtc,
         [Parameter(Mandatory = $true)]
-        [string]$RunDir
+        [string]$RunDir,
+        [switch]$AllowPartial
     )
 
     $markerPath = Join-Path $RunDir 'export.done'
@@ -905,6 +931,10 @@ function Export-MutResultsStep {
 
     $paths = Export-MutResults -RunNo $RunNo -Config $Config -Env $Env -Mutants $Mutants -Results $Results `
         -OutDir $outDir -StartedUtc $StartedUtc -FinishedUtc $FinishedUtc -CompileErrorIds $CompileErrorIds
+
+    if ($AllowPartial) {
+        return $paths
+    }
 
     if (-not $Config.keepEnvironment) {
         Remove-MutEnvironment -Env $Env -Config $Config
@@ -933,8 +963,16 @@ function Invoke-MutRunPipeline {
         need them. When set and baseline.json does NOT exist yet, Write-Warning and run the
         baseline step normally (same as omitting the switch).
 
+        FIX (F3b IMPORTANT 3, BLOCKER 2): if the mutant loop aborts on its environment-recovery
+        cap (§6.5.6, MutantLoop.psm1), this function still exports whatever mutants completed
+        (Export-MutResultsStep -AllowPartial) and Write-Warnings how many of how many finished
+        and that re-invoking with the same -RunNo resumes -- then RE-THROWS, so this run is never
+        reported as a success. A partial results/<RunNo>.json and summary still land on disk.
+
         .OUTPUTS
-        [pscustomobject]@{ ResultsPath; SummaryPath }.
+        [pscustomobject]@{ ResultsPath; SummaryPath } on a completed run. Throws (after the
+        partial export above) rather than returning when the mutant loop aborted on its
+        environment-recovery cap.
     #>
     param(
         [Parameter(Mandatory = $true)]
@@ -975,19 +1013,48 @@ function Invoke-MutRunPipeline {
     Get-MutCoveringTestsStep -Config $Config -Mutants $schemata.Mutants -Coverage $baselineResult.Coverage `
         -References $baselineResult.References -RunDir $runDir | Out-Null
 
-    $loopResults = Invoke-MutMutantLoopStep -Config $Config -Env $env -Mutants $schemata.Mutants `
-        -Baseline $baselineResult.Baseline -Coverage $baselineResult.Coverage -References $baselineResult.References `
-        -RunNo $runNo -RunDir $runDir -BackendModulePath $backendModulePath
-
-    $finishedUtc = [datetime]::UtcNow
-
     # Compile-error mutants (e.g. every BREAK candidate, §8 acceptance item 2) never appear in
     # $schemata.Mutants -- they are excluded from every generator iteration after the one that
     # first hit them (§6.5.4 step 4) -- so the final export's mutant list is the union of the
     # ones that were actually manifested/looped and the ones excluded for a compile error, or a
     # BREAK/compile-error mutant would have no row at all in results/<RunNo>.json to be marked
-    # CompileError in (T27, live run, 2026-09-09; docs/issues.md).
+    # CompileError in (T27, live run, 2026-09-09; docs/issues.md). Computed before the loop step
+    # (not after, as originally) so it is also available to the FIX (F3b IMPORTANT 3) catch below.
     $allMutantsForExport = @($schemata.Mutants) + @($schemata.ExcludedMutants)
+
+    # FIX (F3b IMPORTANT 3): before this fix, an environment-recovery-cap abort
+    # (MutantLoop.psm1's Invoke-MutMutantLoop throwing a LimitsExceeded-categorized error rather
+    # than returning) propagated straight out of this function -- Export-MutResultsStep never
+    # ran, so an aborted run produced NO results/<RunNo>.json and no summary, only the mutant
+    # loop's own crash-safety file (runs/<RunNo>/results.jsonl). The cap exists so a
+    # not-trustworthy-anymore run stops rather than limping on (F3), but stopping should not
+    # also destroy every mutant result that WAS legitimately produced before that point.
+    try {
+        $loopResults = Invoke-MutMutantLoopStep -Config $Config -Env $env -Mutants $schemata.Mutants `
+            -Baseline $baselineResult.Baseline -Coverage $baselineResult.Coverage -References $baselineResult.References `
+            -RunNo $runNo -RunDir $runDir -BackendModulePath $backendModulePath
+    }
+    catch {
+        if ($_.CategoryInfo.Category -ne [System.Management.Automation.ErrorCategory]::LimitsExceeded) {
+            throw
+        }
+
+        $finishedUtc = [datetime]::UtcNow
+        $partialResults = @($_.TargetObject)
+        $totalMutantCount = @($schemata.Mutants).Count
+
+        Write-Warning "Invoke-MutRunPipeline: the mutant loop aborted after exceeding its environment-recovery cap -- $($partialResults.Count) of $totalMutantCount mutant(s) completed before this run stopped ($($_.Exception.Message)). A partial results/summary was still exported. Re-invoke with -RunNo $runNo to resume: already-recorded mutants are skipped automatically and the loop continues from where it stopped."
+
+        $exportResult = Export-MutResultsStep -Config $Config -Env $env -RunNo $runNo -Mutants $allMutantsForExport `
+            -Results $partialResults -CompileErrorIds $schemata.CompileErrorIds -StartedUtc $startedUtc `
+            -FinishedUtc $finishedUtc -RunDir $runDir -AllowPartial
+
+        Write-Warning "Invoke-MutRunPipeline: partial results: $($exportResult.ResultsPath); partial summary: $($exportResult.SummaryPath)"
+
+        throw
+    }
+
+    $finishedUtc = [datetime]::UtcNow
 
     $exportResult = Export-MutResultsStep -Config $Config -Env $env -RunNo $runNo -Mutants $allMutantsForExport `
         -Results @($loopResults) -CompileErrorIds $schemata.CompileErrorIds -StartedUtc $startedUtc `

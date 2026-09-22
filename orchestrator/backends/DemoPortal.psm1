@@ -305,15 +305,34 @@ function Wait-MutEnvironmentSettled {
         never reports a positive total after all 10 attempts throws -- an unready environment
         must not silently continue and risk every subsequent mutant being lost.
 
+        FIX (F3b IMPORTANT 2): that "throws" above is now conditional on $RequireProbe. Making
+        the settle-and-probe unconditional (F3, finding I6) means Ensure-MutEnvironment's
+        pre-baseline call (§6.5.4 step 2) now reaches this probe on every run, but both shipped
+        configs point `settleProbe` at codeunit 95155 -- the AUT's OWN test codeunit, which does
+        not exist until Publish-MutBaseline (step 3) installs the test app. A fresh environment,
+        one whose test app was unpublished, or a `-SkipEnvironment` run now died here after
+        ~10 attempts x 30s, before the baseline that would have made the probe target exist ever
+        ran. $RequireProbe = $true (default) preserves the original hard-throw contract for
+        every caller that does not pass it (Reset-MutEnvironment, and the mutant loop's
+        Confirm-MutEnvironmentServing via Start-MutEnvironment, both of which run AFTER the
+        baseline and must stay strict); Ensure-MutEnvironment/New-MutEnvironment pass
+        -RequireProbe $false so a probe-target-not-found (or never-ready) result is a warning,
+        not a fatal error, before the baseline has had a chance to make the target exist.
+
         .OUTPUTS
-        [pscustomobject]@{ SettleDurationSec; SettleProbeAttempts } -- SettleDurationSec is the
-        total elapsed seconds (apps poll + the fixed 30s + the test-readiness probe, when run);
-        SettleProbeAttempts is 0 when the probe was skipped.
+        [pscustomobject]@{ SettleDurationSec; SettleProbeAttempts; ProbeConfirmed } --
+        SettleDurationSec is the total elapsed seconds (apps poll + the fixed 30s + the
+        test-readiness probe, when run); SettleProbeAttempts is 0 when the probe was skipped
+        entirely (no demoPortal.settleProbe in $Config). ProbeConfirmed is $true when no probe
+        was configured (unchanged pre-F3 behaviour: nothing to confirm) or the probe reported
+        `summary.total -gt 0`; $false only when $RequireProbe was explicitly $false and the
+        probe never became ready (the one case that used to throw unconditionally).
     #>
     param(
         [Parameter(Mandatory = $true)]
         [string]$Id,
-        $Config
+        $Config,
+        [bool]$RequireProbe = $true
     )
 
     $start = Get-Date
@@ -330,6 +349,7 @@ function Wait-MutEnvironmentSettled {
     Start-Sleep -Seconds 30
 
     $probeAttempts = 0
+    $probeConfirmed = $true
     $hasProbeConfig = ($null -ne $Config) -and (Test-MutHasProperty $Config 'demoPortal') -and
         (Test-MutHasProperty $Config.demoPortal 'settleProbe') -and ($null -ne $Config.demoPortal.settleProbe)
 
@@ -350,8 +370,15 @@ function Wait-MutEnvironmentSettled {
             }
         }
 
+        $probeConfirmed = $probeReady
         if (-not $probeReady) {
-            throw "Wait-MutEnvironmentSettled: test-readiness probe (codeunit $($probe.codeunitId), function $($probe.functionName)) never reported summary.total -gt 0 for environment '$Id' after $probeAttempts attempts; the environment may not be ready to run tests."
+            # FIX (F3b IMPORTANT 2): fatal only when the caller requires it (the default,
+            # preserving every pre-existing caller's behaviour) -- see this function's own FIX
+            # note above for why a pre-baseline caller must be able to opt out.
+            if ($RequireProbe) {
+                throw "Wait-MutEnvironmentSettled: test-readiness probe (codeunit $($probe.codeunitId), function $($probe.functionName)) never reported summary.total -gt 0 for environment '$Id' after $probeAttempts attempts; the environment may not be ready to run tests."
+            }
+            Write-Warning "Wait-MutEnvironmentSettled: test-readiness probe (codeunit $($probe.codeunitId), function $($probe.functionName)) never reported summary.total -gt 0 for environment '$Id' after $probeAttempts attempts; continuing without confirmed readiness (RequireProbe was not set for this call) -- the caller must not treat this environment as confirmed serving."
         }
     }
     else {
@@ -360,7 +387,7 @@ function Wait-MutEnvironmentSettled {
 
     $settleDurationSec = ((Get-Date) - $start).TotalSeconds
 
-    return [pscustomobject]@{ SettleDurationSec = $settleDurationSec; SettleProbeAttempts = $probeAttempts }
+    return [pscustomobject]@{ SettleDurationSec = $settleDurationSec; SettleProbeAttempts = $probeAttempts; ProbeConfirmed = $probeConfirmed }
 }
 
 function Wait-MutEnvironmentAppears {
@@ -410,17 +437,26 @@ function Start-MutEnvironment {
         own apps-poll/fixed-delay/test-run cost, §6.5.3) next to the run time a false-negative
         empty result wastes, so it now always runs, regardless of whether `env start` was
         needed this call.
+        FIX (F3b IMPORTANT 2): -RequireProbe (default $true) is forwarded to
+        Wait-MutEnvironmentSettled -- see that function's own FIX note. Callers that run before
+        the baseline can possibly have installed the probe's target test codeunit
+        (Ensure-MutEnvironment, New-MutEnvironment) pass -RequireProbe $false; the mutant loop's
+        Confirm-MutEnvironmentServing (MutantLoop.psm1), which only ever runs after the
+        baseline, does not pass it and stays strict.
+
         .OUTPUTS
         The handle with Status='Running', StartDurationSec, ActivationInstallDurationSec,
-        SettleDurationSec, SettleProbeAttempts. StartDurationSec is 0 when the environment was
-        already Running and `env start`/the Running poll were skipped; SettleDurationSec and
-        SettleProbeAttempts always reflect a real settle-and-probe call.
+        SettleDurationSec, SettleProbeAttempts, ProbeConfirmed. StartDurationSec is 0 when the
+        environment was already Running and `env start`/the Running poll were skipped;
+        SettleDurationSec/SettleProbeAttempts/ProbeConfirmed always reflect a real
+        settle-and-probe call (see Wait-MutEnvironmentSettled's own OUTPUTS for ProbeConfirmed).
     #>
     param(
         [Parameter(Mandatory = $true)]
         $Env,
         [Parameter(Mandatory = $true)]
-        $Config
+        $Config,
+        [bool]$RequireProbe = $true
     )
 
     Assert-MutEnvironmentAllowed $Env
@@ -441,9 +477,10 @@ function Start-MutEnvironment {
 
     # FIX (F3, I6): unconditional -- see this function's own FIX note above. A `Running` status
     # alone is not proof of readiness; only this probe is.
-    $settled = Wait-MutEnvironmentSettled -Id $Env.Id -Config $Config
+    $settled = Wait-MutEnvironmentSettled -Id $Env.Id -Config $Config -RequireProbe $RequireProbe
     $settleDurationSec = $settled.SettleDurationSec
     $settleProbeAttempts = $settled.SettleProbeAttempts
+    $probeConfirmed = $settled.ProbeConfirmed
 
     $activationStart = Get-Date
     Invoke-Continia -Arguments @('deps', 'install-by-id', $Env.Id, $Config.demoPortal.activationAppId, '--json') | Out-Null
@@ -457,6 +494,7 @@ function Start-MutEnvironment {
     Add-Member -InputObject $handle -NotePropertyName 'ActivationInstallDurationSec' -NotePropertyValue $activationInstallDurationSec
     Add-Member -InputObject $handle -NotePropertyName 'SettleDurationSec' -NotePropertyValue $settleDurationSec
     Add-Member -InputObject $handle -NotePropertyName 'SettleProbeAttempts' -NotePropertyValue $settleProbeAttempts
+    Add-Member -InputObject $handle -NotePropertyName 'ProbeConfirmed' -NotePropertyValue $probeConfirmed
 
     return $handle
 }
@@ -467,6 +505,12 @@ function New-MutEnvironment {
         Creates a fresh DemoPortal environment (env create), waits for it to become visible
         with a status at all (env get, up to 60s), then delegates starting/activating it to
         Start-MutEnvironment.
+
+        FIX (F3b IMPORTANT 2): always calls Start-MutEnvironment with -RequireProbe $false -- a
+        brand-new environment is, by definition, always a pre-baseline caller (§6.5.4 step 2),
+        so the probe target (the AUT's own test codeunit) cannot possibly exist yet. See
+        Wait-MutEnvironmentSettled's own FIX note for the full hazard.
+
         .OUTPUTS
         A handle plus CreateDurationSec, StartDurationSec, ActivationInstallDurationSec.
     #>
@@ -491,7 +535,7 @@ function New-MutEnvironment {
     $createDurationSec = ((Get-Date) - $createStart).TotalSeconds
 
     $envHandle = ConvertTo-MutEnvironmentHandle -Raw $appeared
-    $handle = Start-MutEnvironment -Env $envHandle -Config $Config
+    $handle = Start-MutEnvironment -Env $envHandle -Config $Config -RequireProbe $false
 
     Add-Member -InputObject $handle -NotePropertyName 'CreateDurationSec' -NotePropertyValue $createDurationSec
 

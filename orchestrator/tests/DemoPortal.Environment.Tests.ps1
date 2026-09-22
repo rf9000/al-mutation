@@ -159,6 +159,35 @@ Describe 'New-MutEnvironment' {
             $Arguments[0] -eq 'env' -and $Arguments[1] -eq 'use' -and $Arguments[2] -eq 'E1' -and $ExpectJson -eq $false
         } -Times 1
     }
+
+    It 'F3b IMPORTANT 2: does not throw when the settle probe never becomes ready -- a brand-new environment cannot have the probe''s target test codeunit installed yet' {
+        # Regression test: a fresh `mut-*` environment is always a pre-baseline caller. Before
+        # this fix, New-MutEnvironment's internal Start-MutEnvironment call had no way to opt out
+        # of the probe's hard throw, so creating a brand-new environment against a config whose
+        # settleProbe targets the AUT's own (not-yet-installed) test codeunit died here.
+        Mock -ModuleName DemoPortal Invoke-Continia -ParameterFilter { $Arguments[0] -eq 'env' -and $Arguments[1] -eq 'create' } { [pscustomobject]@{ id = 'E1'; description = 'mut-spike-01' } }
+
+        $script:__newMutEnvSoftGetCalls = 0
+        Mock -ModuleName DemoPortal Invoke-Continia -ParameterFilter { $Arguments[1] -eq 'get' } {
+            $script:__newMutEnvSoftGetCalls++
+            if ($script:__newMutEnvSoftGetCalls -le 2) {
+                return [pscustomobject]@{ id = 'E1'; status = 'Draft'; description = 'mut-spike-01'; url = 'https://x/E1'; shared = $false }
+            }
+            return [pscustomobject]@{ id = 'E1'; status = 'Running'; description = 'mut-spike-01'; url = 'https://x/E1'; shared = $false }
+        }
+        Mock -ModuleName DemoPortal Invoke-Continia -ParameterFilter { $Arguments[1] -eq 'start' } { [pscustomobject]@{ ExitCode = 0; StdOut = ''; StdErr = '' } }
+        Mock -ModuleName DemoPortal Invoke-Continia -ParameterFilter { $Arguments[1] -eq 'install-by-id' } { [pscustomobject]@{ success = $true } }
+        Mock -ModuleName DemoPortal Invoke-Continia -ParameterFilter { $Arguments[1] -eq 'use' } { [pscustomobject]@{ ExitCode = 0; StdOut = ''; StdErr = '' } }
+        Mock -ModuleName DemoPortal Invoke-Continia -ParameterFilter { $Arguments[1] -eq 'apps' } { @([pscustomobject]@{ id = 'app1' }) }
+        Mock -ModuleName DemoPortal Invoke-Continia -ParameterFilter { $Arguments[0] -eq 'test' -and $Arguments[1] -eq 'run' } {
+            [pscustomobject]@{ summary = [pscustomobject]@{ total = 0 } }
+        }
+
+        $h = New-MutEnvironment -Name 'mut-spike-01' -Config $cfgWithProbe -WarningAction SilentlyContinue
+
+        $h.Status | Should -Be 'Running'
+        $h.ProbeConfirmed | Should -Be $false
+    }
 }
 
 Describe 'Start-MutEnvironment' {
@@ -298,6 +327,36 @@ Describe 'Start-MutEnvironment' {
 
         { Start-MutEnvironment -Env $env -Config $cfgWithProbe } | Should -Throw
 
+        Should -Invoke -ModuleName DemoPortal Invoke-Continia -ParameterFilter { $Arguments[0] -eq 'test' -and $Arguments[1] -eq 'run' } -Times 10
+    }
+
+    It 'F3b IMPORTANT 2: with -RequireProbe $false, warns instead of throwing when the probe never reports summary.total > 0, and reports ProbeConfirmed = $false' {
+        # Regression test for the hazard the unconditional probe (F3) reintroduced: both shipped
+        # configs point settleProbe at the AUT's own test codeunit, which does not exist until
+        # Publish-MutBaseline (pipeline step 3) installs it -- Ensure-MutEnvironment/
+        # New-MutEnvironment (step 2) must not die here before the baseline gets a chance to run.
+        $env = [pscustomobject]@{ Id = 'E1'; Name = 'mut-spike-01'; Url = 'https://x/E1'; Backend = 'DemoPortal'; Shared = $false; Status = 'Draft' }
+
+        $script:__softProbeGetCalls = 0
+        Mock -ModuleName DemoPortal Invoke-Continia -ParameterFilter { $Arguments[1] -eq 'get' } {
+            $script:__softProbeGetCalls++
+            if ($script:__softProbeGetCalls -eq 1) {
+                return [pscustomobject]@{ id = 'E1'; status = 'Draft'; description = 'mut-spike-01'; url = 'https://x/E1'; shared = $false }
+            }
+            return [pscustomobject]@{ id = 'E1'; status = 'Running'; description = 'mut-spike-01'; url = 'https://x/E1'; shared = $false }
+        }
+        Mock -ModuleName DemoPortal Invoke-Continia -ParameterFilter { $Arguments[1] -eq 'start' } { [pscustomobject]@{ ExitCode = 0; StdOut = ''; StdErr = '' } }
+        Mock -ModuleName DemoPortal Invoke-Continia -ParameterFilter { $Arguments[1] -eq 'apps' } { @([pscustomobject]@{ id = 'app1' }) }
+        Mock -ModuleName DemoPortal Invoke-Continia -ParameterFilter { $Arguments[1] -eq 'install-by-id' } { [pscustomobject]@{ success = $true } }
+        Mock -ModuleName DemoPortal Invoke-Continia -ParameterFilter { $Arguments[1] -eq 'use' } { [pscustomobject]@{ ExitCode = 0; StdOut = ''; StdErr = '' } }
+        Mock -ModuleName DemoPortal Invoke-Continia -ParameterFilter { $Arguments[0] -eq 'test' -and $Arguments[1] -eq 'run' } {
+            [pscustomobject]@{ summary = [pscustomobject]@{ total = 0 } }
+        }
+
+        $h = Start-MutEnvironment -Env $env -Config $cfgWithProbe -RequireProbe $false -WarningAction SilentlyContinue
+
+        $h.Status | Should -Be 'Running'
+        $h.ProbeConfirmed | Should -Be $false
         Should -Invoke -ModuleName DemoPortal Invoke-Continia -ParameterFilter { $Arguments[0] -eq 'test' -and $Arguments[1] -eq 'run' } -Times 10
     }
 

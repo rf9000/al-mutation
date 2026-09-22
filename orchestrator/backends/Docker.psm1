@@ -32,7 +32,8 @@ function Start-MutEnvironment {
         [Parameter(Mandatory = $true)]
         $Env,
         [Parameter(Mandatory = $true)]
-        $Config
+        $Config,
+        [bool]$RequireProbe = $true
     )
 
     throw [System.NotImplementedException]::new('Docker backend is not implemented in v1')

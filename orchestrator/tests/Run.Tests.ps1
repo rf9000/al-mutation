@@ -217,6 +217,49 @@ Describe 'Invoke-MutRunPipeline (fully mocked backend/lib boundary)' {
         Should -Invoke -ModuleName Run Remove-MutEnvironment -Times 1
     }
 
+    It 'F3b IMPORTANT 3: when the mutant loop aborts on its environment-recovery cap, still exports a partial result, does not remove the environment, and re-throws (never reports success)' {
+        # Regression test: before this fix, MutantLoop.psm1's LimitsExceeded-categorized abort
+        # propagated straight out of Invoke-MutRunPipeline -- Export-MutResultsStep never ran, so
+        # an aborted run produced NO results/<RunNo>.json and no summary at all, only the mutant
+        # loop's own runs/<RunNo>/results.jsonl.
+        $script:Config = New-MutRunTestConfig -WorkDir $script:WorkDir -KeepEnvironment $false
+
+        $partialRows = @(
+            [pscustomobject]@{ Id = 1; Status = 'Survived'; KillingTest = $null; DurationMs = 50; CoveringTests = @(50300) }
+        )
+        Mock -ModuleName Run Invoke-MutMutantLoop {
+            $script:CallLog.Add('Invoke-MutMutantLoop')
+            $exception = [System.Exception]::new('mutant 2 -- environment recovery cap exceeded')
+            $errorRecord = [System.Management.Automation.ErrorRecord]::new($exception, 'MutEnvironmentRecoveryCapExceeded', [System.Management.Automation.ErrorCategory]::LimitsExceeded, $partialRows)
+            throw $errorRecord
+        }
+
+        $caught = $null
+        try {
+            Invoke-MutRunPipeline -Config $script:Config -RunNo 1 -WarningAction SilentlyContinue | Out-Null
+        }
+        catch {
+            $caught = $_
+        }
+
+        $caught | Should -Not -BeNullOrEmpty
+        $caught.CategoryInfo.Category | Should -Be ([System.Management.Automation.ErrorCategory]::LimitsExceeded)
+
+        # The partial rows (not the empty/complete set) reached Export-MutResults.
+        Should -Invoke -ModuleName Run Export-MutResults -ParameterFilter {
+            @($Results).Count -eq 1 -and $Results[0].Id -eq 1
+        } -Times 1
+
+        # Never torn down, even though this config sets keepEnvironment: false -- an environment
+        # that just failed to recover 3 times must still be there for an operator to look at.
+        Should -Invoke -ModuleName Run Remove-MutEnvironment -Times 0
+
+        # export.done must NOT exist: a later, genuinely complete re-invocation for this RunNo
+        # must still export for real rather than finding a marker and skipping itself.
+        $runDir = Join-Path $script:WorkDir 'runs/1'
+        Test-Path (Join-Path $runDir 'export.done') | Should -Be $false
+    }
+
     It 'uses the unpublish-test-app strategy: Unpublish-MutApp then Publish-MutAppFile then Publish-MutApp' {
         $script:Config = New-MutRunTestConfig -WorkDir $script:WorkDir -PublishStrategy 'unpublish-test-app'
 
@@ -408,6 +451,20 @@ Describe 'Invoke-MutRunPipeline (fully mocked backend/lib boundary)' {
         Should -Invoke -ModuleName Run Get-MutEnvironment -Times 1
         Should -Invoke -ModuleName Run Start-MutEnvironment -Times 1
         Should -Invoke -ModuleName Run New-MutEnvironment -Times 0
+    }
+
+    It 'F3b IMPORTANT 2: Ensure-MutEnvironment calls Start-MutEnvironment with -RequireProbe $false -- this pre-baseline step cannot require the probe''s target test codeunit to already exist' {
+        # Regression test: both shipped configs point settleProbe at the AUT's own test
+        # codeunit, which Publish-MutBaseline (step 3) installs -- AFTER this step. Before this
+        # fix, Start-MutEnvironment's probe (now unconditional, F3) defaulted to a hard throw,
+        # so a fresh environment, one whose test app was unpublished, or a -SkipEnvironment run
+        # died here every time.
+        $runDir = Join-Path $script:WorkDir 'runs/1'
+        New-Item -ItemType Directory -Path $runDir -Force | Out-Null
+
+        Ensure-MutEnvironment -Config $script:Config -RunDir $runDir | Out-Null
+
+        Should -Invoke -ModuleName Run Start-MutEnvironment -ParameterFilter { $RequireProbe -eq $false } -Times 1
     }
 
     It 'computes RunNo as 1 + the highest existing results/<n>.json when -RunNo is omitted' {
