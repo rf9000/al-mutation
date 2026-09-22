@@ -297,6 +297,12 @@ Describe 'Invoke-MutMutantLoop' {
                 }
             }
         }
+        # F3 (I6): an empty result now checks the environment before the retry is consumed --
+        # here it is genuinely fine (already Running, probe would pass), so this is a
+        # confirmation, not a recovery: no Write-Warning-worthy event, and the recovery cap is
+        # not spent.
+        Mock -ModuleName MutantLoop Get-MutEnvironment { [pscustomobject]@{ Id = 'E1'; Name = 'mut-spike-01'; Status = 'Running' } }
+        Mock -ModuleName MutantLoop Start-MutEnvironment { [pscustomobject]@{ Id = 'E1'; Name = 'mut-spike-01'; Status = 'Running'; StartDurationSec = 0 } }
 
         $mutant = [pscustomobject]@{ id = 50; objectId = 50000; line = 4 }
 
@@ -307,6 +313,9 @@ Describe 'Invoke-MutMutantLoop' {
         $script:MutEmptyResultCallCount | Should -Be 2
         $results[0].Status | Should -Be 'Killed'
         $results[0].DurationMs | Should -Be 55
+
+        Should -Invoke -ModuleName MutantLoop Get-MutEnvironment -Times 1
+        Should -Invoke -ModuleName MutantLoop Start-MutEnvironment -Times 1
     }
 
     It 'does not retry when the first test run already has a non-zero Passed/Failed count' {
@@ -565,13 +574,19 @@ Describe 'Invoke-MutMutantLoop' {
         $script:CapturedTimeoutSec | Should -BeLessThan $script:CapturedBudgetSec
     }
 
-    It 'records Status Error with text ''no tests discovered'' (never Survived) when the test run completes with zero Tests, even after the empty-result retry (T27 fix round 1, finding 4b)' {
+    It 'records Status Error with text ''no tests discovered'' (never Survived) when the test run completes with zero Tests, even after the empty-result retry AND the environment is confirmed serving (T27 fix round 1, finding 4b; F3/I6: the existing behaviour must not regress)' {
         Mock -ModuleName MutantLoop Invoke-MutTestsWithBudget {
             [pscustomobject]@{
                 TimedOut = $false; ErrorMessage = $null; ForcedKill = $false
                 Result   = [pscustomobject]@{ Passed = 0; Failed = 0; DurationMs = 0; Tests = @() }
             }
         }
+        # F3 (I6): the environment genuinely IS serving here (Running, and the readiness probe
+        # inside Start-MutEnvironment succeeds) -- the empty result is a real "no tests
+        # discovered", not a non-serving environment, so no recovery should be attempted and the
+        # existing Error behaviour must not change.
+        Mock -ModuleName MutantLoop Get-MutEnvironment { [pscustomobject]@{ Id = 'E1'; Name = 'mut-spike-01'; Status = 'Running' } }
+        Mock -ModuleName MutantLoop Start-MutEnvironment { [pscustomobject]@{ Id = 'E1'; Name = 'mut-spike-01'; Status = 'Running'; StartDurationSec = 0 } }
 
         $mutant = [pscustomobject]@{ id = 61; objectId = 50000; line = 4 }
 
@@ -583,6 +598,86 @@ Describe 'Invoke-MutMutantLoop' {
         $results[0].Error | Should -Be 'no tests discovered'
 
         Should -Invoke -ModuleName MutantLoop Invoke-MutApi -ParameterFilter { $Method -eq 'POST' } -Times 0
+        # Confirmed serving without a restart is not a "recovery" -- nothing to warn about, and
+        # the cap is untouched.
+        Should -Invoke -ModuleName MutantLoop Get-MutEnvironment -Times 1
+        Should -Invoke -ModuleName MutantLoop Start-MutEnvironment -Times 1
+    }
+
+    It 'F3 (I6, run 8): given an empty result and a stopped environment, restarts it and retries, and the mutant gets its real status rather than Error' {
+        $script:MutStoppedEnvResultCallCount = 0
+        Mock -ModuleName MutantLoop Invoke-MutTestsWithBudget {
+            $script:MutStoppedEnvResultCallCount++
+            if ($script:MutStoppedEnvResultCallCount -eq 1) {
+                return [pscustomobject]@{
+                    TimedOut = $false; ErrorMessage = $null
+                    Result   = [pscustomobject]@{ Passed = 0; Failed = 0; DurationMs = 0; Tests = @() }
+                }
+            }
+            return [pscustomobject]@{
+                TimedOut = $false; ErrorMessage = $null
+                Result   = [pscustomobject]@{
+                    Passed = 1; Failed = 0; DurationMs = 90
+                    Tests  = @([pscustomobject]@{ Codeunit = 'C'; Function = 'F'; Result = 'Pass'; DurationMs = 90; Error = $null })
+                }
+            }
+        }
+        # The environment re-check finds it NOT Running (this is run 8's actual root cause: a
+        # status of 'Running' alone was trusted, but here it is honestly reported as stopped).
+        $script:MutStoppedEnvGetCalls = 0
+        Mock -ModuleName MutantLoop Get-MutEnvironment {
+            $script:MutStoppedEnvGetCalls++
+            [pscustomobject]@{ Id = 'E1'; Name = 'mut-spike-01'; Status = 'Starting' }
+        }
+        Mock -ModuleName MutantLoop Start-MutEnvironment { [pscustomobject]@{ Id = 'E1'; Name = 'mut-spike-01'; Status = 'Running'; StartDurationSec = 42 } }
+
+        $mutant = [pscustomobject]@{ id = 70; objectId = 50000; line = 4 }
+
+        $results = Invoke-MutMutantLoop -Config $script:Config -Env $script:EnvHandle -Mutants @($mutant) `
+            -Baseline $script:Baseline -Coverage $script:Coverage -References $script:References `
+            -RunNo 13 -RunDir $script:RunDir -BackendModulePath 'unused.psm1' -WarningAction SilentlyContinue
+
+        $script:MutStoppedEnvResultCallCount | Should -Be 2
+        $script:MutStoppedEnvGetCalls | Should -Be 1
+        $results[0].Status | Should -Be 'Survived'
+        $results[0].DurationMs | Should -Be 90
+
+        Should -Invoke -ModuleName MutantLoop Start-MutEnvironment -Times 1
+    }
+
+    It 'F3 (I6, run 8): caps environment recoveries per run -- after the cap is hit, the run throws rather than continuing to error out mutants one at a time' {
+        # Every mutant's environment re-check reports NOT Running, and every test run comes back
+        # empty (a persistently broken environment): the first $script:MaxEnvironmentRecoveries
+        # mutants each consume one recovery and are recorded as Error ("no tests discovered"),
+        # exactly as an isolated non-serving episode would be; the recovery beyond the cap must
+        # abort the WHOLE run instead of becoming yet another per-mutant Error.
+        Mock -ModuleName MutantLoop Invoke-MutTestsWithBudget {
+            [pscustomobject]@{
+                TimedOut = $false; ErrorMessage = $null
+                Result   = [pscustomobject]@{ Passed = 0; Failed = 0; DurationMs = 0; Tests = @() }
+            }
+        }
+        Mock -ModuleName MutantLoop Get-MutEnvironment { [pscustomobject]@{ Id = 'E1'; Name = 'mut-spike-01'; Status = 'Stopped' } }
+        Mock -ModuleName MutantLoop Start-MutEnvironment { [pscustomobject]@{ Id = 'E1'; Name = 'mut-spike-01'; Status = 'Running'; StartDurationSec = 5 } }
+
+        $mutants = @(
+            [pscustomobject]@{ id = 81; objectId = 50000; line = 4 }
+            [pscustomobject]@{ id = 82; objectId = 50000; line = 4 }
+            [pscustomobject]@{ id = 83; objectId = 50000; line = 4 }
+            [pscustomobject]@{ id = 84; objectId = 50000; line = 4 }
+        )
+
+        { Invoke-MutMutantLoop -Config $script:Config -Env $script:EnvHandle -Mutants $mutants `
+                -Baseline $script:Baseline -Coverage $script:Coverage -References $script:References `
+                -RunNo 14 -RunDir $script:RunDir -BackendModulePath 'unused.psm1' -WarningAction SilentlyContinue } |
+            Should -Throw '*MUT_ENVIRONMENT_RECOVERY_CAP_EXCEEDED*'
+
+        # Only the first 3 (the cap) mutants were ever recorded -- the 4th aborted the run before
+        # it could be written.
+        $jsonlPath = Join-Path $script:RunDir 'results.jsonl'
+        $lines = Get-Content -Path $jsonlPath
+        $lines.Count | Should -Be 3
+        Should -Invoke -ModuleName MutantLoop Start-MutEnvironment -Times 3
     }
 
     It 'appends one JSON line per mutant to results.jsonl immediately' {

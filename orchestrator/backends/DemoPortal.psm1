@@ -395,16 +395,26 @@ function Start-MutEnvironment {
         .SYNOPSIS
         Idempotently ensures the environment is started and ready: refreshes status via
         `env get`; if not already Running, issues `env start` (no --json; stdout is empty,
-        confirmation is on stderr, per T03 fix round 3) then polls to Running, then waits for
-        the environment to settle (Wait-MutEnvironmentSettled, T27 fix round 1 finding 4a --
-        only on this real transition, since only then is there anything to settle); then
-        installs the Continia Core Internal Activation App and sets the workspace default env
-        (`env use`) unconditionally, since those are safe to repeat.
+        confirmation is on stderr, per T03 fix round 3) then polls to Running. Then, on EVERY
+        call -- not only a real transition to Running -- waits for the environment to settle
+        (Wait-MutEnvironmentSettled, T27 fix round 1 finding 4a), including its test-readiness
+        probe; then installs the Continia Core Internal Activation App and sets the workspace
+        default env (`env use`) unconditionally, since those are safe to repeat.
+
+        FIX (F3, run 8, 2026-09-22 -- see .superpowers/sdd/tasks.json/brief-F3-readiness.md /
+        finding I6): this settle-and-probe call used to run ONLY inside the "not already
+        Running" branch, on the assumption that a `Running` status is proof the environment is
+        serving. It is not: run 8 fired 46 test jobs in a row at an environment that reported
+        Running but was not actually serving requests, and every one of them silently came back
+        "no tests discovered" instead of a real result. The probe is comparatively cheap (its
+        own apps-poll/fixed-delay/test-run cost, §6.5.3) next to the run time a false-negative
+        empty result wastes, so it now always runs, regardless of whether `env start` was
+        needed this call.
         .OUTPUTS
         The handle with Status='Running', StartDurationSec, ActivationInstallDurationSec,
-        SettleDurationSec, SettleProbeAttempts (0 for StartDurationSec/SettleDurationSec/
-        SettleProbeAttempts when the environment was already Running and env
-        start/poll/settle were skipped).
+        SettleDurationSec, SettleProbeAttempts. StartDurationSec is 0 when the environment was
+        already Running and `env start`/the Running poll were skipped; SettleDurationSec and
+        SettleProbeAttempts always reflect a real settle-and-probe call.
     #>
     param(
         [Parameter(Mandatory = $true)]
@@ -420,8 +430,6 @@ function Start-MutEnvironment {
     $current = Invoke-Continia -Arguments @('env', 'get', $Env.Id, '--json')
 
     $startDurationSec = 0
-    $settleDurationSec = 0
-    $settleProbeAttempts = 0
     $running = $current
 
     if (-not ((Test-MutHasProperty $current 'status') -and $current.status -eq 'Running')) {
@@ -429,11 +437,13 @@ function Start-MutEnvironment {
         Invoke-Continia -Arguments @('env', 'start', $Env.Id) -ExpectJson:$false | Out-Null
         $running = Wait-MutEnvironmentStatus -Id $Env.Id -Status 'Running'
         $startDurationSec = ((Get-Date) - $startStart).TotalSeconds
-
-        $settled = Wait-MutEnvironmentSettled -Id $Env.Id -Config $Config
-        $settleDurationSec = $settled.SettleDurationSec
-        $settleProbeAttempts = $settled.SettleProbeAttempts
     }
+
+    # FIX (F3, I6): unconditional -- see this function's own FIX note above. A `Running` status
+    # alone is not proof of readiness; only this probe is.
+    $settled = Wait-MutEnvironmentSettled -Id $Env.Id -Config $Config
+    $settleDurationSec = $settled.SettleDurationSec
+    $settleProbeAttempts = $settled.SettleProbeAttempts
 
     $activationStart = Get-Date
     Invoke-Continia -Arguments @('deps', 'install-by-id', $Env.Id, $Config.demoPortal.activationAppId, '--json') | Out-Null

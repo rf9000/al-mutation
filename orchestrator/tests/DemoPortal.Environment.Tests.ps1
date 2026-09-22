@@ -301,7 +301,7 @@ Describe 'Start-MutEnvironment' {
         Should -Invoke -ModuleName DemoPortal Invoke-Continia -ParameterFilter { $Arguments[0] -eq 'test' -and $Arguments[1] -eq 'run' } -Times 10
     }
 
-    It 'does not call env start, poll, or settle for an already-Running environment, but still installs the activation app and sets the workspace env' {
+    It 'does not call env start or poll for an already-Running environment, but still settles (apps poll) and installs the activation app / sets the workspace env (F3, I6: probe is no longer skipped just because status already says Running)' {
         $env = [pscustomobject]@{ Id = 'E1'; Name = 'mut-spike-01'; Url = 'https://x/E1'; Backend = 'DemoPortal'; Shared = $false; Status = 'Running' }
 
         Mock -ModuleName DemoPortal Invoke-Continia -ParameterFilter { $Arguments[1] -eq 'get' } {
@@ -310,16 +310,51 @@ Describe 'Start-MutEnvironment' {
         Mock -ModuleName DemoPortal Invoke-Continia -ParameterFilter { $Arguments[1] -eq 'start' } { throw 'must not be called' }
         Mock -ModuleName DemoPortal Invoke-Continia -ParameterFilter { $Arguments[1] -eq 'install-by-id' } { [pscustomobject]@{ success = $true } }
         Mock -ModuleName DemoPortal Invoke-Continia -ParameterFilter { $Arguments[1] -eq 'use' } { [pscustomobject]@{ ExitCode = 0; StdOut = ''; StdErr = '' } }
+        Mock -ModuleName DemoPortal Invoke-Continia -ParameterFilter { $Arguments[1] -eq 'apps' } { @([pscustomobject]@{ id = 'app1' }) }
 
         $h = Start-MutEnvironment -Env $env -Config $cfg
 
         $h.Status | Should -Be 'Running'
         $h.StartDurationSec | Should -Be 0
+        $h.SettleDurationSec | Should -Not -BeNullOrEmpty
 
         Should -Invoke -ModuleName DemoPortal Invoke-Continia -ParameterFilter { $Arguments[1] -eq 'start' } -Times 0
         Should -Invoke -ModuleName DemoPortal Invoke-Continia -ParameterFilter { $Arguments[1] -eq 'get' } -Times 1
+        Should -Invoke -ModuleName DemoPortal Invoke-Continia -ParameterFilter { $Arguments[1] -eq 'apps' } -Times 1
         Should -Invoke -ModuleName DemoPortal Invoke-Continia -ParameterFilter { $Arguments[1] -eq 'install-by-id' } -Times 1
         Should -Invoke -ModuleName DemoPortal Invoke-Continia -ParameterFilter { $Arguments[1] -eq 'use' } -Times 1
+    }
+
+    It 'F3 (I6, run 8): probes test-readiness even when the environment already reports Running -- a Running status alone is not proof it is serving' {
+        # Regression test for run 8 (.superpowers/sdd/tasks.json/brief-F3-readiness.md): the
+        # probe used to run ONLY inside the "environment had to be started" branch, so an
+        # environment that reported Running but was not actually serving was never probed --
+        # every subsequent test job silently came back "no tests discovered".
+        $env = [pscustomobject]@{ Id = 'E1'; Name = 'mut-spike-01'; Url = 'https://x/E1'; Backend = 'DemoPortal'; Shared = $false; Status = 'Running' }
+
+        Mock -ModuleName DemoPortal Invoke-Continia -ParameterFilter { $Arguments[1] -eq 'get' } {
+            [pscustomobject]@{ id = 'E1'; status = 'Running'; description = 'mut-spike-01'; url = 'https://x/E1'; shared = $false }
+        }
+        Mock -ModuleName DemoPortal Invoke-Continia -ParameterFilter { $Arguments[1] -eq 'start' } { throw 'must not be called' }
+        Mock -ModuleName DemoPortal Invoke-Continia -ParameterFilter { $Arguments[1] -eq 'install-by-id' } { [pscustomobject]@{ success = $true } }
+        Mock -ModuleName DemoPortal Invoke-Continia -ParameterFilter { $Arguments[1] -eq 'use' } { [pscustomobject]@{ ExitCode = 0; StdOut = ''; StdErr = '' } }
+        Mock -ModuleName DemoPortal Invoke-Continia -ParameterFilter { $Arguments[1] -eq 'apps' } { @([pscustomobject]@{ id = 'app1' }) }
+
+        $script:__runningProbeCalls = 0
+        Mock -ModuleName DemoPortal Invoke-Continia -ParameterFilter { $Arguments[0] -eq 'test' -and $Arguments[1] -eq 'run' } {
+            $script:__runningProbeCalls++
+            if ($script:__runningProbeCalls -lt 2) {
+                return [pscustomobject]@{ summary = [pscustomobject]@{ total = 0 } }
+            }
+            return [pscustomobject]@{ summary = [pscustomobject]@{ total = 9 } }
+        }
+
+        $h = Start-MutEnvironment -Env $env -Config $cfgWithProbe
+
+        $h.SettleProbeAttempts | Should -Be 2
+        Should -Invoke -ModuleName DemoPortal Invoke-Continia -ParameterFilter {
+            $Arguments[0] -eq 'test' -and $Arguments[1] -eq 'run' -and $Arguments[2] -eq 'E1'
+        } -Times 2
     }
 }
 

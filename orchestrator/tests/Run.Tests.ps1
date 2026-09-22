@@ -197,14 +197,16 @@ Describe 'Invoke-MutRunPipeline (fully mocked backend/lib boundary)' {
         $repoRoot = (Resolve-Path "$PSScriptRoot/../..").Path
         $secondResult.ResultsPath | Should -Be (Join-Path $repoRoot 'results\1.json')
 
-        # Ensure-MutEnvironment always re-checks the environment (Get-MutEnvironment, and
-        # Start-MutEnvironment when not Running) even on a marker-skipped call -- see that
-        # function's own docstring for why (priming the backend's module-scoped CLI-path state
-        # regardless of which step a run resumes from). Everything else that does real work
-        # must not run again. Asserted via the test's own $script:CallLog (cleared just before
-        # this second call) rather than Pester's cumulative Should -Invoke counter, which counts
-        # invocations across the whole It block (including the first call above).
-        $script:CallLog | Should -Be @('Get-MutEnvironment') -Because "only the cheap environment re-check should run again once every other .done marker exists: $($script:CallLog -join ', ')"
+        # Ensure-MutEnvironment always re-checks the environment (Get-MutEnvironment, then
+        # unconditionally Start-MutEnvironment -- F3/I6: no longer gated on Status -ne 'Running',
+        # since Start-MutEnvironment is what actually confirms the environment is serving, not
+        # just reporting Running) even on a marker-skipped call -- see that function's own
+        # docstring for why (priming the backend's module-scoped CLI-path state regardless of
+        # which step a run resumes from). Everything else that does real work must not run
+        # again. Asserted via the test's own $script:CallLog (cleared just before this second
+        # call) rather than Pester's cumulative Should -Invoke counter, which counts invocations
+        # across the whole It block (including the first call above).
+        $script:CallLog | Should -Be @('Get-MutEnvironment', 'Start-MutEnvironment') -Because "only the cheap environment re-check/readiness-confirm should run again once every other .done marker exists: $($script:CallLog -join ', ')"
     }
 
     It 'calls Remove-MutEnvironment when keepEnvironment is false' {
@@ -389,6 +391,22 @@ Describe 'Invoke-MutRunPipeline (fully mocked backend/lib boundary)' {
 
         { Invoke-MutRunPipeline -Config $script:Config -RunNo 1 -SkipEnvironment } | Should -Throw '*SkipEnvironment*'
 
+        Should -Invoke -ModuleName Run New-MutEnvironment -Times 0
+    }
+
+    It 'Ensure-MutEnvironment calls Start-MutEnvironment (which confirms readiness) even when Get-MutEnvironment already reports Status Running (F3, I6)' {
+        # Regression test for run 8 (.superpowers/sdd/tasks.json/brief-F3-readiness.md): this
+        # used to be `elseif ($env.Status -ne 'Running')`, so an environment that already
+        # reported Running -- the common path with keepEnvironment: true, both shipped configs
+        # -- was never re-confirmed as actually serving before the run proceeded.
+        $runDir = Join-Path $script:WorkDir 'runs/1'
+        New-Item -ItemType Directory -Path $runDir -Force | Out-Null
+
+        $env = Ensure-MutEnvironment -Config $script:Config -RunDir $runDir
+
+        $env.Id | Should -Be $script:EnvHandle.Id
+        Should -Invoke -ModuleName Run Get-MutEnvironment -Times 1
+        Should -Invoke -ModuleName Run Start-MutEnvironment -Times 1
         Should -Invoke -ModuleName Run New-MutEnvironment -Times 0
     }
 

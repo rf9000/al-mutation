@@ -42,6 +42,123 @@ if (-not (Get-Command -Name 'Stop-MutBackendChildProcesses' -ErrorAction Silentl
         throw 'Stop-MutBackendChildProcesses: no backend module has been imported into this session.'
     }
 }
+# FIX (F3, run 8 -- finding I6): Get-MutEnvironment/Start-MutEnvironment are the two more
+# backend interface functions (§6.5.3) Confirm-MutEnvironmentServing (below) needs to re-check
+# and, if necessary, recover a non-serving environment. Same placeholder-for-Mock pattern as
+# Invoke-MutApi/Reset-MutEnvironment/Stop-MutBackendChildProcesses above.
+if (-not (Get-Command -Name 'Get-MutEnvironment' -ErrorAction SilentlyContinue)) {
+    function global:Get-MutEnvironment {
+        param([string]$Name, $Config)
+        throw 'Get-MutEnvironment: no backend module has been imported into this session.'
+    }
+}
+if (-not (Get-Command -Name 'Start-MutEnvironment' -ErrorAction SilentlyContinue)) {
+    function global:Start-MutEnvironment {
+        param($Env, $Config)
+        throw 'Start-MutEnvironment: no backend module has been imported into this session.'
+    }
+}
+
+# FIX (F3, run 8 -- finding I6): recovery-attempt cap (Confirm-MutEnvironmentServing, below).
+# Reset to 0 at the top of every Invoke-MutMutantLoop call. A small constant per the task brief
+# rather than a config key -- three lost environments in one run is a reason to stop, not a
+# dial to tune per run.
+$script:MaxEnvironmentRecoveries = 3
+$script:MutEnvironmentRecoveryCapExceededMarker = 'MUT_ENVIRONMENT_RECOVERY_CAP_EXCEEDED'
+# Initialized here (not lazily inside Invoke-MutMutantLoop only) because Set-StrictMode
+# -Version Latest throws on a bare read of a $script: variable that was never assigned at all,
+# as opposed to one that is $null -- same reasoning as DemoPortal.psm1's own module-scoped cache
+# variables. Invoke-MutMutantLoop resets it to 0 at the start of every call.
+$script:MutEnvironmentRecoveryCount = 0
+
+function Test-MutHasProperty {
+    <#
+        .SYNOPSIS
+        Private. True when $Object is non-null and has a property named $Name. See the
+        identical helper in Run.psm1/DemoPortal.psm1/etc. for why this guard exists under
+        Set-StrictMode -Version Latest.
+    #>
+    param($Object, [string]$Name)
+
+    if ($null -eq $Object) {
+        return $false
+    }
+    return $null -ne $Object.PSObject.Properties[$Name]
+}
+
+function Confirm-MutEnvironmentServing {
+    <#
+        .SYNOPSIS
+        FIX (F3, run 8, 2026-09-22 -- finding I6): called by Invoke-MutMutantLoop when a test
+        run comes back with zero total tests, before the loop consumes its last retry. Run 8
+        fired 46 test jobs in a row at an environment that reported Running but was not actually
+        serving, and every one of them was silently recorded as a legitimate empty result -- the
+        loop never asked whether the environment was still alive.
+
+        Re-checks status via Get-MutEnvironment, then ALWAYS calls Start-MutEnvironment -- it is
+        idempotent (starts only when not already Running) but, as of the companion DemoPortal
+        fix, now always probes test-readiness regardless of whether a real start happened, which
+        is what actually confirms the environment is serving rather than merely reporting
+        Running (the exact gap run 8 fell through).
+
+        Recovery attempts (the environment was found NOT Running) are counted against
+        $script:MaxEnvironmentRecoveries for the life of one Invoke-MutMutantLoop call. Once the
+        cap is exceeded, this throws an exception whose message is prefixed with
+        $script:MutEnvironmentRecoveryCapExceededMarker -- Invoke-MutMutantLoop's per-mutant
+        try/catch recognizes that prefix and re-throws it, aborting the whole run rather than
+        recording one more Error and limping on to the next mutant. A confirmation of an
+        already-Running, already-serving environment costs nothing against the cap.
+
+        .OUTPUTS
+        [bool] $true when the environment was already Running and confirmed serving without a
+        restart; $false when it was not Running and had to be recovered (started, waited on, and
+        probed) before returning. Either way, a return (rather than a throw) means the
+        environment is now confirmed serving. Never returns when it cannot confirm that --
+        Start-MutEnvironment's own probe failure, or the recovery cap, propagates instead.
+    #>
+    param(
+        [Parameter(Mandatory = $true)]
+        $Env,
+        [Parameter(Mandatory = $true)]
+        $Config,
+        [Parameter(Mandatory = $true)]
+        $MutantId
+    )
+
+    $recheck = Get-MutEnvironment -Name $Env.Name -Config $Config
+    $statusText = if (Test-MutHasProperty $recheck 'Status') { $recheck.Status } else { 'unknown' }
+    $targetEnv = if ($null -ne $recheck) { $recheck } else { $Env }
+    $wasRunning = ($statusText -eq 'Running')
+
+    if (-not $wasRunning) {
+        if ($script:MutEnvironmentRecoveryCount -ge $script:MaxEnvironmentRecoveries) {
+            throw "$($script:MutEnvironmentRecoveryCapExceededMarker): mutant $MutantId got an empty test result and the environment is not Running (status '$statusText'), after $($script:MutEnvironmentRecoveryCount) prior recoveries this run (cap $($script:MaxEnvironmentRecoveries)). A run that has lost its environment this many times is not producing a trustworthy score; aborting rather than continuing."
+        }
+        $script:MutEnvironmentRecoveryCount++
+        Write-Warning "Invoke-MutMutantLoop: mutant $MutantId got an empty test result and the environment is not Running (status '$statusText'); recovering it (recovery $($script:MutEnvironmentRecoveryCount) of $($script:MaxEnvironmentRecoveries) this run)."
+    }
+
+    try {
+        # Idempotent: starts only if $targetEnv is not already Running, but always probes
+        # test-readiness now regardless (the companion DemoPortal fix) -- this call is what
+        # actually confirms "serving", not the status check above.
+        Start-MutEnvironment -Env $targetEnv -Config $Config | Out-Null
+    }
+    catch {
+        if ($wasRunning) {
+            # The status check said Running, but the readiness probe itself failed -- also a
+            # genuine environment-recovery event, counted the same way.
+            if ($script:MutEnvironmentRecoveryCount -ge $script:MaxEnvironmentRecoveries) {
+                throw "$($script:MutEnvironmentRecoveryCapExceededMarker): mutant $MutantId -- the environment reports Running but its readiness probe failed, after $($script:MutEnvironmentRecoveryCount) prior recoveries this run (cap $($script:MaxEnvironmentRecoveries)). A run that has lost its environment this many times is not producing a trustworthy score; aborting rather than continuing. Probe error: $($_.Exception.Message)"
+            }
+            $script:MutEnvironmentRecoveryCount++
+            Write-Warning "Invoke-MutMutantLoop: mutant $MutantId -- the environment reports Running but its readiness probe failed (recovery $($script:MutEnvironmentRecoveryCount) of $($script:MaxEnvironmentRecoveries) this run): $($_.Exception.Message)"
+        }
+        throw
+    }
+
+    return $wasRunning
+}
 
 function Get-MutTimeoutBudget {
     <#
@@ -543,6 +660,9 @@ function Invoke-MutMutantLoop {
     $testCodeunits = [int[]]@($Config.testApp.testCodeunits)
     $orderedMutants = $Mutants | Sort-Object -Property id
 
+    # FIX (F3, run 8 -- finding I6): reset per run invocation -- see Confirm-MutEnvironmentServing.
+    $script:MutEnvironmentRecoveryCount = 0
+
     $rows = @()
 
     # FIX (M3): resume support -- see this function's own FIX note above and
@@ -621,6 +741,16 @@ function Invoke-MutMutantLoop {
                 $outcome = Invoke-MutTestsWithBudget -Env $Env -Targets $targets -TimeoutSec $innerTimeoutSec -BudgetSec $budget -BackendModulePath $BackendModulePath
                 $isEmptyResult = (-not $outcome.TimedOut) -and (-not $outcome.ErrorMessage) -and ($null -ne $outcome.Result) -and
                     (([int]$outcome.Result.Passed + [int]$outcome.Result.Failed) -eq 0)
+
+                # FIX (F3, run 8 -- finding I6): before consuming the last retry on an empty
+                # result, find out whether the environment itself is the reason -- a `Running`
+                # status alone is not proof of that (see Confirm-MutEnvironmentServing's own doc
+                # comment). This can throw (recovery cap exceeded, or the probe itself failing
+                # this attempt); either way that propagates out of this try, through this
+                # mutant's own catch below, and is handled there.
+                if ($isEmptyResult -and $attempt -lt $maxAttempts) {
+                    Confirm-MutEnvironmentServing -Env $Env -Config $Config -MutantId $mutant.id | Out-Null
+                }
             } while ($isEmptyResult -and $attempt -lt $maxAttempts)
 
             $status = $null
@@ -746,6 +876,16 @@ function Invoke-MutMutantLoop {
             # a PATCH/covering-test failure) -- never let it abort the whole run. Best-effort
             # deactivate, record Status 'Error' with the exception message, and move on.
             $caughtMessage = $_.Exception.Message
+
+            # FIX (F3, run 8 -- finding I6): the one exception this catch must NOT swallow into
+            # a per-mutant Error -- Confirm-MutEnvironmentServing's recovery-cap exceeded throw,
+            # recognized by its marker prefix. Re-thrown so it aborts the whole run rather than
+            # limping through the rest of the mutants one Error at a time (the brief's whole
+            # point of having a cap).
+            if ($caughtMessage -like "$($script:MutEnvironmentRecoveryCapExceededMarker)*") {
+                throw
+            }
+
             try {
                 Invoke-MutApi -Env $Env -Method 'PATCH' -Path 'mutationSetup(0)' -Body @{ activeMutantId = 0; currentRunNo = $RunNo } | Out-Null
             }
@@ -770,6 +910,11 @@ function Invoke-MutMutantLoop {
     $errorCount = @($rows | Where-Object { $_.Status -eq 'Error' }).Count
     if ($errorCount -gt 0) {
         Write-Warning "Invoke-MutMutantLoop: $errorCount of $(@($orderedMutants).Count) mutant(s) ended in Error"
+    }
+    if ($script:MutEnvironmentRecoveryCount -gt 0) {
+        # FIX (F3, run 8 -- finding I6): visibility into how many times this run had to bring
+        # the environment back -- see Confirm-MutEnvironmentServing.
+        Write-Warning "Invoke-MutMutantLoop: environment recovered $($script:MutEnvironmentRecoveryCount) of $($script:MaxEnvironmentRecoveries) allowed time(s) this run"
     }
 
     return , $rows

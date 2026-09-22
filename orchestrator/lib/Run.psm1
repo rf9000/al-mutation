@@ -287,10 +287,19 @@ function Ensure-MutEnvironment {
         them always runs earlier in the same process -- true on a fresh run, but not on a run
         resumed at a LATER step (e.g. the mutant loop) for the same RunNo, where this was the
         first backend call of the whole process and crashed immediately. Always calling
-        Get-MutEnvironment (and Start-MutEnvironment on a non-Running environment) here, marker
-        or not, keeps that module-scoped state primed regardless of which step a run resumes
-        from, and this is also just cheap re-verification of environment health rather than
-        blindly trusting an on-disk cache written by a possibly much earlier attempt.
+        Get-MutEnvironment (and Start-MutEnvironment whenever an environment was found) here,
+        marker or not, keeps that module-scoped state primed regardless of which step a run
+        resumes from, and this is also just cheap re-verification of environment health rather
+        than blindly trusting an on-disk cache written by a possibly much earlier attempt.
+
+        FIX (F3, run 8, 2026-09-22 -- finding I6): this used to call Start-MutEnvironment only
+        `elseif ($env.Status -ne 'Running')`. Both shipped configs set `keepEnvironment: true`,
+        so every resumed/repeat run for the same environment took the already-Running branch and
+        never confirmed the environment was actually serving -- exactly the gap that let 46
+        mutants in a row silently report "no tests discovered" in run 8. Start-MutEnvironment is
+        idempotent and (as of the same fix) always probes test-readiness regardless of whether a
+        real `env start` was needed, so it is now called unconditionally whenever an environment
+        was found, Running or not.
 
         .OUTPUTS
         The environment handle (§6.5.3 shape, plus whatever extra properties the backend adds).
@@ -315,7 +324,8 @@ function Ensure-MutEnvironment {
         }
         $env = New-MutEnvironment -Name $Config.environmentName -Config $Config
     }
-    elseif ($env.Status -ne 'Running') {
+    else {
+        # FIX (F3, I6): unconditional -- see this function's own FIX note above.
         $env = Start-MutEnvironment -Env $env -Config $Config
     }
 
