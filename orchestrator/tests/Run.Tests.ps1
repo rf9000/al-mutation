@@ -197,16 +197,18 @@ Describe 'Invoke-MutRunPipeline (fully mocked backend/lib boundary)' {
         $repoRoot = (Resolve-Path "$PSScriptRoot/../..").Path
         $secondResult.ResultsPath | Should -Be (Join-Path $repoRoot 'results\1.json')
 
-        # Ensure-MutEnvironment always re-checks the environment (Get-MutEnvironment, then
-        # unconditionally Start-MutEnvironment -- F3/I6: no longer gated on Status -ne 'Running',
-        # since Start-MutEnvironment is what actually confirms the environment is serving, not
-        # just reporting Running) even on a marker-skipped call -- see that function's own
-        # docstring for why (priming the backend's module-scoped CLI-path state regardless of
-        # which step a run resumes from). Everything else that does real work must not run
-        # again. Asserted via the test's own $script:CallLog (cleared just before this second
-        # call) rather than Pester's cumulative Should -Invoke counter, which counts invocations
-        # across the whole It block (including the first call above).
-        $script:CallLog | Should -Be @('Get-MutEnvironment', 'Start-MutEnvironment') -Because "only the cheap environment re-check/readiness-confirm should run again once every other .done marker exists: $($script:CallLog -join ', ')"
+        # Ensure-MutEnvironment always re-checks the environment (Get-MutEnvironment, then a
+        # best-effort activeMutantId=0 PATCH -- F3c, since this branch can reach an environment
+        # whose Mutation Core setup survives from an earlier attempt -- then unconditionally
+        # Start-MutEnvironment -- F3/I6: no longer gated on Status -ne 'Running', since
+        # Start-MutEnvironment is what actually confirms the environment is serving, not just
+        # reporting Running) even on a marker-skipped call -- see that function's own docstring
+        # for why (priming the backend's module-scoped CLI-path state regardless of which step a
+        # run resumes from). Everything else that does real work must not run again. Asserted
+        # via the test's own $script:CallLog (cleared just before this second call) rather than
+        # Pester's cumulative Should -Invoke counter, which counts invocations across the whole
+        # It block (including the first call above).
+        $script:CallLog | Should -Be @('Get-MutEnvironment', 'Invoke-MutApi:PATCH:mutationSetup(0)', 'Start-MutEnvironment') -Because "only the cheap environment re-check/deactivate/readiness-confirm should run again once every other .done marker exists: $($script:CallLog -join ', ')"
     }
 
     It 'calls Remove-MutEnvironment when keepEnvironment is false' {
@@ -217,15 +219,18 @@ Describe 'Invoke-MutRunPipeline (fully mocked backend/lib boundary)' {
         Should -Invoke -ModuleName Run Remove-MutEnvironment -Times 1
     }
 
-    It 'F3b IMPORTANT 3: when the mutant loop aborts on its environment-recovery cap, still exports a partial result, does not remove the environment, and re-throws (never reports success)' {
+    It 'F3b IMPORTANT 3: when the mutant loop aborts on its environment-recovery cap, still exports a partial result (marked aborted), does not remove the environment, and re-throws (never reports success)' {
         # Regression test: before this fix, MutantLoop.psm1's LimitsExceeded-categorized abort
         # propagated straight out of Invoke-MutRunPipeline -- Export-MutResultsStep never ran, so
         # an aborted run produced NO results/<RunNo>.json and no summary at all, only the mutant
         # loop's own runs/<RunNo>/results.jsonl.
         $script:Config = New-MutRunTestConfig -WorkDir $script:WorkDir -KeepEnvironment $false
 
+        # Mutant 1 completed with a real outcome; mutant 2 ended in Error before the abort (e.g.
+        # the environment died mid-mutant) -- F3c's own resume-message clause names it.
         $partialRows = @(
             [pscustomobject]@{ Id = 1; Status = 'Survived'; KillingTest = $null; DurationMs = 50; CoveringTests = @(50300) }
+            [pscustomobject]@{ Id = 2; Status = 'Error'; KillingTest = $null; DurationMs = $null; CoveringTests = @(50300); Error = 'no tests discovered' }
         )
         Mock -ModuleName Run Invoke-MutMutantLoop {
             $script:CallLog.Add('Invoke-MutMutantLoop')
@@ -235,8 +240,9 @@ Describe 'Invoke-MutRunPipeline (fully mocked backend/lib boundary)' {
         }
 
         $caught = $null
+        $pipelineWarnings = $null
         try {
-            Invoke-MutRunPipeline -Config $script:Config -RunNo 1 -WarningAction SilentlyContinue | Out-Null
+            Invoke-MutRunPipeline -Config $script:Config -RunNo 1 -WarningVariable pipelineWarnings -WarningAction SilentlyContinue | Out-Null
         }
         catch {
             $caught = $_
@@ -245,10 +251,17 @@ Describe 'Invoke-MutRunPipeline (fully mocked backend/lib boundary)' {
         $caught | Should -Not -BeNullOrEmpty
         $caught.CategoryInfo.Category | Should -Be ([System.Management.Automation.ErrorCategory]::LimitsExceeded)
 
-        # The partial rows (not the empty/complete set) reached Export-MutResults.
+        # The partial rows (not the empty/complete set) reached Export-MutResults, marked as an
+        # aborted (F3c) export.
         Should -Invoke -ModuleName Run Export-MutResults -ParameterFilter {
-            @($Results).Count -eq 1 -and $Results[0].Id -eq 1
+            @($Results).Count -eq 2 -and $Results[0].Id -eq 1 -and $Partial -eq $true
         } -Times 1
+
+        # F3c (F3b review finding 3): the resume message must not oversell -- mutant 2 (Error)
+        # is named as NOT retried on a resume, since Get-MutRecordedResultsForRun skips any
+        # recorded status, including Error.
+        $errorClause = @($pipelineWarnings) | Where-Object { $_ -like '*Status ''Error''*' -and $_ -like '*id(s): 2*' -and $_ -like '*NOT be retried*' }
+        @($errorClause).Count | Should -Be 1
 
         # Never torn down, even though this config sets keepEnvironment: false -- an environment
         # that just failed to recover 3 times must still be there for an operator to look at.
@@ -258,6 +271,45 @@ Describe 'Invoke-MutRunPipeline (fully mocked backend/lib boundary)' {
         # must still export for real rather than finding a marker and skipping itself.
         $runDir = Join-Path $script:WorkDir 'runs/1'
         Test-Path (Join-Path $runDir 'export.done') | Should -Be $false
+    }
+
+    It 'F3c: the cap-abort warning''s "X of Y mutants completed" denominator matches the export''s own total (mutants + compile-error-excluded ones), not just $schemata.Mutants.Count' {
+        # Regression test: before this fix, the warning used @($schemata.Mutants).Count alone,
+        # which disagrees with the export's totals.total (Get-MutMergedMutantRows,
+        # Results.psm1) on any run with compile-error-excluded mutants.
+        $script:Config = New-MutRunTestConfig -WorkDir $script:WorkDir -KeepEnvironment $false
+
+        Mock -ModuleName Run Build-MutSchemata {
+            $script:CallLog.Add('Build-MutSchemata')
+            [pscustomobject]@{
+                SchemataPath    = "$script:WorkDir/gen/aut-schemata"
+                AppFile         = "$script:WorkDir/gen/aut-schemata/Fake.app"
+                Mutants         = @((New-MutFakeMutant -Id 1), (New-MutFakeMutant -Id 2 -Operator 'COND'))
+                CompileErrorIds = @(3)
+                ExcludedMutants = @((New-MutFakeMutant -Id 3 -Operator 'BREAK'))
+                Iterations      = 1
+                ExcludeFile     = $null
+                RunNo           = 1
+            }
+        }
+
+        $partialRows = @([pscustomobject]@{ Id = 1; Status = 'Survived'; KillingTest = $null; DurationMs = 50; CoveringTests = @(50300) })
+        Mock -ModuleName Run Invoke-MutMutantLoop {
+            $exception = [System.Exception]::new('cap exceeded')
+            throw [System.Management.Automation.ErrorRecord]::new($exception, 'MutEnvironmentRecoveryCapExceeded', [System.Management.Automation.ErrorCategory]::LimitsExceeded, $partialRows)
+        }
+
+        $pipelineWarnings = $null
+        try {
+            Invoke-MutRunPipeline -Config $script:Config -RunNo 1 -WarningVariable pipelineWarnings -WarningAction SilentlyContinue | Out-Null
+        }
+        catch {
+        }
+
+        # 3 mutants total (2 manifested + 1 compile-error-excluded) -- the same set the export's
+        # own totals.total counts (§6.5.4 step 8/9's own comment: mutants + ExcludedMutants).
+        $countWarning = @($pipelineWarnings) | Where-Object { $_ -like '*1 of 3 mutant(s) completed*' }
+        @($countWarning).Count | Should -Be 1
     }
 
     It 'uses the unpublish-test-app strategy: Unpublish-MutApp then Publish-MutAppFile then Publish-MutApp' {
@@ -465,6 +517,44 @@ Describe 'Invoke-MutRunPipeline (fully mocked backend/lib boundary)' {
         Ensure-MutEnvironment -Config $script:Config -RunDir $runDir | Out-Null
 
         Should -Invoke -ModuleName Run Start-MutEnvironment -ParameterFilter { $RequireProbe -eq $false } -Times 1
+    }
+
+    It 'F3c (F3b review finding 1): Ensure-MutEnvironment PATCHes activeMutantId = 0 BEFORE Start-MutEnvironment''s probe runs, for an environment that was found (not created fresh)' {
+        # Regression test: activeMutantId lives in the environment's own isolated storage, not
+        # this process, so it survives a crash. Ensure-MutEnvironment probes unconditionally,
+        # even on a marker-skipped resume (the $alreadyDone check is AFTER Start-MutEnvironment
+        # is called) -- a mutant left active by an earlier crash, plus a failing probe test,
+        # would misattribute a false Killed to it under the SAME RunNo, and the resume path
+        # (Get-MutRecordedResultsForRun, MutantLoop.psm1) prefers the API, so it would never be
+        # re-run. A brand-new environment (the New-MutEnvironment branch) cannot have this
+        # problem -- Mutation Core is not installed on it until step 3 -- so this only applies
+        # to the "environment was found" branch.
+        $runDir = Join-Path $script:WorkDir 'runs/1'
+        New-Item -ItemType Directory -Path $runDir -Force | Out-Null
+
+        Ensure-MutEnvironment -Config $script:Config -RunDir $runDir | Out-Null
+
+        $patchIndex = $script:CallLog.IndexOf('Invoke-MutApi:PATCH:mutationSetup(0)')
+        $startIndex = $script:CallLog.IndexOf('Start-MutEnvironment')
+        $patchIndex | Should -BeGreaterThan -1
+        $startIndex | Should -BeGreaterThan -1
+        $patchIndex | Should -BeLessThan $startIndex
+
+        Should -Invoke -ModuleName Run Invoke-MutApi -ParameterFilter {
+            $Method -eq 'PATCH' -and $Path -eq 'mutationSetup(0)' -and $Body.activeMutantId -eq 0
+        } -Times 1
+    }
+
+    It 'F3c: Ensure-MutEnvironment does not call Invoke-MutApi at all for a brand-new environment (New-MutEnvironment branch -- Mutation Core is not installed on it yet)' {
+        Mock -ModuleName Run Get-MutEnvironment { $script:CallLog.Add('Get-MutEnvironment'); return $null }
+
+        $runDir = Join-Path $script:WorkDir 'runs/1'
+        New-Item -ItemType Directory -Path $runDir -Force | Out-Null
+
+        Ensure-MutEnvironment -Config $script:Config -RunDir $runDir | Out-Null
+
+        Should -Invoke -ModuleName Run New-MutEnvironment -Times 1
+        Should -Invoke -ModuleName Run Invoke-MutApi -Times 0
     }
 
     It 'computes RunNo as 1 + the highest existing results/<n>.json when -RunNo is omitted' {

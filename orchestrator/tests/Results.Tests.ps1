@@ -173,6 +173,9 @@ Describe 'Export-MutResults' {
         # denom = 4 - 0 - 0 = 4; numerator = killed(1) + timeout(1) = 2 -> 0.5
         $json.score | Should -Be 0.5
 
+        # F3c: always present, false on a normal (non--Partial) export.
+        $json.aborted | Should -Be $false
+
         $json.mutants.Count | Should -Be 4
         ($json.mutants | Where-Object { $_.id -eq 1 }).status | Should -Be 'Killed'
         ($json.mutants | Where-Object { $_.id -eq 1 }).killingTest | Should -Be 'C:F1'
@@ -195,6 +198,19 @@ Describe 'Export-MutResults' {
 
         $json.totals.compileError | Should -Be 1
         ($json.mutants | Where-Object { $_.id -eq 2 }).status | Should -Be 'CompileError'
+    }
+
+    It 'F3c: -Partial writes aborted: true into the results JSON' {
+        # Regression test: before this fix, a partial (cap-abort) export was indistinguishable
+        # from a genuine, low-scored complete run except by inference from totals.pending -gt 0.
+        $mutants = @(New-MutTestMutant -Id 1)
+        $results = @()
+
+        $paths = Export-MutResults -RunNo 3 -Config $script:Config -Env $script:EnvHandle -Mutants $mutants -Results $results `
+            -OutDir $script:OutDir -StartedUtc (Get-Date) -FinishedUtc (Get-Date) -CompileErrorIds @() -Partial
+
+        $json = Get-Content -Path $paths.ResultsPath -Raw | ConvertFrom-Json
+        $json.aborted | Should -Be $true
     }
 
     It 'summary.md contains a Survivors table with the survivor listed' {

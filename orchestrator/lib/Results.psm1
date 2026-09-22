@@ -415,6 +415,15 @@ function Export-MutResults {
         Mutant ids marked CompileError before the loop ran (§6.5.4 step 4); always exported
         with status CompileError even if absent from $Results.
 
+        .PARAMETER Partial
+        FIX (F3c, F3b review "also worth doing"): set when Invoke-MutRunPipeline is exporting
+        after the mutant loop aborted on its environment-recovery cap rather than completing
+        (Run.psm1's Export-MutResultsStep -AllowPartial). Written into the results JSON as a
+        top-level `aborted` boolean (always present, `false` on a normal completed run) -- before
+        this, the only way to tell a partial export apart from a real one was `totals.pending
+        -gt 0`, and a partial results/<RunNo>.json otherwise looked exactly like a genuine,
+        low-scored run to anything scanning `results/` (including Get-MutNextRunNo, Run.psm1).
+
         .OUTPUTS
         [pscustomobject]@{ ResultsPath; SummaryPath }.
     #>
@@ -438,7 +447,8 @@ function Export-MutResults {
         $FinishedUtc,
         [Parameter(Mandatory = $true)]
         [AllowEmptyCollection()]
-        [int[]]$CompileErrorIds
+        [int[]]$CompileErrorIds,
+        [switch]$Partial
     )
 
     if (-not (Test-Path -Path $OutDir)) {
@@ -469,6 +479,11 @@ function Export-MutResults {
         }
         totals          = $totals
         score           = $score
+        # FIX (F3c): always present (false on a normal completed run) so a consumer never has to
+        # infer partial-ness from totals.pending -gt 0 -- an implicit, easy-to-miss signal that
+        # only exists at all because Get-MutMergedMutantRows (below) happens to render an
+        # unrun mutant as Pending.
+        aborted         = [bool]$Partial
         mutants         = $mergedRows
     }
 

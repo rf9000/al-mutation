@@ -311,6 +311,24 @@ function Ensure-MutEnvironment {
         in-loop confirmation (Confirm-MutEnvironmentServing, MutantLoop.psm1), which only ever
         runs after the baseline has installed the target, stays strict (does not pass this).
 
+        FIX (F3c, F3b review finding 1): the probe above runs a REAL test job -- the same
+        false-kill hazard the mutant loop's own recovery path already closes (Mutation
+        Core's OnAfterTestMethodRun records a Killed row for ANY failing test while
+        `activeMutantId <> 0`, uncovering-test-unchecked), but here it was still open.
+        `activeMutantId` lives in the environment's own isolated storage, not this process, so
+        it survives a crash; this function probes unconditionally, even on a marker-skipped
+        resume (the `$alreadyDone` check below is AFTER this call), so a mutant left active by
+        an earlier crash plus a failing probe test would write a false Killed under the SAME
+        RunNo -- and the resume path (`Get-MutRecordedResultsForRun`, MutantLoop.psm1) prefers
+        the API, so that mutant would be recorded Killed and never re-run. A best-effort
+        `activeMutantId = 0` PATCH now runs immediately before Start-MutEnvironment, in the
+        branch that can reach a pre-existing, possibly Mutation-Core-installed environment (a
+        brand-new one from `New-MutEnvironment` cannot have a stale active mutant -- Mutation
+        Core is not installed on it until Publish-MutBaseline, step 3). Best-effort (a failure
+        here only warns) so a transient API problem cannot block environment readiness over a
+        purely defensive measure -- the loop's own in-loop confirmation remains the actual
+        readiness gate.
+
         .OUTPUTS
         The environment handle (§6.5.3 shape, plus whatever extra properties the backend adds).
     #>
@@ -335,6 +353,16 @@ function Ensure-MutEnvironment {
         $env = New-MutEnvironment -Name $Config.environmentName -Config $Config
     }
     else {
+        # FIX (F3c): deactivate any stale mutant BEFORE Start-MutEnvironment's probe below runs
+        # a real test job -- see this function's own FIX note above. Best-effort: a failure here
+        # must not block environment readiness.
+        try {
+            Invoke-MutApi -Env $env -Method 'PATCH' -Path 'mutationSetup(0)' -Body @{ activeMutantId = 0 } | Out-Null
+        }
+        catch {
+            Write-Warning "Ensure-MutEnvironment: could not deactivate a possibly-stale mutant before the readiness probe: $($_.Exception.Message)"
+        }
+
         # FIX (F3, I6): unconditional; FIX (F3b IMPORTANT 2): -RequireProbe $false -- see this
         # function's own FIX notes above.
         $env = Start-MutEnvironment -Env $env -Config $Config -RequireProbe $false
@@ -891,6 +919,11 @@ function Export-MutResultsStep {
         The already-exists check against `export.done` still applies even with -AllowPartial, so
         a partial export can never clobber a real, already-completed one.
 
+        FIX (F3c, "also worth doing"): also passes -Partial through to Export-MutResults, which
+        writes an explicit `aborted: true` into the results JSON -- previously the only signal a
+        partial export existed at all was `totals.pending -gt 0`, an implicit, easy-to-miss
+        artifact of how an unrun mutant happens to render, not a deliberate marker.
+
         .OUTPUTS
         [pscustomobject]@{ ResultsPath; SummaryPath } (Export-MutResults' own return shape).
     #>
@@ -930,7 +963,7 @@ function Export-MutResultsStep {
     }
 
     $paths = Export-MutResults -RunNo $RunNo -Config $Config -Env $Env -Mutants $Mutants -Results $Results `
-        -OutDir $outDir -StartedUtc $StartedUtc -FinishedUtc $FinishedUtc -CompileErrorIds $CompileErrorIds
+        -OutDir $outDir -StartedUtc $StartedUtc -FinishedUtc $FinishedUtc -CompileErrorIds $CompileErrorIds -Partial:$AllowPartial
 
     if ($AllowPartial) {
         return $paths
@@ -1041,9 +1074,26 @@ function Invoke-MutRunPipeline {
 
         $finishedUtc = [datetime]::UtcNow
         $partialResults = @($_.TargetObject)
-        $totalMutantCount = @($schemata.Mutants).Count
+        # FIX (F3c, "also worth doing"): use the SAME denominator the export itself uses
+        # (mutants + compile-error-excluded ones, §6.5.4 step 8/9's own comment above) --
+        # @($schemata.Mutants).Count alone disagreed with the export's own `totals.total` on any
+        # run with compile errors.
+        $totalMutantCount = @($allMutantsForExport).Count
 
-        Write-Warning "Invoke-MutRunPipeline: the mutant loop aborted after exceeding its environment-recovery cap -- $($partialResults.Count) of $totalMutantCount mutant(s) completed before this run stopped ($($_.Exception.Message)). A partial results/summary was still exported. Re-invoke with -RunNo $runNo to resume: already-recorded mutants are skipped automatically and the loop continues from where it stopped."
+        # FIX (F3c, F3b review finding 3): the resume message previously oversold what a resume
+        # actually recovers. Get-MutRecordedResultsForRun (MutantLoop.psm1) skips a mutant on
+        # resume for ANY recorded status, including 'Error' -- a mutant that errored because the
+        # environment died is not retried, just permanently excluded from the score denominator
+        # (correctly -- an infrastructure failure is not evidence about the test suite, §7.3).
+        # Silence here would leave an operator assuming "-RunNo resumes" means "every mutant
+        # eventually gets a real verdict", which is not true for these.
+        $erroredMutantIds = @($partialResults | Where-Object { $_.Status -eq 'Error' } | ForEach-Object { $_.Id })
+
+        Write-Warning "Invoke-MutRunPipeline: the mutant loop aborted after exceeding its environment-recovery cap -- $($partialResults.Count) of $totalMutantCount mutant(s) completed before this run stopped ($($_.Exception.Message)). A partial results/summary was still exported. Re-invoke with -RunNo $runNo to resume: mutants already recorded with a real outcome (Killed/Survived/Uncovered/CompileError) are skipped and the loop continues with the rest."
+
+        if ($erroredMutantIds.Count -gt 0) {
+            Write-Warning "Invoke-MutRunPipeline: $($erroredMutantIds.Count) mutant(s) recorded Status 'Error' before the abort (id(s): $($erroredMutantIds -join ', ')) will NOT be retried on a resume -- the resume check skips any recorded status, including Error. They are correctly excluded from the score denominator (§7.3), but if you want them re-run, delete their rows from the Mutation Core mutantResults table for this RunNo (or their lines from runs/$runNo/results.jsonl, if the API has none for them) before re-invoking with -RunNo $runNo."
+        }
 
         $exportResult = Export-MutResultsStep -Config $Config -Env $env -RunNo $runNo -Mutants $allMutantsForExport `
             -Results $partialResults -CompileErrorIds $schemata.CompileErrorIds -StartedUtc $startedUtc `

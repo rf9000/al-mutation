@@ -508,7 +508,7 @@ Describe 'Invoke-MutMutantLoop' {
         $callLog[-1] | Should -BeLike 'API:PATCH:*'
     }
 
-    It 'PATCHes activeMutantId to 0 BEFORE Reset-MutEnvironment on a timeout too (F3b BLOCKER 1: the reset''s own probe must not run a real test job with this mutant still active), and again after' {
+    It 'PATCHes activeMutantId to 0 BEFORE Reset-MutEnvironment on a timeout too (F3b BLOCKER 1: the reset''s own probe must not run a real test job with this mutant still active), and again after, and spends one recovery from the shared cap (F3c: proven by a real assertion, not just -WarningAction SilentlyContinue)' {
         Mock -ModuleName MutantLoop Invoke-MutTestsWithBudget {
             $global:MutCallLog += 'TESTS'
             [pscustomobject]@{ TimedOut = $true; ErrorMessage = $null; Result = $null }
@@ -516,9 +516,10 @@ Describe 'Invoke-MutMutantLoop' {
 
         $mutant = [pscustomobject]@{ id = 40; objectId = 50000; line = 4 }
 
+        $timeoutWarnings = $null
         Invoke-MutMutantLoop -Config $script:Config -Env $script:EnvHandle -Mutants @($mutant) `
             -Baseline $script:Baseline -Coverage $script:Coverage -References $script:References `
-            -RunNo 7 -RunDir $script:RunDir -BackendModulePath 'unused.psm1' -WarningAction SilentlyContinue | Out-Null
+            -RunNo 7 -RunDir $script:RunDir -BackendModulePath 'unused.psm1' -WarningVariable timeoutWarnings -WarningAction SilentlyContinue | Out-Null
 
         # order: GET (M3 upfront resume-fetch) -> PATCH(id) -> TESTS -> PATCH(0, F3b: before the
         # reset's own probe) -> RESET -> SETTLE -> PATCH(0, the usual per-mutant deactivate)
@@ -527,6 +528,13 @@ Describe 'Invoke-MutMutantLoop' {
         Should -Invoke -ModuleName MutantLoop Invoke-MutApi -ParameterFilter {
             $Method -eq 'PATCH' -and $Body.activeMutantId -eq 0
         } -Times 2
+
+        # F3c: -WarningAction SilentlyContinue alone (the pre-fix state of this test) would
+        # suppress the very "recovery N of 3" warning that proves the timeout spent a slot from
+        # the shared cap -- -WarningVariable captures it regardless, so this assertion actually
+        # fails if Request-MutEnvironmentRecoveryBudget's call on the timeout path is deleted.
+        $recoveryWarning = @($timeoutWarnings) | Where-Object { $_ -like '*a test run timed out*recovering*1 of 3*' }
+        @($recoveryWarning).Count | Should -Be 1
     }
 
     It 'processes mutants in id order regardless of input order' {
@@ -706,6 +714,54 @@ Describe 'Invoke-MutMutantLoop' {
         # List[object]'s contents intermittently throws a PS 5.1 interpreter/DLR ArgumentException
         # ("Argumenttyperne stemmer ikke overens") unrelated to the actual values here.
         ($script:MutPatchSequence -join ',') | Should -Be '71,0,71,0'
+    }
+
+    It 'F3c: after a recovery, the loop keeps using the refreshed handle Start-MutEnvironment returned, not the original $Env passed into Invoke-MutMutantLoop' {
+        # Regression test for an untested headline claim (F3b review finding 2):
+        # Confirm-MutEnvironmentServing's return value was previously piped to Out-Null and
+        # discarded, so a genuinely refreshed handle (e.g. a different Id after a real restart)
+        # would silently NOT propagate to the retry, or to any later mutant in the same run.
+        $refreshedEnv = [pscustomobject]@{ Id = 'E2'; Name = 'mut-spike-01'; Status = 'Running'; StartDurationSec = 5 }
+
+        Mock -ModuleName MutantLoop Get-MutEnvironment { [pscustomobject]@{ Id = 'E1'; Name = 'mut-spike-01'; Status = 'Stopped' } }
+        Mock -ModuleName MutantLoop Start-MutEnvironment { $refreshedEnv }
+
+        $script:MutRefreshCallCount = 0
+        $script:MutRefreshEnvIds = New-Object System.Collections.Generic.List[object]
+        Mock -ModuleName MutantLoop Invoke-MutTestsWithBudget {
+            param($Env, $Targets, $TimeoutSec, $BudgetSec, $BackendModulePath)
+            $script:MutRefreshCallCount++
+            $script:MutRefreshEnvIds.Add($Env.Id)
+            if ($script:MutRefreshCallCount -eq 1) {
+                return [pscustomobject]@{
+                    TimedOut = $false; ErrorMessage = $null
+                    Result   = [pscustomobject]@{ Passed = 0; Failed = 0; DurationMs = 0; Tests = @() }
+                }
+            }
+            return [pscustomobject]@{
+                TimedOut = $false; ErrorMessage = $null
+                Result   = [pscustomobject]@{
+                    Passed = 1; Failed = 0; DurationMs = 5
+                    Tests  = @([pscustomobject]@{ Codeunit = 'C'; Function = 'F'; Result = 'Pass'; DurationMs = 5; Error = $null })
+                }
+            }
+        }
+
+        # Mutant A triggers the recovery (Get-MutEnvironment reports Stopped) on its first
+        # attempt; mutant B has no covering-test issue of its own and, if the refreshed handle
+        # propagated, is processed entirely against E2.
+        $mutantA = [pscustomobject]@{ id = 101; objectId = 50000; line = 4 }
+        $mutantB = [pscustomobject]@{ id = 102; objectId = 50000; line = 4 }
+
+        Invoke-MutMutantLoop -Config $script:Config -Env $script:EnvHandle -Mutants @($mutantA, $mutantB) `
+            -Baseline $script:Baseline -Coverage $script:Coverage -References $script:References `
+            -RunNo 17 -RunDir $script:RunDir -BackendModulePath 'unused.psm1' -WarningAction SilentlyContinue | Out-Null
+
+        # Call 1 (mutant A, attempt 1): still the ORIGINAL handle (E1) -- the recovery has not
+        # happened yet at that point. Call 2 (mutant A, attempt 2, after recovery) and call 3
+        # (mutant B) must both be E2 -- the refreshed handle, kept for the rest of the run. A
+        # `| Out-Null`-discarded refresh would instead read E1, E1, E1 throughout.
+        ($script:MutRefreshEnvIds -join ',') | Should -Be 'E1,E2,E2'
     }
 
     It 'F3b IMPORTANT 4: the ''Running but the readiness probe failed'' branch is also capped and eventually aborts the run (this branch was previously untested and silently disable-able)' {
