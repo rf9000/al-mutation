@@ -450,6 +450,41 @@ labels, ternaries placed inside a case branch rather than before one, quoted-ide
 and guard tests that mocked the callee to throw and then asserted only that *something* threw — the last of
 which meant deleting the environment safety guard entirely left ten tests green.
 
+## U2 answered: multi-codeunit run (run 8, 2026-09-22)
+
+`mutation.u2.config.json`: four AUT codeunits, each covered by a *different* test codeunit, so coverage
+selection has to discriminate rather than defaulting to a single answer. 265 mutants, 97.3 min wall clock.
+
+**U2 is answered: 0 of 265 mutants were misattributed.** Every mutant selected exactly one covering test and
+it was always the right one — verified at three levels: the raw BC coverage data (each target object covered
+by exactly one test codeunit, 12/54/61/209 lines), the per-mutant `covering.json`, and the final export.
+
+| AUT codeunit | Covering test | Killed | Survived | Error | Score |
+|---|---|---|---|---|---|
+| 72918635 (pilot) | 95155 | 62 | 95 | 0 | **0.3949** |
+| 72282417 | 95110 | 29 | 29 | 0 | **0.5000** |
+| 72918630 | 95121 | 1 | 3 | 33 | 0.2500 (unusable) |
+| 71553757 | 95058 | 0 | 0 | 13 | **null** |
+
+**The pilot codeunit reproduced 0.3949 exactly** (62 killed / 95 survived), identical to runs 4 and 6, in a
+different run with different scope and a rewritten reference map — a third independent confirmation.
+
+**Throughput nearly halved, to 11.0 s/mutant from run 6's 21.1.** Correct attribution is itself a throughput
+lever: run 6 wrongly ran three test codeunits per mutant where one was needed. This revises the full-AUT
+projection from ~88 h to ~47 h — still far too long to run unattended, but it confirms that per-mutant cost is
+dominated by fixed per-test-job overhead, which is what §6.1.6's deferred custom TestRunner would attack.
+
+**The run also exposed a blocking defect** (`docs/issues.md`): from mutant 219 onward all 46 remaining mutants
+failed with `no tests discovered` and the loop never recovered. The environment had stopped; once restarted,
+all three test codeunits passed immediately (8/8, 16/16, 13/13). The loop cannot distinguish a non-serving
+environment from a genuinely empty codeunit, because the test-readiness probe is gated on
+`status -ne 'Running'` and so never runs on the common path.
+
+Three fixes from the pre-merge review proved themselves here: `Error` mutants were excluded from the
+denominator (0.4201 over 219 valid mutants, not 92/265 = 0.347, which is what the old code would have
+reported), the Errors table rendered each reason, and the fully-errored codeunit reported a **null** score
+rather than a misleading 0.
+
 ### Not proven
 
 Schemata compile at whole-project scale, and publish at that size, were open questions in earlier drafts of
