@@ -629,7 +629,7 @@ and 95121 with no mutant then passed 16/16 in 11 s. So `StopSession` does end th
 caveat. The API list also showed stale rows 4991, 5137 and 2653 -- run 10/11 sessions killed by the restarts --
 which accept a stop and never disappear.
 
-**Fixes (2026-10-01).** A Timeout now stops only the job's own session (login-time filter keeps stale rows out)
+**Fixes (2026-10-01).** A Timeout now stops only the job's own session (`Client Service` on the current server instance; stale rows sit on older instances — a first login-time filter missed run 12's runaway, because DemoPortal reuses a long-lived test-runner session)
 and falls back to the reset only when it cannot. A failed reset records `Timeout` and waits for the environment
 instead of re-running the mutant (run 11 re-ran 4371). `Reset-MutEnvironment` and `Start-MutEnvironment` re-issue
 `env start` while the environment stays `Stopped` (~90 s), for up to ~30 min. Not yet run live.

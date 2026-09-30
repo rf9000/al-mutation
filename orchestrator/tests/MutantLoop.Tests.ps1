@@ -1536,9 +1536,13 @@ Describe 'Invoke-MutMutantLoop: non-terminating mutants (run 10, 2026-09-30)' {
         sessions API, and falls back to the reset only when it cannot.
 
         The fake session registry below models the live behaviour verified on 2026-10-01: a job
-        whose client wait expires leaves a live 'Client Service' session behind; POST
+        whose client wait expires leaves a live 'Client Service' session looping -- DemoPortal's
+        long-lived, REUSED test-runner session, so it logged in well before the job started (run
+        12's first version filtered on login time and missed it); POST
         sessions(<id>)/Microsoft.NAV.stop removes a live session from the list; a STALE row (a
-        session killed by an earlier container restart) accepts the stop and never disappears.
+        session killed by an earlier container restart) is on an older server instance, accepts
+        the stop, and never disappears. serverInstanceId increments per service start, and the
+        caller's own request session is always listed on the current one.
     #>
     BeforeEach {
         $script:MutClock = 0.0
@@ -1546,14 +1550,17 @@ Describe 'Invoke-MutMutantLoop: non-terminating mutants (run 10, 2026-09-30)' {
         $script:MutNextSessionId = 80
         $script:MutUnstoppable = @{}
         $script:MutStopRequests = New-Object System.Collections.Generic.List[int]
+        $script:MutCurrentInstance = 12
         $script:MutFakeSessions = New-Object System.Collections.Generic.List[object]
-        # A stale row from before the last restart, and the orchestrator's own API session.
-        $script:MutFakeSessions.Add([pscustomobject]@{ sessionId = 4991; userId = 'EH'; clientType = 'Client Service'; loginDateTime = [datetime]::UtcNow.AddHours(-2).ToString('o'); isCurrentSession = $false })
-        $script:MutFakeSessions.Add([pscustomobject]@{ sessionId = -5; userId = 'RF'; clientType = 'Web Service'; loginDateTime = [datetime]::UtcNow.ToString('o'); isCurrentSession = $true })
+        # A stale row from an earlier server instance, and the orchestrator's own API session.
+        $script:MutFakeSessions.Add([pscustomobject]@{ sessionId = 4991; userId = 'EH'; clientType = 'Client Service'; serverInstanceId = 9; loginDateTime = [datetime]::UtcNow.AddHours(-2).ToString('o'); isCurrentSession = $false })
+        $script:MutApiSession = [pscustomobject]@{ sessionId = -5; userId = 'RF'; clientType = 'Web Service'; serverInstanceId = 12; loginDateTime = [datetime]::UtcNow.ToString('o'); isCurrentSession = $false }
+        $script:MutFakeSessions.Add($script:MutApiSession)
 
         function script:Add-MutRunawaySession {
+            # The reused test-runner session: current instance, but logged in long before the job.
             $script:MutNextSessionId++
-            $script:MutFakeSessions.Add([pscustomobject]@{ sessionId = $script:MutNextSessionId; userId = 'EH'; clientType = 'Client Service'; loginDateTime = [datetime]::UtcNow.ToString('o'); isCurrentSession = $false })
+            $script:MutFakeSessions.Add([pscustomobject]@{ sessionId = $script:MutNextSessionId; userId = 'EH'; clientType = 'Client Service'; serverInstanceId = $script:MutCurrentInstance; loginDateTime = [datetime]::UtcNow.AddMinutes(-30).ToString('o'); isCurrentSession = $false })
         }
 
         Mock -ModuleName MutantLoop Start-MutPostResetSettle { }
@@ -1561,10 +1568,11 @@ Describe 'Invoke-MutMutantLoop: non-terminating mutants (run 10, 2026-09-30)' {
         Mock -ModuleName MutantLoop Get-MutEnvironment { [pscustomobject]@{ Id = 'E1'; Name = 'mut-spike-01'; Status = 'Running' } }
         Mock -ModuleName MutantLoop Start-MutEnvironment { [pscustomobject]@{ Id = 'E1'; Name = 'mut-spike-01'; Status = 'Running'; StartDurationSec = 0 } }
         Mock -ModuleName MutantLoop Wait-MutOutageRecovery { return $Env }
-        # A real reset takes minutes, so every session alive before it is a stale row afterwards,
-        # logged in long before the next job starts.
+        # A reset starts a new server instance: every session alive before it is a stale row on
+        # the old instance afterwards, and the caller's request session is on the new one.
         Mock -ModuleName MutantLoop Reset-MutEnvironment {
-            foreach ($s in $script:MutFakeSessions) { if (-not $s.isCurrentSession) { $s.loginDateTime = [datetime]::UtcNow.AddHours(-1).ToString('o') } }
+            $script:MutCurrentInstance++
+            $script:MutApiSession.serverInstanceId = $script:MutCurrentInstance
             [pscustomobject]@{ DurationSec = 1 }
         }
         Mock -ModuleName MutantLoop Invoke-MutApi {
@@ -1628,7 +1636,7 @@ Describe 'Invoke-MutMutantLoop: non-terminating mutants (run 10, 2026-09-30)' {
         Should -Invoke -ModuleName MutantLoop Invoke-MutTestsWithBudget -Times 1 -Exactly
     }
 
-    It 'never stops a stale session row (logged in before the job started) -- it accepts the stop but never goes away, and would force a needless reset' {
+    It 'never stops a stale session row (from an earlier server instance) -- it accepts the stop but never goes away, and would force a needless reset' {
         Mock -ModuleName MutantLoop Invoke-MutTestsWithBudget $script:TimedOutWithRunaway
         $mutant = [pscustomobject]@{ id = 4373; objectId = 72918630; line = 44 }
 

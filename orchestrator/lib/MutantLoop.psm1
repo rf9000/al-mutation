@@ -117,14 +117,13 @@ $script:MaxConsecutiveTimeouts = 5
 # just the runaway session through Mutation Core's sessions API (verified live: StopSession ends a
 # session stuck in a non-terminating mutant's loop within ~10 s, despite BC documenting that it
 # cannot always), and falls back to the reset only when it cannot (Stop-MutRunawayTestSessions).
-#   RunawaySessionLoginSlackSec -- a runaway session logs in during its own job; a STALE row (a
-#                                  session killed by an earlier container restart, which BC leaves
-#                                  in Active Session and which accepts a stop but never goes away)
-#                                  logged in before the last restart, minutes earlier. Sessions
-#                                  that logged in no more than this long before the job started
-#                                  are treated as the job's own.
-#   RunawaySessionWaitSec       -- how long to wait for stopped sessions to disappear.
-$script:RunawaySessionLoginSlackSec = 120
+#   Targets are 'Client Service' sessions on the CURRENT server instance. BC leaves STALE rows in
+#   Active Session for sessions killed by a container restart; they accept a stop and never go
+#   away. Their serverInstanceId is an older one (it increments per service start: live rows on
+#   2026-10-01 were instance 12, stale ones 9, 10 and 11). A first version filtered on login time
+#   instead and missed the runaway in run 12: DemoPortal reuses a long-lived test-runner session,
+#   so the looping job's session had logged in minutes before the job started.
+#   RunawaySessionWaitSec -- how long to wait for stopped sessions to disappear.
 $script:RunawaySessionWaitSec = 120
 $script:RunawaySessionPollSec = 10
 $script:MutOutageWaitCount = 0
@@ -332,28 +331,6 @@ function Wait-MutOutageRecovery {
     }
 }
 
-function ConvertTo-MutUtcDateTime {
-    <#
-        .SYNOPSIS
-        Private. Parses an API datetime value to UTC, or returns $null. Windows PowerShell 5.1's
-        JSON parsing leaves ISO-8601 values as strings; later versions return [datetime].
-    #>
-    param($Value)
-
-    if ($null -eq $Value) {
-        return $null
-    }
-    if ($Value -is [datetime]) {
-        return $Value.ToUniversalTime()
-    }
-    $parsed = [datetime]::MinValue
-    $styles = [System.Globalization.DateTimeStyles]::AdjustToUniversal -bor [System.Globalization.DateTimeStyles]::AssumeUniversal
-    if ([datetime]::TryParse([string]$Value, [System.Globalization.CultureInfo]::InvariantCulture, $styles, [ref]$parsed)) {
-        return $parsed
-    }
-    return $null
-}
-
 function Stop-MutRunawayTestSessions {
     <#
         .SYNOPSIS
@@ -361,11 +338,13 @@ function Stop-MutRunawayTestSessions {
         running, through Mutation Core's sessions API (GET sessions; POST
         sessions(<id>)/Microsoft.NAV.stop), and waits for it to disappear.
 
-        Targets: 'Client Service' sessions (the type DemoPortal test jobs run as), other than the
-        caller's own, that logged in no earlier than $SinceUtc minus
-        $script:RunawaySessionLoginSlackSec. The login-time rule is what keeps STALE rows out:
-        BC leaves sessions killed by a container restart in Active Session, and such a row accepts
-        a stop but never disappears, so targeting it would force a needless full reset every time.
+        Targets: 'Client Service' sessions (the type DemoPortal test jobs run as) on the current
+        server instance -- the highest serverInstanceId in the listing, which always includes the
+        caller's own request session. That rule keeps STALE rows out: BC leaves sessions killed
+        by a container restart in Active Session, on an older instance, and such a row accepts a
+        stop but never disappears, so targeting it would force a needless full reset every time.
+        DemoPortal reuses a long-lived test-runner session, so an idle one on the current instance
+        is stopped too; the next job starts a fresh one.
 
         .OUTPUTS
         $true only when at least one target was found and every target disappeared within
@@ -376,8 +355,6 @@ function Stop-MutRunawayTestSessions {
     param(
         [Parameter(Mandatory = $true)]
         $Env,
-        [Parameter(Mandatory = $true)]
-        [datetime]$SinceUtc,
         [Parameter(Mandatory = $true)]
         [int]$MutantId
     )
@@ -390,15 +367,17 @@ function Stop-MutRunawayTestSessions {
         return $false
     }
 
-    $cutoff = $SinceUtc.ToUniversalTime().AddSeconds(-$script:RunawaySessionLoginSlackSec)
-    $targets = @()
+    $rowsAll = @()
     if ((Test-MutHasProperty $list 'value') -and ($null -ne $list.value)) {
-        foreach ($session in @($list.value)) {
+        $rowsAll = @(@($list.value) | Where-Object { (Test-MutHasProperty $_ 'sessionId') -and (Test-MutHasProperty $_ 'serverInstanceId') })
+    }
+    $targets = @()
+    if ($rowsAll.Count -gt 0) {
+        $currentInstance = (@($rowsAll | ForEach-Object { [int]$_.serverInstanceId }) | Measure-Object -Maximum).Maximum
+        foreach ($session in $rowsAll) {
             if (-not (Test-MutHasProperty $session 'clientType') -or ([string]$session.clientType -ne 'Client Service')) { continue }
             if ((Test-MutHasProperty $session 'isCurrentSession') -and [bool]$session.isCurrentSession) { continue }
-            if (-not (Test-MutHasProperty $session 'loginDateTime') -or -not (Test-MutHasProperty $session 'sessionId')) { continue }
-            $login = ConvertTo-MutUtcDateTime -Value $session.loginDateTime
-            if ($null -eq $login -or $login -lt $cutoff) { continue }
+            if ([int]$session.serverInstanceId -ne $currentInstance) { continue }
             $targets += [int]$session.sessionId
         }
     }
@@ -1035,7 +1014,6 @@ function Invoke-MutMutantLoop {
                 $maxAttempts = 2
                 do {
                     $attempt++
-                    $attemptStartUtc = [datetime]::UtcNow
                     $attemptStartSec = Get-MutClockSeconds
                     $outcome = Invoke-MutTestsWithBudget -Env $Env -Targets $targets -TimeoutSec $innerTimeoutSec -BudgetSec $budget -BackendModulePath $BackendModulePath
                     $attemptElapsedSec = (Get-MutClockSeconds) - $attemptStartSec
@@ -1091,7 +1069,7 @@ function Invoke-MutMutantLoop {
                     # to reset forever just because it happens to present as a timeout.
                     # FIX (run 11): stop just the runaway session first; the full reset below is
                     # now only the fallback.
-                    if (-not (Stop-MutRunawayTestSessions -Env $Env -SinceUtc $attemptStartUtc -MutantId $mutant.id)) {
+                    if (-not (Stop-MutRunawayTestSessions -Env $Env -MutantId $mutant.id)) {
                         Request-MutEnvironmentRecoveryBudget -MutantId $mutant.id -Context 'a test run timed out'
                         try {
                             Reset-MutEnvironment -Env $Env -Config $Config | Out-Null
