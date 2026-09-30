@@ -76,6 +76,27 @@ $script:MutEnvironmentRecoveryCapErrorId = 'MutEnvironmentRecoveryCapExceeded'
 # variables. Invoke-MutMutantLoop resets it to 0 at the start of every call.
 $script:MutEnvironmentRecoveryCount = 0
 
+# FIX (503 bisect, 2026-09-30): the environment has a transient outage after ~45-60 minutes of
+# continuous test jobs, independent of mutation. Runs 8 and 9 each lost the last 46 of 265
+# mutants to one: in run 9, 37 of them were `(503) Server Unavailable` thrown by the PATCH that
+# activates each mutant, which sits BEFORE the empty-result retry, so every one fell straight
+# into the per-mutant catch, was recorded as Error in seconds, and the loop burned through the
+# rest of the run inside the outage window. A thrown call now waits for the environment to serve
+# again (Wait-MutOutageRecovery) and retries the SAME mutant.
+#   OutageWaitDeadlineSec     -- how long one outage may last before the run aborts. The bisect's
+#                                outage lasted ~2-4 min; run 9's included 600 s stuck in Starting.
+#   OutagePollIntervalSec     -- pause between readiness checks inside one wait.
+#   MaxOutageRetriesPerMutant -- outage waits per mutant before it is recorded as Error, so a
+#                                mutant whose own calls always throw cannot stall the run.
+#   MaxConsecutiveErrors      -- the circuit breaker: this many Error rows in a row abort the run
+#                                with a partial export. Run 9 recorded 46 in a row, spent zero
+#                                recovery slots, and published `aborted: false` with a score.
+$script:OutageWaitDeadlineSec = 900
+$script:OutagePollIntervalSec = 30
+$script:MaxOutageRetriesPerMutant = 2
+$script:MaxConsecutiveErrors = 5
+$script:MutOutageWaitCount = 0
+
 function Test-MutHasProperty {
     <#
         .SYNOPSIS
@@ -197,6 +218,75 @@ function Confirm-MutEnvironmentServing {
             Request-MutEnvironmentRecoveryBudget -MutantId $MutantId -Context "the environment reports Running but its readiness probe failed: $($_.Exception.Message)"
         }
         throw
+    }
+}
+
+function Wait-MutOutageRecovery {
+    <#
+        .SYNOPSIS
+        Private. FIX (503 bisect): called when a mutant's attempt threw -- typically an API call
+        failing because the environment is mid-outage. Polls until the environment is serving
+        again, bounded by $script:OutageWaitDeadlineSec, so the caller can retry the SAME mutant
+        instead of recording Error and moving on.
+
+        Each poll first PATCHes `activeMutantId = 0`, and runs the readiness check only when that
+        succeeded. The readiness check (Start-MutEnvironment) runs a real probe test job, and
+        Mutation Core's OnAfterTestMethodRun records a Killed row for ANY failing test while a
+        mutant is active (the F3b BLOCKER 1 hazard). During an outage the caller's own
+        best-effort deactivation may itself have failed, so this cannot assume it happened.
+
+        Not charged against $script:MaxEnvironmentRecoveries: an outage that ends, followed by a
+        retry of the same mutant, costs time but not score integrity. An outage that does not end
+        within the deadline aborts the run instead.
+
+        .OUTPUTS
+        The environment handle Start-MutEnvironment returned once it confirmed serving. Throws
+        an ErrorRecord categorized LimitsExceeded (the same category the recovery cap uses, so
+        the caller aborts the run with a partial export) when the deadline passes.
+    #>
+    param(
+        [Parameter(Mandatory = $true)]
+        $Env,
+        [Parameter(Mandatory = $true)]
+        $Config,
+        [Parameter(Mandatory = $true)]
+        [int]$MutantId,
+        [Parameter(Mandatory = $true)]
+        [int]$RunNo,
+        [Parameter(Mandatory = $true)]
+        [string]$Reason
+    )
+
+    $script:MutOutageWaitCount++
+    Write-Warning "Invoke-MutMutantLoop: mutant $MutantId -- an environment call failed ($Reason); waiting up to $($script:OutageWaitDeadlineSec) s for the environment to serve again, then retrying this mutant."
+
+    $deadline = [datetime]::UtcNow.AddSeconds($script:OutageWaitDeadlineSec)
+    $lastError = $Reason
+    while ($true) {
+        $deactivated = $false
+        try {
+            Invoke-MutApi -Env $Env -Method 'PATCH' -Path 'mutationSetup(0)' -Body @{ activeMutantId = 0; currentRunNo = $RunNo } | Out-Null
+            $deactivated = $true
+        }
+        catch {
+            $lastError = "deactivating the mutant failed: $($_.Exception.Message)"
+        }
+
+        if ($deactivated) {
+            try {
+                return (Start-MutEnvironment -Env $Env -Config $Config)
+            }
+            catch {
+                $lastError = $_.Exception.Message
+            }
+        }
+
+        if ([datetime]::UtcNow -ge $deadline) {
+            $message = "Invoke-MutMutantLoop: mutant $MutantId -- the environment did not return to serving within $($script:OutageWaitDeadlineSec) s after an environment call failed ($Reason). Last readiness error: $lastError. Aborting rather than recording the rest of the run as Error."
+            $exception = [System.Exception]::new($message)
+            throw [System.Management.Automation.ErrorRecord]::new($exception, 'MutEnvironmentOutageTimeout', [System.Management.Automation.ErrorCategory]::LimitsExceeded, $null)
+        }
+        Start-Sleep -Seconds $script:OutagePollIntervalSec
     }
 }
 
@@ -702,6 +792,10 @@ function Invoke-MutMutantLoop {
 
     # FIX (F3, run 8 -- finding I6): reset per run invocation -- see Confirm-MutEnvironmentServing.
     $script:MutEnvironmentRecoveryCount = 0
+    # FIX (503 bisect): per-run outage-wait count (reported at the end) and the circuit breaker's
+    # running count of consecutive Error rows -- see the constants at the top of this module.
+    $script:MutOutageWaitCount = 0
+    $consecutiveErrors = 0
 
     $rows = @()
 
@@ -733,249 +827,297 @@ function Invoke-MutMutantLoop {
         # (from covering-test selection, a PATCH, or Invoke-MutTestsWithBudget itself throwing
         # rather than returning an ErrorMessage) records Status 'Error' and continues, instead of
         # aborting the entire loop -- see this function's own FIX note above.
-        $covering = @()
-        try {
-            $covering = Get-MutCoveringTests -Mutant $mutant -Coverage $Coverage -References $References -TestCodeunits $testCodeunits
+        # FIX (503 bisect): each mutant runs inside a retry loop. A thrown call (typically an API
+        # call failing mid-outage) waits for the environment to serve again and re-runs the SAME
+        # mutant, up to $script:MaxOutageRetriesPerMutant times, instead of recording Error at
+        # once. `continue` inside this do/while (the Uncovered path, and the retry below) jumps to
+        # the while condition, so it still ends this mutant when $retryMutant is false.
+        $outageRetries = 0
+        do {
+            $retryMutant = $false
+            $covering = @()
+            try {
+                $covering = Get-MutCoveringTests -Mutant $mutant -Coverage $Coverage -References $References -TestCodeunits $testCodeunits
 
-            if (@($covering).Count -eq 0) {
+                if (@($covering).Count -eq 0) {
+                    $row = [pscustomobject]@{
+                        Id            = $mutant.id
+                        Status        = 'Uncovered'
+                        KillingTest   = $null
+                        DurationMs    = $null
+                        CoveringTests = @($covering)
+                    }
+                    Write-MutResultsJsonLine -RunDir $RunDir -Row $row
+                    $rows += $row
+                    continue
+                }
+
+                Invoke-MutApi -Env $Env -Method 'PATCH' -Path 'mutationSetup(0)' -Body @{ activeMutantId = $mutant.id; currentRunNo = $RunNo } | Out-Null
+
+                $budget = Get-MutTimeoutBudget -Config $Config -CoveringTests $covering -Baseline $Baseline
+                # FIX (T27 fix round 1, finding 2 -- task review): the timeout handed to the backend
+                # (and, inside it, to its own +60s process margin) must be strictly less
+                # than $budget -- otherwise a genuine hang would never be killed by the backend's own
+                # client-side timeout before Invoke-MutTestsWithBudget's own wall-clock budget already
+                # gave up waiting on it. max(30, budget - 30) leaves the backend's own timeout plus its
+                # +60s margin firing at budget + 30 at the latest, comfortably inside
+                # Invoke-MutTestsWithBudget's own (default 90s) post-budget grace period.
+                $innerTimeoutSec = [math]::Max(30, $budget - 30)
+                $targets = @($covering | ForEach-Object { [pscustomobject]@{ CodeunitId = $_; Function = $null } })
+
+                # FIX (T27, live run, 2026-09-09 -- see docs/issues.md): observed live, twice, that the
+                # very next test run after Reset-MutEnvironment (§6.5.6 step 3, immediately below) came
+                # back as a clean completion (no timeout, no error) reporting ZERO tests actually
+                # executed (Passed = 0, Failed = 0) rather than genuinely running the covering
+                # codeunit's suite -- silently recorded as a false Survived. A fixed post-reset settle
+                # delay (Start-MutPostResetSettle, below) alone was not sufficient to prevent this on
+                # its own (confirmed live: the same empty-result pattern recurred even after it). Instead
+                # of guessing at a longer delay, this retries the SAME test invocation once when it
+                # completes with zero total tests -- directly targeting the observed symptom (an
+                # apparently-transient "not yet truly ready" response) rather than a specific wait
+                # duration this environment has not confirmed is ever long enough.
+                $attempt = 0
+                $maxAttempts = 2
+                do {
+                    $attempt++
+                    $outcome = Invoke-MutTestsWithBudget -Env $Env -Targets $targets -TimeoutSec $innerTimeoutSec -BudgetSec $budget -BackendModulePath $BackendModulePath
+                    $isEmptyResult = (-not $outcome.TimedOut) -and (-not $outcome.ErrorMessage) -and ($null -ne $outcome.Result) -and
+                        (([int]$outcome.Result.Passed + [int]$outcome.Result.Failed) -eq 0)
+                    # FIX (F3b IMPORTANT 1): a dead environment does not only present as an empty
+                    # result -- the reviewer reproduced it presenting as a job ErrorMessage too (10/10
+                    # mutants, zero environment checks, garbage score, no abort). Treat both the same
+                    # way before consuming the retry; TimedOut is deliberately excluded here -- it has
+                    # its own handling (Reset-MutEnvironment) below and is never retried in this loop.
+                    $isRecoverableOutcome = $isEmptyResult -or ((-not $outcome.TimedOut) -and [bool]$outcome.ErrorMessage)
+
+                    if ($isRecoverableOutcome -and $attempt -lt $maxAttempts) {
+                        # FIX (F3b BLOCKER 1): deactivate before Confirm-MutEnvironmentServing's real
+                        # probe test job runs -- Mutation Core records a Killed row for ANY failing
+                        # test while a mutant is active, without checking it covers that mutant, so
+                        # probing with THIS mutant still active could misattribute a false kill to it.
+                        # Re-activate before the retry (also closes V9: the mutant was previously left
+                        # deactivated across the retry, observed PATCH sequence `42, 0`).
+                        Invoke-MutApi -Env $Env -Method 'PATCH' -Path 'mutationSetup(0)' -Body @{ activeMutantId = 0; currentRunNo = $RunNo } | Out-Null
+                        # This can throw (recovery cap exceeded, or the probe itself failing this
+                        # attempt); either way that propagates out of this try, through this mutant's
+                        # own catch below, and is handled there. On success, keep using the (possibly
+                        # refreshed) handle it returns for the rest of this run (F3b Minors).
+                        $Env = Confirm-MutEnvironmentServing -Env $Env -Config $Config -MutantId $mutant.id
+                        Invoke-MutApi -Env $Env -Method 'PATCH' -Path 'mutationSetup(0)' -Body @{ activeMutantId = $mutant.id; currentRunNo = $RunNo } | Out-Null
+                    }
+                } while ($isRecoverableOutcome -and $attempt -lt $maxAttempts)
+
+                $status = $null
+                $killingTest = $null
+                $durationMs = $null
+                $errorMessage = $null
+
+                if ($outcome.TimedOut) {
+                    # FIX (F3b BLOCKER 1): same hazard as above -- Reset-MutEnvironment's own probe
+                    # (when given -Config) runs a real test job, and this mutant is still active.
+                    Invoke-MutApi -Env $Env -Method 'PATCH' -Path 'mutationSetup(0)' -Body @{ activeMutantId = 0; currentRunNo = $RunNo } | Out-Null
+                    # FIX (F3b IMPORTANT 1): count a timeout-triggered reset against the same
+                    # recovery cap -- the reviewer reproduced 5/5 Timeouts with zero environment
+                    # checks and each one resetting uncounted; a dead environment must not be allowed
+                    # to reset forever just because it happens to present as a timeout.
+                    Request-MutEnvironmentRecoveryBudget -MutantId $mutant.id -Context 'a test run timed out'
+                    Reset-MutEnvironment -Env $Env -Config $Config | Out-Null
+                    Start-MutPostResetSettle
+                    $status = 'Timeout'
+                }
+                elseif ($outcome.ErrorMessage) {
+                    $status = 'Error'
+                    $errorMessage = $outcome.ErrorMessage
+                }
+                else {
+                    $result = $outcome.Result
+                    $durationMs = $result.DurationMs
+
+                    if (@($result.Tests).Count -eq 0) {
+                        # FIX (T27 fix round 1, finding 4b -- spike T09): a test job issued too soon
+                        # after a DemoPortal environment (re)start can complete cleanly (no timeout, no
+                        # error) with ZERO tests actually discovered/run for a codeunit that DOES have
+                        # covering tests -- indistinguishable from a genuinely passing suite by
+                        # Passed/Failed alone, and would otherwise be recorded as a false Survived (the
+                        # mutant was never actually exercised). The retry above already tries once more
+                        # when Passed + Failed = 0; if the result is STILL empty here, this is recorded
+                        # as Error (never Survived) so it is visible and excluded from the score rather
+                        # than silently counted as a kill-suppressing pass.
+                        $status = 'Error'
+                        $errorMessage = 'no tests discovered'
+                    }
+                    elseif ($result.Failed -gt 0) {
+                        $status = 'Killed'
+
+                        $firstFail = @($result.Tests) | Where-Object { $_.Result -eq 'Fail' } | Select-Object -First 1
+                        if ($firstFail) {
+                            $killingTest = '{0}:{1}' -f $firstFail.Codeunit, $firstFail.Function
+                        }
+
+                        $filterPath = 'mutantResults?$filter=runNo eq {0} and mutantId eq {1}' -f $RunNo, $mutant.id
+                        $existing = Invoke-MutApi -Env $Env -Method 'GET' -Path $filterPath
+                        # ($existing -and ...) short-circuits: a bare $null response (e.g. a test
+                        # double that doesn't shape its GET responses like the real API) must not
+                        # throw a PropertyNotFoundException under Set-StrictMode when read as
+                        # $existing.value.
+                        $hasExistingKilledRow = ($existing) -and (@($existing.value).Count -gt 0)
+
+                        if (-not $hasExistingKilledRow) {
+                            Invoke-MutApi -Env $Env -Method 'POST' -Path 'mutantResults' -Body @{
+                                runNo       = $RunNo
+                                mutantId    = $mutant.id
+                                status      = 'Killed'
+                                killingTest = $killingTest
+                                durationMs  = $durationMs
+                            } | Out-Null
+                        }
+                    }
+                    else {
+                        $status = 'Survived'
+                        # FIX (M3): now mirrors the Killed branch above -- GET first, only POST when no
+                        # row exists yet -- instead of always POSTing unconditionally. A run resumed at
+                        # this step for the same RunNo would previously reach here again (a step earlier
+                        # in the pipeline was re-run after a crash, or, live, this loop was re-run to pick
+                        # up a fix) and re-process a mutant that already has a Survived row from the
+                        # earlier attempt; the upfront resume check (Get-MutRecordedResultsForRun, top of
+                        # this function) now normally skips such a mutant entirely, but this GET-before-
+                        # POST check is kept as its own, independent guard (e.g. the jsonl fallback missed
+                        # a row the API already has). The try/catch around the POST is ALSO kept as a
+                        # last-resort safety net for a genuine race between the GET and the POST -- a
+                        # duplicate-key failure is swallowed as an idempotent no-op, while any other POST
+                        # failure still propagates (caught by this mutant's own try/catch wrapper, below).
+                        $survivedFilterPath = 'mutantResults?$filter=runNo eq {0} and mutantId eq {1}' -f $RunNo, $mutant.id
+                        $existingSurvived = Invoke-MutApi -Env $Env -Method 'GET' -Path $survivedFilterPath
+                        # See the Killed branch's identical null-safety note above.
+                        $hasExistingSurvivedRow = ($existingSurvived) -and (@($existingSurvived.value).Count -gt 0)
+
+                        if (-not $hasExistingSurvivedRow) {
+                            try {
+                                Invoke-MutApi -Env $Env -Method 'POST' -Path 'mutantResults' -Body @{
+                                    runNo      = $RunNo
+                                    mutantId   = $mutant.id
+                                    status     = 'Survived'
+                                    durationMs = $durationMs
+                                } | Out-Null
+                            }
+                            catch {
+                                $duplicateKeyText = ''
+                                if ($_.ErrorDetails -and $_.ErrorDetails.Message) {
+                                    $duplicateKeyText = $_.ErrorDetails.Message
+                                }
+                                if (-not $duplicateKeyText) {
+                                    $duplicateKeyText = $_.Exception.Message
+                                }
+                                if ($duplicateKeyText -notmatch 'EntityWithSameKeyExists') {
+                                    throw
+                                }
+                            }
+                        }
+                    }
+                }
+
+                Invoke-MutApi -Env $Env -Method 'PATCH' -Path 'mutationSetup(0)' -Body @{ activeMutantId = 0; currentRunNo = $RunNo } | Out-Null
+
                 $row = [pscustomobject]@{
                     Id            = $mutant.id
-                    Status        = 'Uncovered'
+                    Status        = $status
+                    KillingTest   = $killingTest
+                    DurationMs    = $durationMs
+                    CoveringTests = @($covering)
+                }
+                if ($status -eq 'Error') {
+                    $row | Add-Member -NotePropertyName 'Error' -NotePropertyValue $errorMessage
+                }
+
+                Write-MutResultsJsonLine -RunDir $RunDir -Row $row
+                $rows += $row
+            }
+            catch {
+                # FIX (M3): this mutant's own body threw something unhandled (e.g.
+                # Invoke-MutTestsWithBudget itself throwing, rather than returning an ErrorMessage, or
+                # a PATCH/covering-test failure) -- never let it abort the whole run. Best-effort
+                # deactivate, record Status 'Error' with the exception message, and move on.
+                $caughtMessage = $_.Exception.Message
+
+                # FIX (F3b Minors): deactivate (best-effort) BEFORE deciding whether to re-throw --
+                # previously the recovery-cap-exceeded re-throw (below) happened first, leaving the
+                # last mutant active in the environment on an aborted run.
+                try {
+                    Invoke-MutApi -Env $Env -Method 'PATCH' -Path 'mutationSetup(0)' -Body @{ activeMutantId = 0; currentRunNo = $RunNo } | Out-Null
+                }
+                catch {
+                    # Deactivation itself failing must not mask the original error or abort the run.
+                }
+
+                # FIX (F3, run 8 -- finding I6; F3b Minors: matched on a distinct ErrorCategory, not
+                # a string-matched marker prefix): the one exception this catch must NOT swallow into
+                # a per-mutant Error -- Request-MutEnvironmentRecoveryBudget's recovery-cap-exceeded
+                # throw. Re-thrown, with the rows completed so far attached as TargetObject (F3b
+                # IMPORTANT 3: so the pipeline can still export a partial result and tell the operator
+                # how much finished), so it aborts the whole run rather than limping through the rest
+                # of the mutants one Error at a time (the brief's whole point of having a cap).
+                if ($_.CategoryInfo.Category -eq [System.Management.Automation.ErrorCategory]::LimitsExceeded) {
+                    $enriched = [System.Management.Automation.ErrorRecord]::new($_.Exception, $script:MutEnvironmentRecoveryCapErrorId, [System.Management.Automation.ErrorCategory]::LimitsExceeded, $rows)
+                    throw $enriched
+                }
+
+                # FIX (503 bisect): wait for the environment and retry this SAME mutant, rather
+                # than recording Error and moving on in seconds while the outage lasts. The wait's
+                # own give-up (deadline passed) is LimitsExceeded and aborts the run, with the rows
+                # so far attached, exactly like the recovery cap above.
+                if ($outageRetries -lt $script:MaxOutageRetriesPerMutant) {
+                    $outageRetries++
+                    try {
+                        $Env = Wait-MutOutageRecovery -Env $Env -Config $Config -MutantId $mutant.id -RunNo $RunNo -Reason $caughtMessage
+                    }
+                    catch {
+                        if ($_.CategoryInfo.Category -eq [System.Management.Automation.ErrorCategory]::LimitsExceeded) {
+                            throw [System.Management.Automation.ErrorRecord]::new($_.Exception, 'MutEnvironmentOutageTimeout', [System.Management.Automation.ErrorCategory]::LimitsExceeded, $rows)
+                        }
+                        throw
+                    }
+                    $retryMutant = $true
+                    continue
+                }
+
+                $errorRow = [pscustomobject]@{
+                    Id            = $mutant.id
+                    Status        = 'Error'
                     KillingTest   = $null
                     DurationMs    = $null
                     CoveringTests = @($covering)
                 }
-                Write-MutResultsJsonLine -RunDir $RunDir -Row $row
-                $rows += $row
-                continue
+                $errorRow | Add-Member -NotePropertyName 'Error' -NotePropertyValue $caughtMessage
+
+                Write-MutResultsJsonLine -RunDir $RunDir -Row $errorRow
+                $rows += $errorRow
             }
+        } while ($retryMutant)
 
-            Invoke-MutApi -Env $Env -Method 'PATCH' -Path 'mutationSetup(0)' -Body @{ activeMutantId = $mutant.id; currentRunNo = $RunNo } | Out-Null
-
-            $budget = Get-MutTimeoutBudget -Config $Config -CoveringTests $covering -Baseline $Baseline
-            # FIX (T27 fix round 1, finding 2 -- task review): the timeout handed to the backend
-            # (and, inside it, to its own +60s process margin) must be strictly less
-            # than $budget -- otherwise a genuine hang would never be killed by the backend's own
-            # client-side timeout before Invoke-MutTestsWithBudget's own wall-clock budget already
-            # gave up waiting on it. max(30, budget - 30) leaves the backend's own timeout plus its
-            # +60s margin firing at budget + 30 at the latest, comfortably inside
-            # Invoke-MutTestsWithBudget's own (default 90s) post-budget grace period.
-            $innerTimeoutSec = [math]::Max(30, $budget - 30)
-            $targets = @($covering | ForEach-Object { [pscustomobject]@{ CodeunitId = $_; Function = $null } })
-
-            # FIX (T27, live run, 2026-09-09 -- see docs/issues.md): observed live, twice, that the
-            # very next test run after Reset-MutEnvironment (§6.5.6 step 3, immediately below) came
-            # back as a clean completion (no timeout, no error) reporting ZERO tests actually
-            # executed (Passed = 0, Failed = 0) rather than genuinely running the covering
-            # codeunit's suite -- silently recorded as a false Survived. A fixed post-reset settle
-            # delay (Start-MutPostResetSettle, below) alone was not sufficient to prevent this on
-            # its own (confirmed live: the same empty-result pattern recurred even after it). Instead
-            # of guessing at a longer delay, this retries the SAME test invocation once when it
-            # completes with zero total tests -- directly targeting the observed symptom (an
-            # apparently-transient "not yet truly ready" response) rather than a specific wait
-            # duration this environment has not confirmed is ever long enough.
-            $attempt = 0
-            $maxAttempts = 2
-            do {
-                $attempt++
-                $outcome = Invoke-MutTestsWithBudget -Env $Env -Targets $targets -TimeoutSec $innerTimeoutSec -BudgetSec $budget -BackendModulePath $BackendModulePath
-                $isEmptyResult = (-not $outcome.TimedOut) -and (-not $outcome.ErrorMessage) -and ($null -ne $outcome.Result) -and
-                    (([int]$outcome.Result.Passed + [int]$outcome.Result.Failed) -eq 0)
-                # FIX (F3b IMPORTANT 1): a dead environment does not only present as an empty
-                # result -- the reviewer reproduced it presenting as a job ErrorMessage too (10/10
-                # mutants, zero environment checks, garbage score, no abort). Treat both the same
-                # way before consuming the retry; TimedOut is deliberately excluded here -- it has
-                # its own handling (Reset-MutEnvironment) below and is never retried in this loop.
-                $isRecoverableOutcome = $isEmptyResult -or ((-not $outcome.TimedOut) -and [bool]$outcome.ErrorMessage)
-
-                if ($isRecoverableOutcome -and $attempt -lt $maxAttempts) {
-                    # FIX (F3b BLOCKER 1): deactivate before Confirm-MutEnvironmentServing's real
-                    # probe test job runs -- Mutation Core records a Killed row for ANY failing
-                    # test while a mutant is active, without checking it covers that mutant, so
-                    # probing with THIS mutant still active could misattribute a false kill to it.
-                    # Re-activate before the retry (also closes V9: the mutant was previously left
-                    # deactivated across the retry, observed PATCH sequence `42, 0`).
-                    Invoke-MutApi -Env $Env -Method 'PATCH' -Path 'mutationSetup(0)' -Body @{ activeMutantId = 0; currentRunNo = $RunNo } | Out-Null
-                    # This can throw (recovery cap exceeded, or the probe itself failing this
-                    # attempt); either way that propagates out of this try, through this mutant's
-                    # own catch below, and is handled there. On success, keep using the (possibly
-                    # refreshed) handle it returns for the rest of this run (F3b Minors).
-                    $Env = Confirm-MutEnvironmentServing -Env $Env -Config $Config -MutantId $mutant.id
-                    Invoke-MutApi -Env $Env -Method 'PATCH' -Path 'mutationSetup(0)' -Body @{ activeMutantId = $mutant.id; currentRunNo = $RunNo } | Out-Null
-                }
-            } while ($isRecoverableOutcome -and $attempt -lt $maxAttempts)
-
-            $status = $null
-            $killingTest = $null
-            $durationMs = $null
-            $errorMessage = $null
-
-            if ($outcome.TimedOut) {
-                # FIX (F3b BLOCKER 1): same hazard as above -- Reset-MutEnvironment's own probe
-                # (when given -Config) runs a real test job, and this mutant is still active.
-                Invoke-MutApi -Env $Env -Method 'PATCH' -Path 'mutationSetup(0)' -Body @{ activeMutantId = 0; currentRunNo = $RunNo } | Out-Null
-                # FIX (F3b IMPORTANT 1): count a timeout-triggered reset against the same
-                # recovery cap -- the reviewer reproduced 5/5 Timeouts with zero environment
-                # checks and each one resetting uncounted; a dead environment must not be allowed
-                # to reset forever just because it happens to present as a timeout.
-                Request-MutEnvironmentRecoveryBudget -MutantId $mutant.id -Context 'a test run timed out'
-                Reset-MutEnvironment -Env $Env -Config $Config | Out-Null
-                Start-MutPostResetSettle
-                $status = 'Timeout'
-            }
-            elseif ($outcome.ErrorMessage) {
-                $status = 'Error'
-                $errorMessage = $outcome.ErrorMessage
-            }
-            else {
-                $result = $outcome.Result
-                $durationMs = $result.DurationMs
-
-                if (@($result.Tests).Count -eq 0) {
-                    # FIX (T27 fix round 1, finding 4b -- spike T09): a test job issued too soon
-                    # after a DemoPortal environment (re)start can complete cleanly (no timeout, no
-                    # error) with ZERO tests actually discovered/run for a codeunit that DOES have
-                    # covering tests -- indistinguishable from a genuinely passing suite by
-                    # Passed/Failed alone, and would otherwise be recorded as a false Survived (the
-                    # mutant was never actually exercised). The retry above already tries once more
-                    # when Passed + Failed = 0; if the result is STILL empty here, this is recorded
-                    # as Error (never Survived) so it is visible and excluded from the score rather
-                    # than silently counted as a kill-suppressing pass.
-                    $status = 'Error'
-                    $errorMessage = 'no tests discovered'
-                }
-                elseif ($result.Failed -gt 0) {
-                    $status = 'Killed'
-
-                    $firstFail = @($result.Tests) | Where-Object { $_.Result -eq 'Fail' } | Select-Object -First 1
-                    if ($firstFail) {
-                        $killingTest = '{0}:{1}' -f $firstFail.Codeunit, $firstFail.Function
-                    }
-
-                    $filterPath = 'mutantResults?$filter=runNo eq {0} and mutantId eq {1}' -f $RunNo, $mutant.id
-                    $existing = Invoke-MutApi -Env $Env -Method 'GET' -Path $filterPath
-                    # ($existing -and ...) short-circuits: a bare $null response (e.g. a test
-                    # double that doesn't shape its GET responses like the real API) must not
-                    # throw a PropertyNotFoundException under Set-StrictMode when read as
-                    # $existing.value.
-                    $hasExistingKilledRow = ($existing) -and (@($existing.value).Count -gt 0)
-
-                    if (-not $hasExistingKilledRow) {
-                        Invoke-MutApi -Env $Env -Method 'POST' -Path 'mutantResults' -Body @{
-                            runNo       = $RunNo
-                            mutantId    = $mutant.id
-                            status      = 'Killed'
-                            killingTest = $killingTest
-                            durationMs  = $durationMs
-                        } | Out-Null
-                    }
-                }
-                else {
-                    $status = 'Survived'
-                    # FIX (M3): now mirrors the Killed branch above -- GET first, only POST when no
-                    # row exists yet -- instead of always POSTing unconditionally. A run resumed at
-                    # this step for the same RunNo would previously reach here again (a step earlier
-                    # in the pipeline was re-run after a crash, or, live, this loop was re-run to pick
-                    # up a fix) and re-process a mutant that already has a Survived row from the
-                    # earlier attempt; the upfront resume check (Get-MutRecordedResultsForRun, top of
-                    # this function) now normally skips such a mutant entirely, but this GET-before-
-                    # POST check is kept as its own, independent guard (e.g. the jsonl fallback missed
-                    # a row the API already has). The try/catch around the POST is ALSO kept as a
-                    # last-resort safety net for a genuine race between the GET and the POST -- a
-                    # duplicate-key failure is swallowed as an idempotent no-op, while any other POST
-                    # failure still propagates (caught by this mutant's own try/catch wrapper, below).
-                    $survivedFilterPath = 'mutantResults?$filter=runNo eq {0} and mutantId eq {1}' -f $RunNo, $mutant.id
-                    $existingSurvived = Invoke-MutApi -Env $Env -Method 'GET' -Path $survivedFilterPath
-                    # See the Killed branch's identical null-safety note above.
-                    $hasExistingSurvivedRow = ($existingSurvived) -and (@($existingSurvived.value).Count -gt 0)
-
-                    if (-not $hasExistingSurvivedRow) {
-                        try {
-                            Invoke-MutApi -Env $Env -Method 'POST' -Path 'mutantResults' -Body @{
-                                runNo      = $RunNo
-                                mutantId   = $mutant.id
-                                status     = 'Survived'
-                                durationMs = $durationMs
-                            } | Out-Null
-                        }
-                        catch {
-                            $duplicateKeyText = ''
-                            if ($_.ErrorDetails -and $_.ErrorDetails.Message) {
-                                $duplicateKeyText = $_.ErrorDetails.Message
-                            }
-                            if (-not $duplicateKeyText) {
-                                $duplicateKeyText = $_.Exception.Message
-                            }
-                            if ($duplicateKeyText -notmatch 'EntityWithSameKeyExists') {
-                                throw
-                            }
-                        }
-                    }
-                }
-            }
-
-            Invoke-MutApi -Env $Env -Method 'PATCH' -Path 'mutationSetup(0)' -Body @{ activeMutantId = 0; currentRunNo = $RunNo } | Out-Null
-
-            $row = [pscustomobject]@{
-                Id            = $mutant.id
-                Status        = $status
-                KillingTest   = $killingTest
-                DurationMs    = $durationMs
-                CoveringTests = @($covering)
-            }
-            if ($status -eq 'Error') {
-                $row | Add-Member -NotePropertyName 'Error' -NotePropertyValue $errorMessage
-            }
-
-            Write-MutResultsJsonLine -RunDir $RunDir -Row $row
-            $rows += $row
+        # FIX (503 bisect): the circuit breaker. Any non-Error row resets the count. Run 9
+        # recorded 46 Error rows in a row and still published a score with `aborted: false`;
+        # now the run aborts with the rows so far attached (TargetObject), the same shape as the
+        # recovery cap, so the pipeline exports a partial result and tells the operator.
+        if (@($rows).Count -gt 0 -and $rows[-1].Status -eq 'Error') {
+            $consecutiveErrors++
         }
-        catch {
-            # FIX (M3): this mutant's own body threw something unhandled (e.g.
-            # Invoke-MutTestsWithBudget itself throwing, rather than returning an ErrorMessage, or
-            # a PATCH/covering-test failure) -- never let it abort the whole run. Best-effort
-            # deactivate, record Status 'Error' with the exception message, and move on.
-            $caughtMessage = $_.Exception.Message
-
-            # FIX (F3b Minors): deactivate (best-effort) BEFORE deciding whether to re-throw --
-            # previously the recovery-cap-exceeded re-throw (below) happened first, leaving the
-            # last mutant active in the environment on an aborted run.
-            try {
-                Invoke-MutApi -Env $Env -Method 'PATCH' -Path 'mutationSetup(0)' -Body @{ activeMutantId = 0; currentRunNo = $RunNo } | Out-Null
-            }
-            catch {
-                # Deactivation itself failing must not mask the original error or abort the run.
-            }
-
-            # FIX (F3, run 8 -- finding I6; F3b Minors: matched on a distinct ErrorCategory, not
-            # a string-matched marker prefix): the one exception this catch must NOT swallow into
-            # a per-mutant Error -- Request-MutEnvironmentRecoveryBudget's recovery-cap-exceeded
-            # throw. Re-thrown, with the rows completed so far attached as TargetObject (F3b
-            # IMPORTANT 3: so the pipeline can still export a partial result and tell the operator
-            # how much finished), so it aborts the whole run rather than limping through the rest
-            # of the mutants one Error at a time (the brief's whole point of having a cap).
-            if ($_.CategoryInfo.Category -eq [System.Management.Automation.ErrorCategory]::LimitsExceeded) {
-                $enriched = [System.Management.Automation.ErrorRecord]::new($_.Exception, $script:MutEnvironmentRecoveryCapErrorId, [System.Management.Automation.ErrorCategory]::LimitsExceeded, $rows)
-                throw $enriched
-            }
-
-            $errorRow = [pscustomobject]@{
-                Id            = $mutant.id
-                Status        = 'Error'
-                KillingTest   = $null
-                DurationMs    = $null
-                CoveringTests = @($covering)
-            }
-            $errorRow | Add-Member -NotePropertyName 'Error' -NotePropertyValue $caughtMessage
-
-            Write-MutResultsJsonLine -RunDir $RunDir -Row $errorRow
-            $rows += $errorRow
+        else {
+            $consecutiveErrors = 0
+        }
+        if ($consecutiveErrors -ge $script:MaxConsecutiveErrors) {
+            $message = "Invoke-MutMutantLoop: $consecutiveErrors consecutive mutants ended in Error (last: mutant $($mutant.id): $($rows[-1].Error)). A run whose mutants keep failing to produce real results is not producing a trustworthy score; aborting with a partial export rather than continuing."
+            $exception = [System.Exception]::new($message)
+            throw [System.Management.Automation.ErrorRecord]::new($exception, 'MutConsecutiveErrorsExceeded', [System.Management.Automation.ErrorCategory]::LimitsExceeded, $rows)
         }
     }
 
     $errorCount = @($rows | Where-Object { $_.Status -eq 'Error' }).Count
     if ($errorCount -gt 0) {
         Write-Warning "Invoke-MutMutantLoop: $errorCount of $(@($orderedMutants).Count) mutant(s) ended in Error"
+    }
+    if ($script:MutOutageWaitCount -gt 0) {
+        # FIX (503 bisect): visibility into how many environment outages this run waited out.
+        Write-Warning "Invoke-MutMutantLoop: waited out $($script:MutOutageWaitCount) environment outage(s) this run"
     }
     if ($script:MutEnvironmentRecoveryCount -gt 0) {
         # FIX (F3, run 8 -- finding I6): visibility into how many times this run had to bring

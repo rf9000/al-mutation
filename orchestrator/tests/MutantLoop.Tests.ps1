@@ -117,6 +117,15 @@ Describe 'Invoke-MutMutantLoop' {
             $global:MutCallLog += 'SETTLE'
         }
 
+        # 503 bisect: a thrown call now waits for the environment (Wait-MutOutageRecovery) and
+        # retries the same mutant. Mocked here as an instant "serving again" so these tests never
+        # sleep; its own behaviour is covered by the 'Wait-MutOutageRecovery' Describe below.
+        Mock -ModuleName MutantLoop Wait-MutOutageRecovery {
+            $global:MutCallLog += 'OUTAGE-WAIT'
+            return $Env
+        }
+        Mock -ModuleName MutantLoop Start-Sleep { }
+
         $script:Config = New-MutTestConfig -PerTestFactor 1 -MinSeconds 5 -JobOverheadSeconds 0
         $script:Baseline = [pscustomobject]@{
             Tests               = @()
@@ -798,12 +807,16 @@ Describe 'Invoke-MutMutantLoop' {
         $caught | Should -Not -BeNullOrEmpty
         $caught.CategoryInfo.Category | Should -Be ([System.Management.Automation.ErrorCategory]::LimitsExceeded)
 
-        # Mutants 91-93 each hit the probe failure (recorded as an ordinary per-mutant Error,
-        # each spending one recovery); mutant 94's identical failure finds the cap already spent
-        # and aborts the run instead.
+        # 503 bisect: a probe failure throws, so it now takes the outage-wait-and-retry path.
+        # Mutant 91's first attempt and both outage retries each hit the probe failure and each
+        # spend one recovery (3 = the cap), so 91 is recorded as Error; mutant 92's identical
+        # failure finds the cap already spent and aborts the run. Still capped, still aborting --
+        # sooner than before the outage retry existed (3 rows then), which is the right direction
+        # for an environment whose probe never passes.
         $partialRows = @($caught.TargetObject)
-        $partialRows.Count | Should -Be 3
-        ($partialRows | ForEach-Object { $_.Status }) | Should -Be @('Error', 'Error', 'Error')
+        $partialRows.Count | Should -Be 1
+        $partialRows[0].Id | Should -Be 91
+        $partialRows[0].Status | Should -Be 'Error'
     }
 
     It 'F3 (I6, run 8): caps environment recoveries per run -- after the cap is hit, the run throws rather than continuing to error out mutants one at a time' {
@@ -1034,10 +1047,13 @@ Describe 'Invoke-MutMutantLoop' {
     }
 
     It 'records Status Error and continues the loop when a mutant''s execution throws an unhandled exception (M3)' {
+        # 503 bisect: a throw now waits for the environment and retries the same mutant up to
+        # 2 times, so the failure must persist across all 3 attempts (calls 1-3) for mutant 70
+        # to end in Error. Call 4 is mutant 71.
         $script:MutThrowCallCount = 0
         Mock -ModuleName MutantLoop Invoke-MutTestsWithBudget {
             $script:MutThrowCallCount++
-            if ($script:MutThrowCallCount -eq 1) {
+            if ($script:MutThrowCallCount -le 3) {
                 throw 'unexpected runspace failure'
             }
             [pscustomobject]@{
@@ -1062,10 +1078,40 @@ Describe 'Invoke-MutMutantLoop' {
         $results[0].Error | Should -BeLike '*unexpected runspace failure*'
         $results[1].Status | Should -Be 'Survived'
 
-        # activeMutantId must still be reset to 0 even for the mutant that threw.
+        # activeMutantId must still be reset to 0 after every attempt of the mutant that threw
+        # (3) and once for mutant 71 (1).
         Should -Invoke -ModuleName MutantLoop Invoke-MutApi -ParameterFilter {
             $Method -eq 'PATCH' -and $Body.activeMutantId -eq 0 -and $Body.currentRunNo -eq 22
-        } -Times 2
+        } -Times 4 -Exactly
+        @($global:MutCallLog | Where-Object { $_ -eq 'OUTAGE-WAIT' }).Count | Should -Be 2
+    }
+
+    It 'retries the SAME mutant after an outage wait when its execution throws once, recording its real status (503 bisect; M3''s one-off throw used to become Error)' {
+        $script:MutThrowOnceCount = 0
+        Mock -ModuleName MutantLoop Invoke-MutTestsWithBudget {
+            $script:MutThrowOnceCount++
+            if ($script:MutThrowOnceCount -eq 1) {
+                throw 'unexpected runspace failure'
+            }
+            [pscustomobject]@{
+                TimedOut     = $false
+                ErrorMessage = $null
+                Result       = [pscustomobject]@{
+                    Passed = 1; Failed = 0; DurationMs = 20
+                    Tests  = @([pscustomobject]@{ Codeunit = 'C'; Function = 'F'; Result = 'Pass'; DurationMs = 20; Error = $null })
+                }
+            }
+        }
+
+        $mutant = [pscustomobject]@{ id = 72; objectId = 50000; line = 4 }
+
+        $results = Invoke-MutMutantLoop -Config $script:Config -Env $script:EnvHandle -Mutants @($mutant) `
+            -Baseline $script:Baseline -Coverage $script:Coverage -References $script:References `
+            -RunNo 23 -RunDir $script:RunDir -BackendModulePath 'unused.psm1' -WarningAction SilentlyContinue
+
+        @($results).Count | Should -Be 1
+        $results[0].Status | Should -Be 'Survived'
+        @($global:MutCallLog | Where-Object { $_ -eq 'OUTAGE-WAIT' }).Count | Should -Be 1
     }
 }
 
@@ -1214,5 +1260,262 @@ Export-ModuleMember -Function Invoke-MutTests
         @(Get-Runspace | Where-Object { $_.RunspaceStateInfo.State -eq 'Opened' -and $_.Id -ne 1 }) | Should -BeNullOrEmpty
 
         Remove-Variable -Name MutForcedKillCalled -Scope Global -ErrorAction SilentlyContinue
+    }
+}
+
+Describe 'Invoke-MutMutantLoop: environment outages and the consecutive-Error circuit breaker (503 bisect, 2026-09-30)' {
+    <#
+        .SYNOPSIS
+        Runs 8 and 9 each lost the last 46 of 265 mutants. The 503 bisect showed the cause is a
+        transient environment outage after ~45-60 min of continuous test jobs, with no mutant
+        active. In run 9, 37 of the 46 were `(503) Server Unavailable` thrown by the PATCH that
+        activates each mutant -- a call that sits BEFORE the empty-result retry/recovery, so it
+        fell straight into the per-mutant catch, was recorded as Error in seconds, and the loop
+        burned through every remaining mutant inside the outage window. Recovery slots spent: 0.
+    #>
+    BeforeEach {
+        $global:MutOutageLog = New-Object System.Collections.Generic.List[string]
+        $script:MutCurrentMutant = 0
+        $script:MutActivateFailures = @{}
+
+        Mock -ModuleName MutantLoop Reset-MutEnvironment { [pscustomobject]@{ DurationSec = 1 } }
+        Mock -ModuleName MutantLoop Start-MutPostResetSettle { }
+        Mock -ModuleName MutantLoop Start-Sleep { }
+        Mock -ModuleName MutantLoop Get-MutEnvironment { [pscustomobject]@{ Id = 'E1'; Name = 'mut-spike-01'; Status = 'Running' } }
+        Mock -ModuleName MutantLoop Start-MutEnvironment { [pscustomobject]@{ Id = 'E1'; Name = 'mut-spike-01'; Status = 'Running'; StartDurationSec = 0 } }
+        Mock -ModuleName MutantLoop Wait-MutOutageRecovery {
+            $global:MutOutageLog.Add("WAIT:$MutantId")
+            return $Env
+        }
+
+        # Activating mutant N throws a 503 while $script:MutActivateFailures[N] is non-zero
+        # (decremented per throw; -1 means forever). Every other call behaves like the real API.
+        Mock -ModuleName MutantLoop Invoke-MutApi {
+            param($Env, $Method, $Path, $Body)
+            if ($Method -eq 'PATCH' -and $Path -eq 'mutationSetup(0)') {
+                $id = [int]$Body.activeMutantId
+                if ($id -ne 0) {
+                    $script:MutCurrentMutant = $id
+                    if ($script:MutActivateFailures.ContainsKey($id) -and $script:MutActivateFailures[$id] -ne 0) {
+                        if ($script:MutActivateFailures[$id] -gt 0) { $script:MutActivateFailures[$id]-- }
+                        throw 'Fjernserveren returnerede en fejl: (503) Serveren ikke tilgaengelig..'
+                    }
+                }
+            }
+            if ($Method -eq 'GET') { return [pscustomobject]@{ value = @() } }
+            return $null
+        }
+
+        Mock -ModuleName MutantLoop Invoke-MutTestsWithBudget {
+            [pscustomobject]@{
+                TimedOut = $false; ErrorMessage = $null
+                Result   = [pscustomobject]@{
+                    Passed = 1; Failed = 0; DurationMs = 10
+                    Tests  = @([pscustomobject]@{ Codeunit = 'C'; Function = 'F'; Result = 'Pass'; DurationMs = 10; Error = $null })
+                }
+            }
+        }
+
+        $script:Config = New-MutTestConfig -PerTestFactor 1 -MinSeconds 5 -JobOverheadSeconds 0
+        $script:Baseline = [pscustomobject]@{ Tests = @(); DurationsByCodeunit = @{ '95155' = 1000 } }
+        $script:References = @{ 50000 = @(95155) }
+        $script:Coverage = @{ byTestCodeunit = @{} }
+        $script:RunDir = "$TestDrive/run-$([guid]::NewGuid().ToString('N'))"
+        New-Item -ItemType Directory -Path $script:RunDir -Force | Out-Null
+    }
+
+    AfterEach {
+        Remove-Variable -Name MutOutageLog -Scope Global -ErrorAction SilentlyContinue
+    }
+
+    It 'waits for the environment and retries the SAME mutant when an API call throws (run 9: 503 on the activating PATCH), recording its real status instead of Error' {
+        $script:MutActivateFailures[30] = 1
+        $mutant = [pscustomobject]@{ id = 30; objectId = 50000; line = 4 }
+
+        $results = Invoke-MutMutantLoop -Config $script:Config -Env $script:EnvHandle -Mutants @($mutant) `
+            -Baseline $script:Baseline -Coverage $script:Coverage -References $script:References `
+            -RunNo 30 -RunDir $script:RunDir -BackendModulePath 'unused.psm1' -WarningAction SilentlyContinue
+
+        $results[0].Status | Should -Be 'Survived'
+        ($global:MutOutageLog -join ',') | Should -Be 'WAIT:30'
+        Should -Invoke -ModuleName MutantLoop Invoke-MutTestsWithBudget -Times 1 -Exactly
+    }
+
+    It 'records Error only after 2 outage waits for the same mutant, then moves on to the next mutant' {
+        $script:MutActivateFailures[31] = -1
+        $mutantA = [pscustomobject]@{ id = 31; objectId = 50000; line = 4 }
+        $mutantB = [pscustomobject]@{ id = 32; objectId = 50000; line = 4 }
+
+        $results = Invoke-MutMutantLoop -Config $script:Config -Env $script:EnvHandle -Mutants @($mutantA, $mutantB) `
+            -Baseline $script:Baseline -Coverage $script:Coverage -References $script:References `
+            -RunNo 31 -RunDir $script:RunDir -BackendModulePath 'unused.psm1' -WarningAction SilentlyContinue
+
+        $results.Count | Should -Be 2
+        $results[0].Status | Should -Be 'Error'
+        $results[0].Error | Should -BeLike '*(503)*'
+        $results[1].Status | Should -Be 'Survived'
+        ($global:MutOutageLog -join ',') | Should -Be 'WAIT:31,WAIT:31'
+        # Mutant 31 never reached a test run; mutant 32 ran exactly once.
+        Should -Invoke -ModuleName MutantLoop Invoke-MutTestsWithBudget -Times 1 -Exactly
+        # The retried mutant is written to results.jsonl once, not once per attempt.
+        @(Get-Content -Path (Join-Path $script:RunDir 'results.jsonl')).Count | Should -Be 2
+    }
+
+    It 'aborts the run with the completed rows attached when the outage wait gives up (environment never serves again)' {
+        $script:MutActivateFailures[41] = -1
+        Mock -ModuleName MutantLoop Wait-MutOutageRecovery {
+            $exception = [System.Exception]::new('Invoke-MutMutantLoop: mutant 41 -- the environment did not return to serving within 900 s')
+            throw [System.Management.Automation.ErrorRecord]::new($exception, 'MutEnvironmentOutageTimeout', [System.Management.Automation.ErrorCategory]::LimitsExceeded, $null)
+        }
+        $mutants = @(
+            [pscustomobject]@{ id = 40; objectId = 50000; line = 4 }
+            [pscustomobject]@{ id = 41; objectId = 50000; line = 4 }
+            [pscustomobject]@{ id = 42; objectId = 50000; line = 4 }
+        )
+
+        $caught = $null
+        try {
+            Invoke-MutMutantLoop -Config $script:Config -Env $script:EnvHandle -Mutants $mutants `
+                -Baseline $script:Baseline -Coverage $script:Coverage -References $script:References `
+                -RunNo 40 -RunDir $script:RunDir -BackendModulePath 'unused.psm1' -WarningAction SilentlyContinue | Out-Null
+        }
+        catch {
+            $caught = $_
+        }
+
+        $caught | Should -Not -BeNullOrEmpty
+        $caught.CategoryInfo.Category | Should -Be ([System.Management.Automation.ErrorCategory]::LimitsExceeded)
+        $partialRows = @($caught.TargetObject)
+        $partialRows.Count | Should -Be 1
+        $partialRows[0].Id | Should -Be 40
+        # Mutant 42 was never attempted.
+        Should -Invoke -ModuleName MutantLoop Invoke-MutTestsWithBudget -Times 1 -Exactly
+    }
+
+    It 'circuit breaker: aborts after 5 consecutive Error results with those rows attached, and never attempts the 6th mutant (run 9 published a score over 219 of 265 instead)' {
+        Mock -ModuleName MutantLoop Invoke-MutTestsWithBudget {
+            [pscustomobject]@{ TimedOut = $false; ErrorMessage = 'job failed'; Result = $null }
+        }
+        $mutants = @(1..6 | ForEach-Object { [pscustomobject]@{ id = 50 + $_; objectId = 50000; line = 4 } })
+
+        $caught = $null
+        try {
+            Invoke-MutMutantLoop -Config $script:Config -Env $script:EnvHandle -Mutants $mutants `
+                -Baseline $script:Baseline -Coverage $script:Coverage -References $script:References `
+                -RunNo 50 -RunDir $script:RunDir -BackendModulePath 'unused.psm1' -WarningAction SilentlyContinue | Out-Null
+        }
+        catch {
+            $caught = $_
+        }
+
+        $caught | Should -Not -BeNullOrEmpty
+        $caught.CategoryInfo.Category | Should -Be ([System.Management.Automation.ErrorCategory]::LimitsExceeded)
+        $caught.Exception.Message | Should -BeLike '*5 consecutive*'
+        $partialRows = @($caught.TargetObject)
+        $partialRows.Count | Should -Be 5
+        ($partialRows | ForEach-Object { $_.Status }) | Should -Be @('Error', 'Error', 'Error', 'Error', 'Error')
+        # 5 mutants x 2 attempts each (the existing empty/error retry); mutant 56 never ran.
+        Should -Invoke -ModuleName MutantLoop Invoke-MutTestsWithBudget -Times 10 -Exactly
+    }
+
+    It 'circuit breaker: any non-Error result resets the count, so 4 errors, a survivor, then 4 errors does not abort' {
+        Mock -ModuleName MutantLoop Invoke-MutTestsWithBudget {
+            if ($script:MutCurrentMutant -eq 65) {
+                return [pscustomobject]@{
+                    TimedOut = $false; ErrorMessage = $null
+                    Result   = [pscustomobject]@{
+                        Passed = 1; Failed = 0; DurationMs = 10
+                        Tests  = @([pscustomobject]@{ Codeunit = 'C'; Function = 'F'; Result = 'Pass'; DurationMs = 10; Error = $null })
+                    }
+                }
+            }
+            [pscustomobject]@{ TimedOut = $false; ErrorMessage = 'job failed'; Result = $null }
+        }
+        $mutants = @(1..9 | ForEach-Object { [pscustomobject]@{ id = 60 + $_; objectId = 50000; line = 4 } })
+
+        $results = Invoke-MutMutantLoop -Config $script:Config -Env $script:EnvHandle -Mutants $mutants `
+            -Baseline $script:Baseline -Coverage $script:Coverage -References $script:References `
+            -RunNo 60 -RunDir $script:RunDir -BackendModulePath 'unused.psm1' -WarningAction SilentlyContinue
+
+        $results.Count | Should -Be 9
+        @($results | Where-Object { $_.Status -eq 'Error' }).Count | Should -Be 8
+        ($results | Where-Object { $_.Id -eq 65 }).Status | Should -Be 'Survived'
+    }
+}
+
+Describe 'Wait-MutOutageRecovery' {
+    BeforeEach {
+        $global:MutWaitLog = New-Object System.Collections.Generic.List[string]
+        Mock -ModuleName MutantLoop Start-Sleep { $global:MutWaitLog.Add('SLEEP') }
+        Mock -ModuleName MutantLoop Invoke-MutApi {
+            param($Env, $Method, $Path, $Body)
+            $global:MutWaitLog.Add("PATCH:$($Body.activeMutantId)")
+            return $null
+        }
+    }
+
+    AfterEach {
+        InModuleScope MutantLoop { $script:OutageWaitDeadlineSec = 900 }
+        Remove-Variable -Name MutWaitLog -Scope Global -ErrorAction SilentlyContinue
+    }
+
+    It 'deactivates before every readiness check, polls until Start-MutEnvironment confirms serving, and returns that handle' {
+        $global:MutWaitStartCalls = 0
+        Mock -ModuleName MutantLoop Start-MutEnvironment {
+            $global:MutWaitStartCalls++
+            $global:MutWaitLog.Add('PROBE')
+            if ($global:MutWaitStartCalls -lt 3) { throw 'test-readiness probe never reported summary.total -gt 0' }
+            [pscustomobject]@{ Id = 'E2'; Name = 'mut-spike-01'; Status = 'Running' }
+        }
+
+        $handle = InModuleScope MutantLoop -Parameters @{ E = $script:EnvHandle } {
+            param($E)
+            Wait-MutOutageRecovery -Env $E -Config ([pscustomobject]@{}) -MutantId 7 -RunNo 3 -Reason '(503)' -WarningAction SilentlyContinue
+        }
+
+        $handle.Id | Should -Be 'E2'
+        ($global:MutWaitLog -join ',') | Should -Be 'PATCH:0,PROBE,SLEEP,PATCH:0,PROBE,SLEEP,PATCH:0,PROBE'
+    }
+
+    It 'never runs the readiness probe while deactivation is failing -- a probe job with the mutant still active could record a false kill' {
+        Mock -ModuleName MutantLoop Invoke-MutApi { throw '(503) Server Unavailable' }
+        Mock -ModuleName MutantLoop Start-MutEnvironment { [pscustomobject]@{ Id = 'E1'; Status = 'Running' } }
+        InModuleScope MutantLoop { $script:OutageWaitDeadlineSec = 0 }
+
+        $caught = $null
+        try {
+            InModuleScope MutantLoop -Parameters @{ E = $script:EnvHandle } {
+                param($E)
+                Wait-MutOutageRecovery -Env $E -Config ([pscustomobject]@{}) -MutantId 7 -RunNo 3 -Reason '(503)' -WarningAction SilentlyContinue
+            }
+        }
+        catch {
+            $caught = $_
+        }
+
+        $caught | Should -Not -BeNullOrEmpty
+        $caught.CategoryInfo.Category | Should -Be ([System.Management.Automation.ErrorCategory]::LimitsExceeded)
+        Should -Invoke -ModuleName MutantLoop Start-MutEnvironment -Times 0 -Exactly
+    }
+
+    It 'throws LimitsExceeded, naming the deadline and the last readiness error, when the environment never serves again' {
+        Mock -ModuleName MutantLoop Start-MutEnvironment { throw 'did not reach status Running within 600 seconds' }
+        InModuleScope MutantLoop { $script:OutageWaitDeadlineSec = 0 }
+
+        $caught = $null
+        try {
+            InModuleScope MutantLoop -Parameters @{ E = $script:EnvHandle } {
+                param($E)
+                Wait-MutOutageRecovery -Env $E -Config ([pscustomobject]@{}) -MutantId 7 -RunNo 3 -Reason '(503)' -WarningAction SilentlyContinue
+            }
+        }
+        catch {
+            $caught = $_
+        }
+
+        $caught | Should -Not -BeNullOrEmpty
+        $caught.CategoryInfo.Category | Should -Be ([System.Management.Automation.ErrorCategory]::LimitsExceeded)
+        $caught.Exception.Message | Should -BeLike '*did not return to serving*'
+        $caught.Exception.Message | Should -BeLike '*did not reach status Running*'
     }
 }

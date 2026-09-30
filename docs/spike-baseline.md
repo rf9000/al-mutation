@@ -642,11 +642,12 @@ and have been removed from this list. What remains genuinely open:
 - **The environment has a transient outage after ~45–60 min / ~230–255 test jobs of continuous use** (503
   bisect). It happens with no mutant active, so it is a backend property, not a mutation effect. It cost
   46 of 265 mutants in each of runs 8 and 9 because the loop fails fast through the outage. Which of time or
-  job count triggers it is not separated, and the DemoPortal-side cause is unknown. Needs a
-  wait-until-serving retry of the same mutant in the loop, then the circuit breaker below as the backstop.
+  job count triggers it is not separated, and the DemoPortal-side cause is unknown. The loop now
+  waits for the environment to serve again and retries the same mutant (fixed 2026-09-30); not yet run live.
 - **A run can lose unbounded mutants to `Error` without aborting (run 9).** The recovery cap is charged
   only when the environment looks unhealthy between jobs, so 46 in-job 503s spent zero slots and the run
-  published `aborted: false` with a score over 219 of 265. Needs a consecutive-`Error` circuit breaker.
+  published `aborted: false` with a score over 219 of 265. Fixed 2026-09-30: 5 consecutive `Error` rows
+  abort with a partial export; not yet run live.
 - **Resume is not bound to a mutant set** (`docs/issues.md`): resume matches on `(runNo, mutantId)` with
   nothing binding a run number to the mutant set that produced it, so a resumed run after a generator-flag
   change would adopt rows against different mutants; it needs a design decision (resume by `stableKey`, or
