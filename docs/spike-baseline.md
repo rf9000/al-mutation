@@ -312,6 +312,12 @@ codeunit, 11s, 0 errors, analyzers disabled — see the Fixture/Pilot sections a
 
 ## Throughput and sampling
 
+**Scope decision (2026-09-30, project owner): no full-AUT mutation run.** Runs are targeted — a chosen set of
+objects via `generator.onlyObjects`. The full-AUT projections below (~88 h, later ~46 h) are kept as
+measurement, not as a plan. At the measured ~11 s/mutant, a typical codeunit (~30 mutants) costs ~6 min, so a
+10–20 codeunit targeted run is roughly 1–2 h. The runner-nesting spike (see "U2 answered" above) showed the
+per-job overhead cannot be amortised on DemoPortal, which this decision makes moot rather than blocking.
+
 *Backend: DemoPortal, environment `mut-spike-02` (BC 29, Tier B) — derived from the Pilot run (run 6)
 numbers above. Assumption throughout: sequential test jobs, one environment (§4 guardrail 8 forbids
 concurrent jobs; nothing in this project has measured parallel environments).*
