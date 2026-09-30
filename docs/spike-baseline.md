@@ -486,11 +486,10 @@ all three test codeunits passed immediately (8/8, 16/16, 13/13). The loop cannot
 environment from a genuinely empty codeunit, because the test-readiness probe is gated on
 `status -ne 'Running'` and so never runs on the common path.
 
-**Correction (run 9, below):** the readiness defect was real and is fixed, but it was not the *cause* of these
-46 losses. Run 9 reproduced the identical per-codeunit breakdown with the readiness fix in place, and recorded
-reasons: the losses are confined to the two codeunits covered by test codeunits 95058 and 95121, and are
-dominated by `(503) Server Unavailable`. The environment stopping was a symptom of what those test jobs do with
-a mutant active, not a flaky sandbox.
+**Correction (run 9 and the 503 bisect, below):** the readiness defect was real and is fixed, but it was not
+the *cause* of these 46 losses. The cause is a transient environment outage after roughly 45–60 minutes of
+continuous test jobs, which happens with no mutant active at all. The losses land on the last two codeunits
+only because the loop always runs objects in the same order.
 
 Three fixes from the pre-merge review proved themselves here: `Error` mutants were excluded from the
 denominator (0.4201 over 219 valid mutants, not 92/265 = 0.347, which is what the old code would have
@@ -524,16 +523,47 @@ Run 9 records reasons, which run 8's code did not:
 | `no tests discovered` | 8 | 72918630 |
 | `Wait-MutEnvironmentStatus: ... did not reach status 'Running' within 600 seconds` (stuck in `Starting`) | 1 | 72918630 |
 
-**Finding: running test codeunits 95058 and 95121 with a mutant of their AUT object active takes the BC
-service down.** 95110 and 95155 never do, in either run. All four test codeunits pass standalone with no
-mutant active (run 8 post-mortem). So the trigger is the combination: a mutant, then its covering test. The
-likely mechanism is the standard mutation-testing hazard of a non-terminating or resource-hungry mutant —
-`COND → true` on a loop guard, or `DEL` of an `exit` inside a loop — though this is not yet confirmed.
-Once the service returns 503, subsequent mutants in the same contiguous block inherit the failure until the
-environment recovers, which fits both runs' errors arriving as contiguous blocks. Not yet diagnosed which
-mutant(s) trigger it; 71553757's 13 mutants are a cheap set to bisect one at a time.
+*First reading, superseded by the bisect below:* the errors looked object-specific (only 71553757 and
+72918630, covered by 95058 and 95121), suggesting a mutant that takes the service down. That reading was
+confounded by execution order. The loop runs objects in the same order every time (72918635, 72282417,
+72918630, 71553757), and in **both** runs the errors begin at exactly execution position 219 with no success
+after it.
 
-**The readiness fix did its job, and could not have fixed this.** Silent `no tests discovered` dropped from 46
+### 503 bisect (2026-09-30)
+
+`spikes/503-bisect/Invoke-503Bisect.ps1`, against `mut-spike-02` with run 9's schemata still installed. Every
+job logged to `out/503-bisect/jobs.jsonl`.
+
+**Phase 1: the 13 mutants of 71553757, one at a time, against 95058.** All 13 returned real results: 10 killed,
+3 survived (15036, 15039, 15043). No 503. On inspection they are benign (`DEL` of an `exit` that falls through
+to another `exit`, `COND` on a set membership; no loops, no recursion). So **71553757 scores 10/13 = 0.769**
+where runs 8 and 9 reported `null`.
+
+**Phase 2: endurance, no mutant active.** 95058 back to back with `activeMutantId = 0`. 246 consecutive jobs
+passed (8/8 each). Wall time stayed flat, with a median of 10.5 s over both the first 20 and the last 20 jobs,
+so nothing degraded gradually. **Job 247 (44 min in, ~58 min after the environment started, ~254th test job
+since start) returned an empty result after 122 s.** DemoPortal still reported `Running`. Three probe jobs at
+18:13 UTC, ~2–4 min later, all passed.
+
+**Finding: the environment has a transient outage after roughly 45–60 minutes / 230–255 test jobs of
+continuous use, independent of mutation.** Run 9's outage was longer (one mutant recorded the environment
+stuck in `Starting` for 600 s); the bisect's was ~2–4 min. The data does not yet separate "after N minutes"
+from "after N jobs": both are consistent with runs 8, 9 and the bisect. `env logs` shows one container boot
+with no timestamps, so it cannot confirm a container restart.
+
+**What the 503 is:** the bare, locale-translated .NET `WebException` text (`Fjernserveren returnerede en
+fejl: (503) Serveren ikke tilgængelig..`) from `Invoke-RestMethod` in `Invoke-MutApi`, not from
+`continia.exe`, whose failures always carry a `continia …` prefix. The first API call per mutant is `PATCH
+mutationSetup(0)` (`MutantLoop.psm1:753`), sent to `https://demoportaldev.continiaonline.com/<envId>/…`. A 503
+there means DemoPortal's front end has no live BC service behind it. The 8 `no tests discovered` are the same
+outage seen through `continia test run`.
+
+**Why one short outage cost every remaining mutant:** during an outage each mutant fails in seconds, so the
+loop burns through the rest of the run inside the outage window. The fix is in the loop, not the mutants:
+on an empty or 503 result, wait (bounded) until a probe job returns real results, then retry the *same*
+mutant rather than recording `Error` and moving on.
+
+**The readiness fix did its job, and could not have fixed this on its own.** Silent `no tests discovered` dropped from 46
 to 8; the remaining losses now carry an actionable reason instead of looking like empty codeunits.
 
 **Run 9 also exposed a new defect: 46 mutants were lost without spending a single recovery slot.** The export
@@ -609,11 +639,11 @@ and have been removed from this list. What remains genuinely open:
   the test app before a run would start. `Publish-MutBaseline` should detect this and unpublish-then-retry.
   At pilot scale it is an annoyance; at the 8-hour or 88-hour scale discussed above it means a long run can
   die at its first real step for a reason that has nothing to do with mutation testing.
-- **Some mutants take the BC service down (run 9).** Test codeunits 95058 and 95121, run with a mutant of
-  their AUT object active, produce `(503) Server Unavailable` and a stuck `Starting` environment; 46 of 265
-  mutants lost in each of runs 8 and 9. The triggering mutant(s) are not yet identified. If a comparable
-  share of the whole AUT behaves this way, a full run loses thousands of mutants. Needs a bisect, then a
-  per-mutant hard timeout and a quarantine list.
+- **The environment has a transient outage after ~45–60 min / ~230–255 test jobs of continuous use** (503
+  bisect). It happens with no mutant active, so it is a backend property, not a mutation effect. It cost
+  46 of 265 mutants in each of runs 8 and 9 because the loop fails fast through the outage. Which of time or
+  job count triggers it is not separated, and the DemoPortal-side cause is unknown. Needs a
+  wait-until-serving retry of the same mutant in the loop, then the circuit breaker below as the backstop.
 - **A run can lose unbounded mutants to `Error` without aborting (run 9).** The recovery cap is charged
   only when the environment looks unhealthy between jobs, so 46 in-job 503s spent zero slots and the run
   published `aborted: false` with a score over 219 of 265. Needs a consecutive-`Error` circuit breaker.
