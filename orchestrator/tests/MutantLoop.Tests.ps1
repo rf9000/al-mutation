@@ -532,7 +532,9 @@ Describe 'Invoke-MutMutantLoop' {
 
         # order: GET (M3 upfront resume-fetch) -> PATCH(id) -> TESTS -> PATCH(0, F3b: before the
         # reset's own probe) -> RESET -> SETTLE -> PATCH(0, the usual per-mutant deactivate)
-        $global:MutCallLog | Should -Be @('API:GET:mutantResults?$filter=runNo eq 7', 'API:PATCH:mutationSetup(0)', 'TESTS', 'API:PATCH:mutationSetup(0)', 'RESET', 'SETTLE', 'API:PATCH:mutationSetup(0)')
+        # run 11: the Timeout branch first lists sessions to stop the runaway one; with none
+        # visible (this mock lists nothing) it falls back to the reset -- still after deactivation.
+        $global:MutCallLog | Should -Be @('API:GET:mutantResults?$filter=runNo eq 7', 'API:PATCH:mutationSetup(0)', 'TESTS', 'API:PATCH:mutationSetup(0)', 'API:GET:sessions', 'RESET', 'SETTLE', 'API:PATCH:mutationSetup(0)')
 
         Should -Invoke -ModuleName MutantLoop Invoke-MutApi -ParameterFilter {
             $Method -eq 'PATCH' -and $Body.activeMutantId -eq 0
@@ -1527,29 +1529,68 @@ Describe 'Invoke-MutMutantLoop: non-terminating mutants (run 10, 2026-09-30)' {
         on: mutants 4371, 4373 and 4374 make BuildBatchDisplay's `repeat ... until false` loop
         never exit. The CLI's --timeout only stops the CLIENT waiting and then reports 0 tests; the
         BC session keeps looping (two were still alive ~15 min later). The loop read that as an
-        EMPTY result -- "no tests discovered" -- and never reached the Timeout branch, the one that
-        resets the environment and so kills the runaway session. Every later job on that test
-        codeunit then came back empty too.
+        EMPTY result -- "no tests discovered" -- and never reached the Timeout branch, so every later
+        job on that test codeunit came back empty too. Run 11 then showed the Timeout branch's full
+        environment stop/start can itself fail (the new container's database attach raced the old
+        one), so the Timeout branch now stops just the runaway session through Mutation Core's
+        sessions API, and falls back to the reset only when it cannot.
+
+        The fake session registry below models the live behaviour verified on 2026-10-01: a job
+        whose client wait expires leaves a live 'Client Service' session behind; POST
+        sessions(<id>)/Microsoft.NAV.stop removes a live session from the list; a STALE row (a
+        session killed by an earlier container restart) accepts the stop and never disappears.
     #>
     BeforeEach {
         $script:MutClock = 0.0
         $script:MutAttemptSeconds = 1.0
+        $script:MutNextSessionId = 80
+        $script:MutUnstoppable = @{}
+        $script:MutStopRequests = New-Object System.Collections.Generic.List[int]
+        $script:MutFakeSessions = New-Object System.Collections.Generic.List[object]
+        # A stale row from before the last restart, and the orchestrator's own API session.
+        $script:MutFakeSessions.Add([pscustomobject]@{ sessionId = 4991; userId = 'EH'; clientType = 'Client Service'; loginDateTime = [datetime]::UtcNow.AddHours(-2).ToString('o'); isCurrentSession = $false })
+        $script:MutFakeSessions.Add([pscustomobject]@{ sessionId = -5; userId = 'RF'; clientType = 'Web Service'; loginDateTime = [datetime]::UtcNow.ToString('o'); isCurrentSession = $true })
+
+        function script:Add-MutRunawaySession {
+            $script:MutNextSessionId++
+            $script:MutFakeSessions.Add([pscustomobject]@{ sessionId = $script:MutNextSessionId; userId = 'EH'; clientType = 'Client Service'; loginDateTime = [datetime]::UtcNow.ToString('o'); isCurrentSession = $false })
+        }
 
         Mock -ModuleName MutantLoop Start-MutPostResetSettle { }
-        Mock -ModuleName MutantLoop Start-Sleep { }
+        Mock -ModuleName MutantLoop Start-Sleep { $script:MutClock += $Seconds }
         Mock -ModuleName MutantLoop Get-MutEnvironment { [pscustomobject]@{ Id = 'E1'; Name = 'mut-spike-01'; Status = 'Running' } }
         Mock -ModuleName MutantLoop Start-MutEnvironment { [pscustomobject]@{ Id = 'E1'; Name = 'mut-spike-01'; Status = 'Running'; StartDurationSec = 0 } }
         Mock -ModuleName MutantLoop Wait-MutOutageRecovery { return $Env }
-        Mock -ModuleName MutantLoop Reset-MutEnvironment { [pscustomobject]@{ DurationSec = 1 } }
+        # A real reset takes minutes, so every session alive before it is a stale row afterwards,
+        # logged in long before the next job starts.
+        Mock -ModuleName MutantLoop Reset-MutEnvironment {
+            foreach ($s in $script:MutFakeSessions) { if (-not $s.isCurrentSession) { $s.loginDateTime = [datetime]::UtcNow.AddHours(-1).ToString('o') } }
+            [pscustomobject]@{ DurationSec = 1 }
+        }
         Mock -ModuleName MutantLoop Invoke-MutApi {
             param($Env, $Method, $Path, $Body)
+            if ($Method -eq 'GET' -and $Path -eq 'sessions') {
+                return [pscustomobject]@{ value = @($script:MutFakeSessions.ToArray()) }
+            }
+            if ($Method -eq 'POST' -and $Path -match '^sessions\((-?\d+)\)/Microsoft\.NAV\.stop$') {
+                $id = [int]$Matches[1]
+                $script:MutStopRequests.Add($id)
+                $isStale = $id -eq 4991
+                if (-not $isStale -and -not $script:MutUnstoppable.ContainsKey($id)) {
+                    $victim = @($script:MutFakeSessions | Where-Object { $_.sessionId -eq $id })
+                    foreach ($v in $victim) { [void]$script:MutFakeSessions.Remove($v) }
+                }
+                return $null
+            }
             if ($Method -eq 'GET') { return [pscustomobject]@{ value = @() } }
             return $null
         }
-        # Each test attempt advances the mocked clock by $script:MutAttemptSeconds.
+        # Each attempt advances the mocked clock; an attempt that takes the whole client wait
+        # leaves a runaway session behind, as live.
         Mock -ModuleName MutantLoop Get-MutClockSeconds { return $script:MutClock }
         Mock -ModuleName MutantLoop Invoke-MutTestsWithBudget {
             $script:MutClock += $script:MutAttemptSeconds
+            if ($script:MutAttemptSeconds -ge 30) { Add-MutRunawaySession }
             [pscustomobject]@{
                 TimedOut = $false; ErrorMessage = $null; ForcedKill = $false
                 Result   = [pscustomobject]@{ Passed = 0; Failed = 0; DurationMs = 0; Tests = @() }
@@ -1557,16 +1598,20 @@ Describe 'Invoke-MutMutantLoop: non-terminating mutants (run 10, 2026-09-30)' {
         }
 
         # minSeconds 5 -> budget 5 -> the CLI's inner timeout is max(30, budget - 30) = 30 s.
-        $script:Config = New-MutTestConfig -PerTestFactor 1 -MinSeconds 5 -JobOverheadSeconds 0
         $script:Baseline = [pscustomobject]@{ Tests = @(); DurationsByCodeunit = @{ '95121' = 250 } }
         $script:References = @{ 72918630 = @(95121) }
         $script:Coverage = @{ byTestCodeunit = @{} }
         $script:TimeoutConfig = New-MutTestConfig -PerTestFactor 1 -MinSeconds 5 -JobOverheadSeconds 0 -TestCodeunits @(95121)
         $script:RunDir = "$TestDrive/run-$([guid]::NewGuid().ToString('N'))"
         New-Item -ItemType Directory -Path $script:RunDir -Force | Out-Null
+
+        $script:TimedOutWithRunaway = {
+            Add-MutRunawaySession
+            [pscustomobject]@{ TimedOut = $true; ErrorMessage = $null; ForcedKill = $false; Result = $null }
+        }
     }
 
-    It 'records Timeout, not "no tests discovered", when an empty result took the full client wait -- and resets the environment, which kills the runaway session' {
+    It 'records Timeout, not "no tests discovered", when an empty result took the full client wait -- and stops the runaway session instead of restarting the environment' {
         $script:MutAttemptSeconds = 31.0
         $mutant = [pscustomobject]@{ id = 4371; objectId = 72918630; line = 40 }
 
@@ -1575,10 +1620,57 @@ Describe 'Invoke-MutMutantLoop: non-terminating mutants (run 10, 2026-09-30)' {
             -RunNo 10 -RunDir $script:RunDir -BackendModulePath 'unused.psm1' -WarningAction SilentlyContinue
 
         $results[0].Status | Should -Be 'Timeout'
-        Should -Invoke -ModuleName MutantLoop Reset-MutEnvironment -Times 1 -Exactly
+        ($script:MutStopRequests -join ',') | Should -Be '81'
+        @($script:MutFakeSessions | Where-Object { $_.sessionId -eq 81 }).Count | Should -Be 0
+        Should -Invoke -ModuleName MutantLoop Reset-MutEnvironment -Times 0 -Exactly
         # No empty-result retry: re-running a hung mutant against a still-looping session is what
         # poisoned every later job in runs 8-10.
         Should -Invoke -ModuleName MutantLoop Invoke-MutTestsWithBudget -Times 1 -Exactly
+    }
+
+    It 'never stops a stale session row (logged in before the job started) -- it accepts the stop but never goes away, and would force a needless reset' {
+        Mock -ModuleName MutantLoop Invoke-MutTestsWithBudget $script:TimedOutWithRunaway
+        $mutant = [pscustomobject]@{ id = 4373; objectId = 72918630; line = 44 }
+
+        Invoke-MutMutantLoop -Config $script:TimeoutConfig -Env $script:EnvHandle -Mutants @($mutant) `
+            -Baseline $script:Baseline -Coverage $script:Coverage -References $script:References `
+            -RunNo 10 -RunDir $script:RunDir -BackendModulePath 'unused.psm1' -WarningAction SilentlyContinue | Out-Null
+
+        $script:MutStopRequests | Should -Not -Contain 4991
+        $script:MutStopRequests | Should -Not -Contain -5
+        Should -Invoke -ModuleName MutantLoop Reset-MutEnvironment -Times 0 -Exactly
+    }
+
+    It 'falls back to the full environment reset when the runaway session does not go away after the stop' {
+        Mock -ModuleName MutantLoop Invoke-MutTestsWithBudget $script:TimedOutWithRunaway
+        $script:MutUnstoppable[81] = $true
+        $mutant = [pscustomobject]@{ id = 4374; objectId = 72918630; line = 45 }
+
+        $results = Invoke-MutMutantLoop -Config $script:TimeoutConfig -Env $script:EnvHandle -Mutants @($mutant) `
+            -Baseline $script:Baseline -Coverage $script:Coverage -References $script:References `
+            -RunNo 10 -RunDir $script:RunDir -BackendModulePath 'unused.psm1' -WarningAction SilentlyContinue
+
+        $results[0].Status | Should -Be 'Timeout'
+        ($script:MutStopRequests -join ',') | Should -Be '81'
+        Should -Invoke -ModuleName MutantLoop Reset-MutEnvironment -Times 1 -Exactly
+    }
+
+    It 'falls back to the full environment reset when the sessions API is unavailable (an older Mutation Core)' {
+        Mock -ModuleName MutantLoop Invoke-MutTestsWithBudget $script:TimedOutWithRunaway
+        Mock -ModuleName MutantLoop Invoke-MutApi {
+            param($Env, $Method, $Path, $Body)
+            if ($Path -eq 'sessions') { throw "(404) Not Found: the resource 'sessions' does not exist" }
+            if ($Method -eq 'GET') { return [pscustomobject]@{ value = @() } }
+            return $null
+        }
+        $mutant = [pscustomobject]@{ id = 4371; objectId = 72918630; line = 40 }
+
+        $results = Invoke-MutMutantLoop -Config $script:TimeoutConfig -Env $script:EnvHandle -Mutants @($mutant) `
+            -Baseline $script:Baseline -Coverage $script:Coverage -References $script:References `
+            -RunNo 10 -RunDir $script:RunDir -BackendModulePath 'unused.psm1' -WarningAction SilentlyContinue
+
+        $results[0].Status | Should -Be 'Timeout'
+        Should -Invoke -ModuleName MutantLoop Reset-MutEnvironment -Times 1 -Exactly
     }
 
     It 'still treats a FAST empty result as empty (retry, then "no tests discovered"), not as Timeout' {
@@ -1595,12 +1687,12 @@ Describe 'Invoke-MutMutantLoop: non-terminating mutants (run 10, 2026-09-30)' {
         Should -Invoke -ModuleName MutantLoop Invoke-MutTestsWithBudget -Times 2 -Exactly
     }
 
-    It 'does not spend a recovery slot when the timeout reset succeeds, so 4 non-terminating mutants in one run do not hit the cap of 3' {
-        Mock -ModuleName MutantLoop Invoke-MutTestsWithBudget {
-            [pscustomobject]@{ TimedOut = $true; ErrorMessage = $null; ForcedKill = $false; Result = $null }
-        }
-        # Four in a row stays under the consecutive-Timeout breaker (5), so the cap is what this
-        # test measures.
+    It 'does not spend a recovery slot when the runaway is stopped or the reset succeeds, so 4 non-terminating mutants in one run do not hit the cap of 3' {
+        Mock -ModuleName MutantLoop Invoke-MutTestsWithBudget $script:TimedOutWithRunaway
+        # Mutants 102 and 104 leave an unstoppable session, so they take the reset path; four in a
+        # row stays under the consecutive-Timeout breaker (5), so the cap is what this measures.
+        $script:MutUnstoppable[82] = $true
+        $script:MutUnstoppable[84] = $true
         $mutants = @(1..4 | ForEach-Object { [pscustomobject]@{ id = 100 + $_; objectId = 72918630; line = 4 } })
 
         $results = Invoke-MutMutantLoop -Config $script:TimeoutConfig -Env $script:EnvHandle -Mutants $mutants `
@@ -1609,10 +1701,10 @@ Describe 'Invoke-MutMutantLoop: non-terminating mutants (run 10, 2026-09-30)' {
 
         @($results).Count | Should -Be 4
         ($results | ForEach-Object { $_.Status }) | Should -Be @('Timeout', 'Timeout', 'Timeout', 'Timeout')
-        Should -Invoke -ModuleName MutantLoop Reset-MutEnvironment -Times 4 -Exactly
+        Should -Invoke -ModuleName MutantLoop Reset-MutEnvironment -Times 2 -Exactly
     }
 
-    It 'keeps the slot spent when the timeout reset itself fails, so a dead environment presenting as timeouts still hits the cap and aborts' {
+    It 'records Timeout without re-running the mutant when the fallback reset fails, then waits for the environment; failed resets keep their slot, so a dead environment still hits the cap' {
         Mock -ModuleName MutantLoop Invoke-MutTestsWithBudget {
             [pscustomobject]@{ TimedOut = $true; ErrorMessage = $null; ForcedKill = $false; Result = $null }
         }
@@ -1631,17 +1723,17 @@ Describe 'Invoke-MutMutantLoop: non-terminating mutants (run 10, 2026-09-30)' {
 
         $caught | Should -Not -BeNullOrEmpty
         $caught.CategoryInfo.Category | Should -Be ([System.Management.Automation.ErrorCategory]::LimitsExceeded)
-        # Mutant 201: attempt + 2 outage retries each spend a slot on a failed reset (3 = cap), then
-        # Error; mutant 202's timeout finds the cap spent and aborts.
+        # 201-203 each: no visible runaway, so reset; the reset fails and keeps its slot; Timeout is
+        # recorded (the verdict was reached) and the loop waits for the environment instead of
+        # re-running the mutant. 204's timeout finds the cap spent and aborts.
         $partialRows = @($caught.TargetObject)
-        $partialRows.Count | Should -Be 1
-        $partialRows[0].Status | Should -Be 'Error'
+        ($partialRows | ForEach-Object { $_.Status }) | Should -Be @('Timeout', 'Timeout', 'Timeout')
+        Should -Invoke -ModuleName MutantLoop Invoke-MutTestsWithBudget -Times 4 -Exactly
+        Should -Invoke -ModuleName MutantLoop Wait-MutOutageRecovery -Times 3 -Exactly
     }
 
     It 'aborts after 5 consecutive Timeouts -- every mutant timing out is a budget or environment problem, not five non-terminating mutants in a row' {
-        Mock -ModuleName MutantLoop Invoke-MutTestsWithBudget {
-            [pscustomobject]@{ TimedOut = $true; ErrorMessage = $null; ForcedKill = $false; Result = $null }
-        }
+        Mock -ModuleName MutantLoop Invoke-MutTestsWithBudget $script:TimedOutWithRunaway
         $mutants = @(1..6 | ForEach-Object { [pscustomobject]@{ id = 300 + $_; objectId = 72918630; line = 4 } })
 
         $caught = $null
@@ -1658,6 +1750,6 @@ Describe 'Invoke-MutMutantLoop: non-terminating mutants (run 10, 2026-09-30)' {
         $caught.CategoryInfo.Category | Should -Be ([System.Management.Automation.ErrorCategory]::LimitsExceeded)
         $caught.Exception.Message | Should -BeLike '*5 consecutive*Timeout*'
         @($caught.TargetObject).Count | Should -Be 5
-        Should -Invoke -ModuleName MutantLoop Reset-MutEnvironment -Times 5 -Exactly
+        $script:MutStopRequests.Count | Should -Be 5
     }
 }

@@ -110,6 +110,23 @@ $script:MaxConsecutiveErrors = 5
 #   MaxConsecutiveTimeouts    -- see the consecutive-Timeout breaker in Invoke-MutMutantLoop.
 $script:ClientWaitExpiredFraction = 0.9
 $script:MaxConsecutiveTimeouts = 5
+
+# FIX (run 11, 2026-10-01): the Timeout branch's full environment stop/start can fail outright --
+# in run 11 the new container's database attach raced the old container ("Failed to move
+# database ... Container marked as unhealthy"), and the run aborted. A Timeout now first stops
+# just the runaway session through Mutation Core's sessions API (verified live: StopSession ends a
+# session stuck in a non-terminating mutant's loop within ~10 s, despite BC documenting that it
+# cannot always), and falls back to the reset only when it cannot (Stop-MutRunawayTestSessions).
+#   RunawaySessionLoginSlackSec -- a runaway session logs in during its own job; a STALE row (a
+#                                  session killed by an earlier container restart, which BC leaves
+#                                  in Active Session and which accepts a stop but never goes away)
+#                                  logged in before the last restart, minutes earlier. Sessions
+#                                  that logged in no more than this long before the job started
+#                                  are treated as the job's own.
+#   RunawaySessionWaitSec       -- how long to wait for stopped sessions to disappear.
+$script:RunawaySessionLoginSlackSec = 120
+$script:RunawaySessionWaitSec = 120
+$script:RunawaySessionPollSec = 10
 $script:MutOutageWaitCount = 0
 
 function Test-MutHasProperty {
@@ -312,6 +329,117 @@ function Wait-MutOutageRecovery {
             throw [System.Management.Automation.ErrorRecord]::new($exception, 'MutEnvironmentOutageTimeout', [System.Management.Automation.ErrorCategory]::LimitsExceeded, $null)
         }
         Start-Sleep -Seconds $script:OutagePollIntervalSec
+    }
+}
+
+function ConvertTo-MutUtcDateTime {
+    <#
+        .SYNOPSIS
+        Private. Parses an API datetime value to UTC, or returns $null. Windows PowerShell 5.1's
+        JSON parsing leaves ISO-8601 values as strings; later versions return [datetime].
+    #>
+    param($Value)
+
+    if ($null -eq $Value) {
+        return $null
+    }
+    if ($Value -is [datetime]) {
+        return $Value.ToUniversalTime()
+    }
+    $parsed = [datetime]::MinValue
+    $styles = [System.Globalization.DateTimeStyles]::AdjustToUniversal -bor [System.Globalization.DateTimeStyles]::AssumeUniversal
+    if ([datetime]::TryParse([string]$Value, [System.Globalization.CultureInfo]::InvariantCulture, $styles, [ref]$parsed)) {
+        return $parsed
+    }
+    return $null
+}
+
+function Stop-MutRunawayTestSessions {
+    <#
+        .SYNOPSIS
+        Private. FIX (run 11): after a Timeout, stops the test session the timed-out job left
+        running, through Mutation Core's sessions API (GET sessions; POST
+        sessions(<id>)/Microsoft.NAV.stop), and waits for it to disappear.
+
+        Targets: 'Client Service' sessions (the type DemoPortal test jobs run as), other than the
+        caller's own, that logged in no earlier than $SinceUtc minus
+        $script:RunawaySessionLoginSlackSec. The login-time rule is what keeps STALE rows out:
+        BC leaves sessions killed by a container restart in Active Session, and such a row accepts
+        a stop but never disappears, so targeting it would force a needless full reset every time.
+
+        .OUTPUTS
+        $true only when at least one target was found and every target disappeared within
+        $script:RunawaySessionWaitSec. $false otherwise -- no target visible, a target that does
+        not go away, or the sessions API missing (an older Mutation Core) -- and the caller then
+        falls back to the full environment reset.
+    #>
+    param(
+        [Parameter(Mandatory = $true)]
+        $Env,
+        [Parameter(Mandatory = $true)]
+        [datetime]$SinceUtc,
+        [Parameter(Mandatory = $true)]
+        [int]$MutantId
+    )
+
+    try {
+        $list = Invoke-MutApi -Env $Env -Method 'GET' -Path 'sessions'
+    }
+    catch {
+        Write-Warning "Invoke-MutMutantLoop: mutant $MutantId -- could not list sessions ($($_.Exception.Message)); falling back to an environment reset."
+        return $false
+    }
+
+    $cutoff = $SinceUtc.ToUniversalTime().AddSeconds(-$script:RunawaySessionLoginSlackSec)
+    $targets = @()
+    if ((Test-MutHasProperty $list 'value') -and ($null -ne $list.value)) {
+        foreach ($session in @($list.value)) {
+            if (-not (Test-MutHasProperty $session 'clientType') -or ([string]$session.clientType -ne 'Client Service')) { continue }
+            if ((Test-MutHasProperty $session 'isCurrentSession') -and [bool]$session.isCurrentSession) { continue }
+            if (-not (Test-MutHasProperty $session 'loginDateTime') -or -not (Test-MutHasProperty $session 'sessionId')) { continue }
+            $login = ConvertTo-MutUtcDateTime -Value $session.loginDateTime
+            if ($null -eq $login -or $login -lt $cutoff) { continue }
+            $targets += [int]$session.sessionId
+        }
+    }
+    if ($targets.Count -eq 0) {
+        Write-Warning "Invoke-MutMutantLoop: mutant $MutantId -- no test session from the timed-out job is visible; falling back to an environment reset."
+        return $false
+    }
+
+    foreach ($id in $targets) {
+        try {
+            Invoke-MutApi -Env $Env -Method 'POST' -Path "sessions($id)/Microsoft.NAV.stop" -Body @{} | Out-Null
+        }
+        catch {
+            # A session that ended between the listing and the stop is fine; the poll below
+            # decides success either way.
+        }
+    }
+
+    $deadline = (Get-MutClockSeconds) + $script:RunawaySessionWaitSec
+    while ($true) {
+        $alive = $targets
+        try {
+            $now = Invoke-MutApi -Env $Env -Method 'GET' -Path 'sessions'
+            $liveIds = @()
+            if ((Test-MutHasProperty $now 'value') -and ($null -ne $now.value)) {
+                $liveIds = @(@($now.value) | ForEach-Object { [int]$_.sessionId })
+            }
+            $alive = @($targets | Where-Object { $liveIds -contains $_ })
+        }
+        catch {
+            # Unknown this poll: keep waiting.
+        }
+        if (@($alive).Count -eq 0) {
+            Write-Warning "Invoke-MutMutantLoop: mutant $MutantId -- stopped the runaway test session(s) $($targets -join ', ') left by the timed-out job."
+            return $true
+        }
+        if ((Get-MutClockSeconds) -ge $deadline) {
+            Write-Warning "Invoke-MutMutantLoop: mutant $MutantId -- test session(s) $(@($alive) -join ', ') still alive $($script:RunawaySessionWaitSec) s after a stop; falling back to an environment reset."
+            return $false
+        }
+        Start-Sleep -Seconds $script:RunawaySessionPollSec
     }
 }
 
@@ -861,6 +989,7 @@ function Invoke-MutMutantLoop {
         $outageRetries = 0
         do {
             $retryMutant = $false
+            $timeoutRecoveryFailure = $null
             $covering = @()
             try {
                 $covering = Get-MutCoveringTests -Mutant $mutant -Coverage $Coverage -References $References -TestCodeunits $testCodeunits
@@ -906,6 +1035,7 @@ function Invoke-MutMutantLoop {
                 $maxAttempts = 2
                 do {
                     $attempt++
+                    $attemptStartUtc = [datetime]::UtcNow
                     $attemptStartSec = Get-MutClockSeconds
                     $outcome = Invoke-MutTestsWithBudget -Env $Env -Targets $targets -TimeoutSec $innerTimeoutSec -BudgetSec $budget -BackendModulePath $BackendModulePath
                     $attemptElapsedSec = (Get-MutClockSeconds) - $attemptStartSec
@@ -959,16 +1089,29 @@ function Invoke-MutMutantLoop {
                     # recovery cap -- the reviewer reproduced 5/5 Timeouts with zero environment
                     # checks and each one resetting uncounted; a dead environment must not be allowed
                     # to reset forever just because it happens to present as a timeout.
-                    Request-MutEnvironmentRecoveryBudget -MutantId $mutant.id -Context 'a test run timed out'
-                    Reset-MutEnvironment -Env $Env -Config $Config | Out-Null
-                    # FIX (run 10): the reset returned, so the environment was stopped, started and
-                    # settled (its probe passed). The Timeout was this mutant's own verdict -- a
-                    # non-terminating mutant is a detected one -- not a lost environment, so give the
-                    # slot back. A reset that throws keeps it spent, so a dead environment presenting
-                    # as timeouts still reaches the cap; the consecutive-Timeout breaker bounds the
-                    # rest.
-                    $script:MutEnvironmentRecoveryCount--
-                    Start-MutPostResetSettle
+                    # FIX (run 11): stop just the runaway session first; the full reset below is
+                    # now only the fallback.
+                    if (-not (Stop-MutRunawayTestSessions -Env $Env -SinceUtc $attemptStartUtc -MutantId $mutant.id)) {
+                        Request-MutEnvironmentRecoveryBudget -MutantId $mutant.id -Context 'a test run timed out'
+                        try {
+                            Reset-MutEnvironment -Env $Env -Config $Config | Out-Null
+                            # FIX (run 10): the reset returned, so the environment was stopped,
+                            # started and settled (its probe passed). The Timeout was this mutant's
+                            # own verdict -- a non-terminating mutant is a detected one -- not a lost
+                            # environment, so give the slot back. A reset that throws keeps it spent,
+                            # so a dead environment presenting as timeouts still reaches the cap; the
+                            # consecutive-Timeout breaker bounds the rest.
+                            $script:MutEnvironmentRecoveryCount--
+                            Start-MutPostResetSettle
+                        }
+                        catch {
+                            # FIX (run 11): the verdict was already reached, so a failed reset must
+                            # not re-run this mutant (run 11 re-ran 4371 -- another endless loop and
+                            # another reset). Record Timeout, and wait for the environment once the
+                            # row is written (see $timeoutRecoveryFailure below).
+                            $timeoutRecoveryFailure = $_.Exception.Message
+                        }
+                    }
                     $status = 'Timeout'
                 }
                 elseif ($outcome.ErrorMessage) {
@@ -1077,6 +1220,13 @@ function Invoke-MutMutantLoop {
 
                 Write-MutResultsJsonLine -RunDir $RunDir -Row $row
                 $rows += $row
+
+                # FIX (run 11): the Timeout's fallback reset failed. The row is written, so this
+                # mutant's verdict is kept even if the wait below gives up and aborts the run
+                # (its LimitsExceeded reaches the catch below, which attaches $rows).
+                if ($timeoutRecoveryFailure) {
+                    $Env = Wait-MutOutageRecovery -Env $Env -Config $Config -MutantId $mutant.id -RunNo $RunNo -Reason "the environment reset after this mutant's Timeout failed: $timeoutRecoveryFailure"
+                }
             }
             catch {
                 # FIX (M3): this mutant's own body threw something unhandled (e.g.

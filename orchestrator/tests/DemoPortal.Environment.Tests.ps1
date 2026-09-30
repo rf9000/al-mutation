@@ -745,3 +745,68 @@ Describe 'Invoke-Continia (private, mock point)' {
         }
     }
 }
+
+Describe 'env start retry (run 11, 2026-10-01)' {
+    <#
+        .SYNOPSIS
+        Twice on 2026-09-30 an `env start` issued right after an `env stop` completed never took
+        effect: the environment stayed Stopped, and the container log showed why -- "Failed to move
+        database ... Container marked as unhealthy due to database move failure", the new
+        container's database attach racing the old one. A start issued minutes later worked. In
+        run 11 this aborted the run: Reset-MutEnvironment's single start was followed by a 600 s
+        wait for Running that could never succeed. Both Reset-MutEnvironment and
+        Start-MutEnvironment now re-issue the start while the environment stays Stopped.
+    #>
+    BeforeEach {
+        Mock -ModuleName DemoPortal Start-Sleep {}
+        $script:StartRetryEnv = [pscustomobject]@{ Id = 'E1'; Name = 'mut-spike-01'; Url = 'https://x/E1'; Backend = 'DemoPortal'; Shared = $false }
+        $script:StartCalls = 0
+        $script:GetCalls = 0
+        # Status sequence served by `env get`, one entry per call; the last entry repeats.
+        $script:StatusSequence = @('Stopped')
+        Mock -ModuleName DemoPortal Invoke-Continia -ParameterFilter { $Arguments[1] -eq 'stop' } { [pscustomobject]@{ success = $true } }
+        Mock -ModuleName DemoPortal Invoke-Continia -ParameterFilter { $Arguments[1] -eq 'start' } { $script:StartCalls++; [pscustomobject]@{ success = $true } }
+        Mock -ModuleName DemoPortal Invoke-Continia -ParameterFilter { $Arguments[1] -eq 'get' } {
+            $i = [math]::Min($script:GetCalls, $script:StatusSequence.Count - 1)
+            $script:GetCalls++
+            [pscustomobject]@{ id = 'E1'; status = $script:StatusSequence[$i]; description = 'mut-spike-01'; url = 'https://x/E1'; shared = $false }
+        }
+        Mock -ModuleName DemoPortal Invoke-Continia -ParameterFilter { $Arguments[1] -eq 'apps' } { @([pscustomobject]@{ id = 'app1' }) }
+    }
+
+    It 'Reset-MutEnvironment re-issues env start when the environment is still Stopped ~90 s after the first start, and succeeds once it starts' {
+        # get #1 answers the stop wait; then 12 more Stopped (the ignored start), then Starting, Running.
+        $script:StatusSequence = @('Stopped') + @(1..12 | ForEach-Object { 'Stopped' }) + @('Starting', 'Running')
+
+        $result = Reset-MutEnvironment -Env $script:StartRetryEnv -WarningAction SilentlyContinue
+
+        $result.DurationSec | Should -Not -BeNullOrEmpty
+        $script:StartCalls | Should -Be 2
+    }
+
+    It 'Reset-MutEnvironment does not re-issue env start while the environment is Starting' {
+        $script:StatusSequence = @('Stopped', 'Stopped') + @(1..20 | ForEach-Object { 'Starting' }) + @('Running')
+
+        Reset-MutEnvironment -Env $script:StartRetryEnv -WarningAction SilentlyContinue | Out-Null
+
+        $script:StartCalls | Should -Be 1
+    }
+
+    It 'Reset-MutEnvironment throws, naming how many starts it issued, when the environment never leaves Stopped' {
+        $script:StatusSequence = @('Stopped')
+
+        { Reset-MutEnvironment -Env $script:StartRetryEnv -WarningAction SilentlyContinue } | Should -Throw -ExpectedMessage "*did not reach status 'Running'*env start*"
+        $script:StartCalls | Should -BeGreaterThan 2
+    }
+
+    It 'Start-MutEnvironment re-issues env start the same way for a Stopped environment' {
+        # get #1 is Start-MutEnvironment's own status refresh.
+        $script:StatusSequence = @('Stopped') + @(1..12 | ForEach-Object { 'Stopped' }) + @('Starting', 'Running')
+        Mock -ModuleName DemoPortal Invoke-Continia -ParameterFilter { $Arguments[0] -eq 'deps' } { [pscustomobject]@{ success = $true } }
+        Mock -ModuleName DemoPortal Invoke-Continia -ParameterFilter { $Arguments[1] -eq 'use' } { $null }
+
+        Start-MutEnvironment -Env $script:StartRetryEnv -Config $script:cfg -WarningAction SilentlyContinue | Out-Null
+
+        $script:StartCalls | Should -Be 2
+    }
+}

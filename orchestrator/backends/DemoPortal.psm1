@@ -11,6 +11,9 @@ Import-Module (Join-Path $PSScriptRoot '..\lib\Coverage.psm1') -Force
 # Poll loop tuning for env get / env stop-start status polling.
 $script:PollIntervalSec = 10
 $script:MaxPollIterations = 60
+# FIX (run 11, 2026-10-01): `env start` retry -- see Start-MutEnvironmentWithRetry.
+$script:StartRetryAfterPolls = 9
+$script:MaxStartPollIterations = 180
 # New-MutEnvironment's "wait for env get to return an object with a status property at all"
 # budget is intentionally much shorter than the full start-to-Running poll (§6.5.3): 6 x 10s = 60s.
 $script:MaxAppearIterations = 6
@@ -248,6 +251,61 @@ function Get-MutEnvironment {
     return ConvertTo-MutEnvironmentHandle -Raw $match
 }
 
+function Start-MutEnvironmentWithRetry {
+    <#
+        .SYNOPSIS
+        Private. FIX (run 11, 2026-10-01): issues `env start` and polls `env get` until the
+        environment is Running, re-issuing the start whenever it has stayed Stopped for
+        $script:StartRetryAfterPolls consecutive polls (~90 s). Gives up after
+        $script:MaxStartPollIterations polls (~30 min).
+
+        Twice on 2026-09-30 a start issued right after a stop completed never took effect: the
+        environment stayed Stopped, and the container log said "Failed to move database ...
+        Container marked as unhealthy due to database move failure" -- the new container's
+        database attach racing the old one. A start issued minutes later worked. The single start
+        plus a 600 s wait this replaces could never recover from that, and run 11 aborted on it.
+        A Starting environment is left alone: that start did take.
+    #>
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Id
+    )
+
+    Invoke-Continia -Arguments @('env', 'start', $Id) -ExpectJson:$false | Out-Null
+    $startCalls = 1
+    $consecutiveStopped = 0
+    $lastResponse = $null
+
+    for ($i = 0; $i -lt $script:MaxStartPollIterations; $i++) {
+        $env = Invoke-Continia -Arguments @('env', 'get', $Id, '--json')
+        $lastResponse = $env
+        $status = $null
+        if (Test-MutHasProperty $env 'status') {
+            $status = $env.status
+        }
+        if ($status -eq 'Running') {
+            return $env
+        }
+
+        if ($status -eq 'Stopped') {
+            $consecutiveStopped++
+        }
+        else {
+            $consecutiveStopped = 0
+        }
+        if ($consecutiveStopped -ge $script:StartRetryAfterPolls) {
+            $startCalls++
+            Write-Warning "Start-MutEnvironmentWithRetry: environment '$Id' is still Stopped $($consecutiveStopped * $script:PollIntervalSec) s after env start; issuing env start again (call $startCalls). A start right after a stop can be lost while the previous container still holds the database."
+            Invoke-Continia -Arguments @('env', 'start', $Id) -ExpectJson:$false | Out-Null
+            $consecutiveStopped = 0
+        }
+        Start-Sleep -Seconds $script:PollIntervalSec
+    }
+
+    $lastJson = $lastResponse | ConvertTo-Json -Depth 10 -Compress
+    throw "Start-MutEnvironmentWithRetry: environment '$Id' did not reach status 'Running' within $($script:MaxStartPollIterations * $script:PollIntervalSec) seconds after $startCalls env start call(s). Last response: $lastJson"
+}
+
 function Wait-MutEnvironmentStatus {
     <#
         .SYNOPSIS
@@ -470,8 +528,7 @@ function Start-MutEnvironment {
 
     if (-not ((Test-MutHasProperty $current 'status') -and $current.status -eq 'Running')) {
         $startStart = Get-Date
-        Invoke-Continia -Arguments @('env', 'start', $Env.Id) -ExpectJson:$false | Out-Null
-        $running = Wait-MutEnvironmentStatus -Id $Env.Id -Status 'Running'
+        $running = Start-MutEnvironmentWithRetry -Id $Env.Id
         $startDurationSec = ((Get-Date) - $startStart).TotalSeconds
     }
 
@@ -597,8 +654,7 @@ function Reset-MutEnvironment {
     Invoke-Continia -Arguments @('env', 'stop', $Env.Id) -ExpectJson:$false | Out-Null
     Wait-MutEnvironmentStatus -Id $Env.Id -Status 'Stopped' | Out-Null
 
-    Invoke-Continia -Arguments @('env', 'start', $Env.Id) -ExpectJson:$false | Out-Null
-    Wait-MutEnvironmentStatus -Id $Env.Id -Status 'Running' | Out-Null
+    Start-MutEnvironmentWithRetry -Id $Env.Id | Out-Null
 
     $settled = Wait-MutEnvironmentSettled -Id $Env.Id -Config $Config
 

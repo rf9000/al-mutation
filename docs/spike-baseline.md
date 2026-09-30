@@ -610,6 +610,30 @@ score already counts as detected. A reset that succeeds no longer spends a recov
 verdict, not a lost environment); a reset that throws keeps it spent. 5 consecutive `Timeout` rows abort the
 run, since each costs a full stop/start. Not yet run live.
 
+### Run 11 and the stop-session spike (2026-09-30 / 2026-10-01)
+
+Run 11 (same scope, pinned AUT, the run-10 Timeout detection in place) ran mutants 1-218 cleanly and **detected
+mutant 4371 as a Timeout for the first time** ("treating it as a Timeout (a job still running in the
+environment)"). The Timeout branch's full environment reset then failed: after `env stop`, the environment stayed
+`Stopped` for 600 s, and the container log said `AttachDatabase : Failed to attach database ... Failed to move
+database ... Container marked as unhealthy due to database move failure`. The outage wait's own `env start` did
+not bring it back within 900 s either, so the run aborted with a partial export (`results/11.json`: `aborted:
+true`, 0 `Error`, 46 `Pending`). A start issued by hand at 21:51 worked (`Running` by 21:55): a start right after a
+stop races the previous container still holding the database files. Second occurrence in a day.
+
+**Stop-session spike** (`spikes/stop-session/`, Mutation Core page 50004 "MUT Sessions API"): with mutant 4371
+active, `continia test run <env> 95121 --json --timeout 30` returned after 37 s with `"status": "timeout"` (so the
+CLI *does* mark this case when the job actually started; a `--timeout 2` probe earlier got `"failed"`) and left
+session 83 (user `EH`, `Client Service`) looping. `POST sessions(83)/Microsoft.NAV.stop` removed it within ~10 s,
+and 95121 with no mutant then passed 16/16 in 11 s. So `StopSession` does end the loop, despite BC's documented
+caveat. The API list also showed stale rows 4991, 5137 and 2653 -- run 10/11 sessions killed by the restarts --
+which accept a stop and never disappear.
+
+**Fixes (2026-10-01).** A Timeout now stops only the job's own session (login-time filter keeps stale rows out)
+and falls back to the reset only when it cannot. A failed reset records `Timeout` and waits for the environment
+instead of re-running the mutant (run 11 re-ran 4371). `Reset-MutEnvironment` and `Start-MutEnvironment` re-issue
+`env start` while the environment stays `Stopped` (~90 s), for up to ~30 min. Not yet run live.
+
 **The readiness fix did its job, and could not have fixed this on its own.** Silent `no tests discovered` dropped from 46
 to 8; the remaining losses now carry an actionable reason instead of looking like empty codeunits.
 
@@ -676,7 +700,7 @@ and have been removed from this list. What remains genuinely open:
   silently removes its block-mates from the denominator. Measured once, under `--include-break` (run 2: 24
   CompileError = 15 BREAK + 9 collateral `DEL`/`INSFLAG`). The mechanism is general, not BREAK-specific; the
   pilot had 0 compile errors, so it never bit — that is luck, not proof.
-- **The restricted test-session identity is still unidentified.** Granting `MUT Core All` to all four
+- **The restricted test-session identity is still unidentified** *(run 10/11 lead: DemoPortal test sessions run as user `EH`, `Client Service`; not yet followed up)*. Granting `MUT Core All` to all four
   enumerable environment users (all already SUPER) changed nothing, so the identity that runs DemoPortal
   test sessions is none of them. The IsolatedStorage channel routes around it and works, but the underlying
   mechanism was never established, and §6.1.5b still states a rationale this project disproved.
