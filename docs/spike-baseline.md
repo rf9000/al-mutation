@@ -634,6 +634,29 @@ and falls back to the reset only when it cannot. A failed reset records `Timeout
 instead of re-running the mutant (run 11 re-ran 4371). `Reset-MutEnvironment` and `Start-MutEnvironment` re-issue
 `env start` while the environment stays `Stopped` (~90 s), for up to ~30 min. Not yet run live.
 
+### Run 12: the first complete, clean multi-codeunit run (2026-10-01)
+
+Same U2 scope, AUT pinned to `c4024bff2`, orchestrator at `5543d12` (outage wait, circuit breakers, client-wait
+Timeout detection, session stop with reset fallback, `env start` retry). **265 of 265 mutants, 0 `Error`, 0
+`Pending`, `aborted: false`, score 0.4491**, 92.7 min wall clock. Results: `results/12.json`.
+
+| AUT codeunit | Covering test | Killed | Survived | Timeout | Score | Before |
+|---|---|---|---|---|---|---|
+| 72918635 (pilot) | 95155 | 62 | 95 | 0 | **0.3949** | identical in runs 4, 6, 8, 9, 10, 11 |
+| 72282417 | 95110 | 29 | 29 | 0 | **0.5000** | identical in runs 8-11 |
+| 72918630 | 95121 | 15 | 19 | 3 | **0.4865** | 0.25 on 4 of 37 mutants (runs 8-11) |
+| 71553757 | 95058 | 10 | 3 | 0 | **0.7692** | `null` (runs 8-11); 10/13 in the 503 bisect's phase 1 |
+
+**All three non-terminating mutants (4371, 4373, 4374) were recorded as `Timeout`** — the first time the loop
+handled them rather than being poisoned by them. The session stop found no target for any of them (this run
+still had the login-time filter that the reused test-runner session defeats; fixed afterwards in `d29b50e`), so
+each took the fallback environment reset, and each reset succeeded. **The `env start` retry fired live** on the
+first reset ("still Stopped 90 s after env start; issuing env start again (call 2)") and recovered, where run 11
+had died. Each reset logged "recovery 1 of 3", confirming a successful reset does not spend the cap.
+
+What remains unproven: the fast path (stopping the runaway session instead of a reset) end to end in a run;
+it is verified by the stop-session spike and the unit tests only.
+
 **The readiness fix did its job, and could not have fixed this on its own.** Silent `no tests discovered` dropped from 46
 to 8; the remaining losses now carry an actionable reason instead of looking like empty codeunits.
 
