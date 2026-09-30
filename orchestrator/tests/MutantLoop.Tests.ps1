@@ -1519,3 +1519,145 @@ Describe 'Wait-MutOutageRecovery' {
         $caught.Exception.Message | Should -BeLike '*did not reach status Running*'
     }
 }
+
+Describe 'Invoke-MutMutantLoop: non-terminating mutants (run 10, 2026-09-30)' {
+    <#
+        .SYNOPSIS
+        Run 10 found the real cause of runs 8/9/10 losing every mutant from execution position 219
+        on: mutants 4371, 4373 and 4374 make BuildBatchDisplay's `repeat ... until false` loop
+        never exit. The CLI's --timeout only stops the CLIENT waiting and then reports 0 tests; the
+        BC session keeps looping (two were still alive ~15 min later). The loop read that as an
+        EMPTY result -- "no tests discovered" -- and never reached the Timeout branch, the one that
+        resets the environment and so kills the runaway session. Every later job on that test
+        codeunit then came back empty too.
+    #>
+    BeforeEach {
+        $script:MutClock = 0.0
+        $script:MutAttemptSeconds = 1.0
+
+        Mock -ModuleName MutantLoop Start-MutPostResetSettle { }
+        Mock -ModuleName MutantLoop Start-Sleep { }
+        Mock -ModuleName MutantLoop Get-MutEnvironment { [pscustomobject]@{ Id = 'E1'; Name = 'mut-spike-01'; Status = 'Running' } }
+        Mock -ModuleName MutantLoop Start-MutEnvironment { [pscustomobject]@{ Id = 'E1'; Name = 'mut-spike-01'; Status = 'Running'; StartDurationSec = 0 } }
+        Mock -ModuleName MutantLoop Wait-MutOutageRecovery { return $Env }
+        Mock -ModuleName MutantLoop Reset-MutEnvironment { [pscustomobject]@{ DurationSec = 1 } }
+        Mock -ModuleName MutantLoop Invoke-MutApi {
+            param($Env, $Method, $Path, $Body)
+            if ($Method -eq 'GET') { return [pscustomobject]@{ value = @() } }
+            return $null
+        }
+        # Each test attempt advances the mocked clock by $script:MutAttemptSeconds.
+        Mock -ModuleName MutantLoop Get-MutClockSeconds { return $script:MutClock }
+        Mock -ModuleName MutantLoop Invoke-MutTestsWithBudget {
+            $script:MutClock += $script:MutAttemptSeconds
+            [pscustomobject]@{
+                TimedOut = $false; ErrorMessage = $null; ForcedKill = $false
+                Result   = [pscustomobject]@{ Passed = 0; Failed = 0; DurationMs = 0; Tests = @() }
+            }
+        }
+
+        # minSeconds 5 -> budget 5 -> the CLI's inner timeout is max(30, budget - 30) = 30 s.
+        $script:Config = New-MutTestConfig -PerTestFactor 1 -MinSeconds 5 -JobOverheadSeconds 0
+        $script:Baseline = [pscustomobject]@{ Tests = @(); DurationsByCodeunit = @{ '95121' = 250 } }
+        $script:References = @{ 72918630 = @(95121) }
+        $script:Coverage = @{ byTestCodeunit = @{} }
+        $script:TimeoutConfig = New-MutTestConfig -PerTestFactor 1 -MinSeconds 5 -JobOverheadSeconds 0 -TestCodeunits @(95121)
+        $script:RunDir = "$TestDrive/run-$([guid]::NewGuid().ToString('N'))"
+        New-Item -ItemType Directory -Path $script:RunDir -Force | Out-Null
+    }
+
+    It 'records Timeout, not "no tests discovered", when an empty result took the full client wait -- and resets the environment, which kills the runaway session' {
+        $script:MutAttemptSeconds = 31.0
+        $mutant = [pscustomobject]@{ id = 4371; objectId = 72918630; line = 40 }
+
+        $results = Invoke-MutMutantLoop -Config $script:TimeoutConfig -Env $script:EnvHandle -Mutants @($mutant) `
+            -Baseline $script:Baseline -Coverage $script:Coverage -References $script:References `
+            -RunNo 10 -RunDir $script:RunDir -BackendModulePath 'unused.psm1' -WarningAction SilentlyContinue
+
+        $results[0].Status | Should -Be 'Timeout'
+        Should -Invoke -ModuleName MutantLoop Reset-MutEnvironment -Times 1 -Exactly
+        # No empty-result retry: re-running a hung mutant against a still-looping session is what
+        # poisoned every later job in runs 8-10.
+        Should -Invoke -ModuleName MutantLoop Invoke-MutTestsWithBudget -Times 1 -Exactly
+    }
+
+    It 'still treats a FAST empty result as empty (retry, then "no tests discovered"), not as Timeout' {
+        $script:MutAttemptSeconds = 1.0
+        $mutant = [pscustomobject]@{ id = 61; objectId = 72918630; line = 4 }
+
+        $results = Invoke-MutMutantLoop -Config $script:TimeoutConfig -Env $script:EnvHandle -Mutants @($mutant) `
+            -Baseline $script:Baseline -Coverage $script:Coverage -References $script:References `
+            -RunNo 11 -RunDir $script:RunDir -BackendModulePath 'unused.psm1' -WarningAction SilentlyContinue
+
+        $results[0].Status | Should -Be 'Error'
+        $results[0].Error | Should -Be 'no tests discovered'
+        Should -Invoke -ModuleName MutantLoop Reset-MutEnvironment -Times 0 -Exactly
+        Should -Invoke -ModuleName MutantLoop Invoke-MutTestsWithBudget -Times 2 -Exactly
+    }
+
+    It 'does not spend a recovery slot when the timeout reset succeeds, so 4 non-terminating mutants in one run do not hit the cap of 3' {
+        Mock -ModuleName MutantLoop Invoke-MutTestsWithBudget {
+            [pscustomobject]@{ TimedOut = $true; ErrorMessage = $null; ForcedKill = $false; Result = $null }
+        }
+        # Four in a row stays under the consecutive-Timeout breaker (5), so the cap is what this
+        # test measures.
+        $mutants = @(1..4 | ForEach-Object { [pscustomobject]@{ id = 100 + $_; objectId = 72918630; line = 4 } })
+
+        $results = Invoke-MutMutantLoop -Config $script:TimeoutConfig -Env $script:EnvHandle -Mutants $mutants `
+            -Baseline $script:Baseline -Coverage $script:Coverage -References $script:References `
+            -RunNo 12 -RunDir $script:RunDir -BackendModulePath 'unused.psm1' -WarningAction SilentlyContinue
+
+        @($results).Count | Should -Be 4
+        ($results | ForEach-Object { $_.Status }) | Should -Be @('Timeout', 'Timeout', 'Timeout', 'Timeout')
+        Should -Invoke -ModuleName MutantLoop Reset-MutEnvironment -Times 4 -Exactly
+    }
+
+    It 'keeps the slot spent when the timeout reset itself fails, so a dead environment presenting as timeouts still hits the cap and aborts' {
+        Mock -ModuleName MutantLoop Invoke-MutTestsWithBudget {
+            [pscustomobject]@{ TimedOut = $true; ErrorMessage = $null; ForcedKill = $false; Result = $null }
+        }
+        Mock -ModuleName MutantLoop Reset-MutEnvironment { throw "Wait-MutEnvironmentStatus: environment 'E1' did not reach status 'Running' within 600 seconds" }
+        $mutants = @(1..4 | ForEach-Object { [pscustomobject]@{ id = 200 + $_; objectId = 72918630; line = 4 } })
+
+        $caught = $null
+        try {
+            Invoke-MutMutantLoop -Config $script:TimeoutConfig -Env $script:EnvHandle -Mutants $mutants `
+                -Baseline $script:Baseline -Coverage $script:Coverage -References $script:References `
+                -RunNo 13 -RunDir $script:RunDir -BackendModulePath 'unused.psm1' -WarningAction SilentlyContinue | Out-Null
+        }
+        catch {
+            $caught = $_
+        }
+
+        $caught | Should -Not -BeNullOrEmpty
+        $caught.CategoryInfo.Category | Should -Be ([System.Management.Automation.ErrorCategory]::LimitsExceeded)
+        # Mutant 201: attempt + 2 outage retries each spend a slot on a failed reset (3 = cap), then
+        # Error; mutant 202's timeout finds the cap spent and aborts.
+        $partialRows = @($caught.TargetObject)
+        $partialRows.Count | Should -Be 1
+        $partialRows[0].Status | Should -Be 'Error'
+    }
+
+    It 'aborts after 5 consecutive Timeouts -- every mutant timing out is a budget or environment problem, not five non-terminating mutants in a row' {
+        Mock -ModuleName MutantLoop Invoke-MutTestsWithBudget {
+            [pscustomobject]@{ TimedOut = $true; ErrorMessage = $null; ForcedKill = $false; Result = $null }
+        }
+        $mutants = @(1..6 | ForEach-Object { [pscustomobject]@{ id = 300 + $_; objectId = 72918630; line = 4 } })
+
+        $caught = $null
+        try {
+            Invoke-MutMutantLoop -Config $script:TimeoutConfig -Env $script:EnvHandle -Mutants $mutants `
+                -Baseline $script:Baseline -Coverage $script:Coverage -References $script:References `
+                -RunNo 14 -RunDir $script:RunDir -BackendModulePath 'unused.psm1' -WarningAction SilentlyContinue | Out-Null
+        }
+        catch {
+            $caught = $_
+        }
+
+        $caught | Should -Not -BeNullOrEmpty
+        $caught.CategoryInfo.Category | Should -Be ([System.Management.Automation.ErrorCategory]::LimitsExceeded)
+        $caught.Exception.Message | Should -BeLike '*5 consecutive*Timeout*'
+        @($caught.TargetObject).Count | Should -Be 5
+        Should -Invoke -ModuleName MutantLoop Reset-MutEnvironment -Times 5 -Exactly
+    }
+}

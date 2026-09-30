@@ -486,10 +486,12 @@ all three test codeunits passed immediately (8/8, 16/16, 13/13). The loop cannot
 environment from a genuinely empty codeunit, because the test-readiness probe is gated on
 `status -ne 'Running'` and so never runs on the common path.
 
-**Correction (run 9 and the 503 bisect, below):** the readiness defect was real and is fixed, but it was not
-the *cause* of these 46 losses. The cause is a transient environment outage after roughly 45–60 minutes of
-continuous test jobs, which happens with no mutant active at all. The losses land on the last two codeunits
-only because the loop always runs objects in the same order.
+**Correction (settled by run 10, below):** the readiness defect was real and is fixed, but it was not the
+*cause* of these 46 losses. The cause is a **non-terminating mutant**: mutant 4371 (72918630,
+`BuildBatchDisplay`) makes a `repeat … until false` loop never exit, and it runs at execution position 219 in
+every run. The CLI stops waiting and reports zero tests while the BC session keeps looping, which poisons
+every later job. The intermediate "transient environment outage" reading (503 bisect) was wrong for these
+losses.
 
 Three fixes from the pre-merge review proved themselves here: `Error` mutants were excluded from the
 denominator (0.4201 over 219 valid mutants, not 92/265 = 0.347, which is what the old code would have
@@ -545,8 +547,10 @@ so nothing degraded gradually. **Job 247 (44 min in, ~58 min after the environme
 since start) returned an empty result after 122 s.** DemoPortal still reported `Running`. Three probe jobs at
 18:13 UTC, ~2–4 min later, all passed.
 
-**Finding: the environment has a transient outage after roughly 45–60 minutes / 230–255 test jobs of
-continuous use, independent of mutation.** Run 9's outage was longer (one mutant recorded the environment
+**Finding at the time (superseded by run 10, below, for the 46 losses): the environment has a transient
+outage after roughly 45–60 minutes / 230–255 test jobs of continuous use, independent of mutation.** The
+phase-2 failure itself is real and stays unexplained, but it recovered in minutes and is not what runs 8–10
+lost mutants to. Run 9's outage was longer (one mutant recorded the environment
 stuck in `Starting` for 600 s); the bisect's was ~2–4 min. The data does not yet separate "after N minutes"
 from "after N jobs": both are consistent with runs 8, 9 and the bisect. `env logs` shows one container boot
 with no timestamps, so it cannot confirm a container restart.
@@ -562,6 +566,49 @@ outage seen through `continia test run`.
 loop burns through the rest of the run inside the outage window. The fix is in the loop, not the mutants:
 on an empty or 503 result, wait (bounded) until a probe job returns real results, then retry the *same*
 mutant rather than recording `Error` and moving on.
+
+### Run 10: the root cause is a non-terminating mutant (2026-09-30)
+
+Run 10 reran the U2 scope with the outage wait and circuit breaker in place, on the AUT pinned to `c4024bff2`.
+Upstream PR 57129 "New ranges" (`223370f51`) narrowed `idRanges` and left `field(72282525; …)` in
+`BankAccRecon.TableExt.al` outside them, so AUT HEAD fails to publish with `AS0013`. The pin was exported with
+`git archive`, leaving the AUT repo untouched; none of the 4 target or 4 test codeunits differ between run 9's
+commit and the pin. Errors began at execution position 219 again, as `no tests discovered`, and the **circuit
+breaker aborted the run after 5 consecutive errors** with a partial export (`results/10.json`: `aborted: true`,
+5 `Error`, 41 `Pending`). The completed codeunits reproduced exactly: 72918635 0.3949 (fifth time), 72282417
+0.5000.
+
+**Root cause.** 72918630 `BuildBatchDisplay` is a `repeat … until false` loop whose only exit is
+`if TempBatchPaymentEntry.IsEmpty() then exit`. Three mutants break that exit, so the loop never ends and
+`TempIntBatchDisplay` grows without bound:
+
+| Mutant | Change |
+|---|---|
+| 4371 | `DEL TempBatchPaymentEntry.DeleteAll()` — the buffer never empties |
+| 4373 | `COND TempBatchPaymentEntry.IsEmpty() → false` |
+| 4374 | `DEL exit` |
+
+4371 is the mutant at execution position 219 in runs 8, 9 and 10 (the first errored id in runs 8 and 10).
+
+**Why it looked like an empty codeunit.** `continia test run --timeout N` stops the *client* waiting after N
+seconds and returns exit code 1 with `{"status":"failed","summary":{"total":0,…},"tests":[]}` and an empty
+stderr — no timeout marker (verified live with `--timeout 2`). The BC session keeps looping: `env sessions`
+showed two sessions (user `EH`, client type 3, logged in 19:40:06 and 19:50:56 UTC) still alive ~15 minutes
+later. The loop read the zero-test result as empty, retried it against the still-looping session, recorded
+`no tests discovered`, and never reached the Timeout branch — the only branch that resets the environment,
+which is what kills a runaway session. Every later job on 95121 then came back empty; in run 9 the runaway
+sessions eventually took the service down, producing the 503s. They survived until the environment was
+stopped and started by hand, and the first `env start` did not take effect (still `Stopped` 28 minutes later;
+re-issued).
+
+**Side finding: the restricted test-session identity is user `EH`** (client type 3) — the identity §6.1.5b and
+the "Not proven" list call unidentified. Not yet followed up.
+
+**Fix (2026-09-30).** An empty result whose attempt took at least 90% of the timeout handed to the backend is
+now treated as `Timeout`: not retried, environment reset (killing the session), status `Timeout`, which the
+score already counts as detected. A reset that succeeds no longer spends a recovery slot (it is the mutant's
+verdict, not a lost environment); a reset that throws keeps it spent. 5 consecutive `Timeout` rows abort the
+run, since each costs a full stop/start. Not yet run live.
 
 **The readiness fix did its job, and could not have fixed this on its own.** Silent `no tests discovered` dropped from 46
 to 8; the remaining losses now carry an actionable reason instead of looking like empty codeunits.
@@ -639,11 +686,13 @@ and have been removed from this list. What remains genuinely open:
   the test app before a run would start. `Publish-MutBaseline` should detect this and unpublish-then-retry.
   At pilot scale it is an annoyance; at the 8-hour or 88-hour scale discussed above it means a long run can
   die at its first real step for a reason that has nothing to do with mutation testing.
-- **The environment has a transient outage after ~45–60 min / ~230–255 test jobs of continuous use** (503
-  bisect). It happens with no mutant active, so it is a backend property, not a mutation effect. It cost
-  46 of 265 mutants in each of runs 8 and 9 because the loop fails fast through the outage. Which of time or
-  job count triggers it is not separated, and the DemoPortal-side cause is unknown. The loop now
-  waits for the environment to serve again and retries the same mutant (fixed 2026-09-30); not yet run live.
+- **Non-terminating mutants poisoned the environment (runs 8–10).** A mutant whose code never finishes
+  surfaced as a zero-test result, because the CLI's `--timeout` only stops the client; the BC session kept
+  looping and every later job came back empty. Cost 46 of 265 mutants in runs 8 and 9, 41 in run 10. Fixed
+  2026-09-30 (client-wait-expired empty result treated as `Timeout`, environment reset); not yet run live.
+  A reset is a full stop/start, several minutes each; a way to kill one BC session would be much cheaper.
+- **A milder, unexplained environment outage** (503 bisect, phase 2): job 247 of 95058 with no mutant active
+  returned empty, and the environment recovered within 2–4 minutes. The outage wait covers it if it recurs.
 - **A run can lose unbounded mutants to `Error` without aborting (run 9).** The recovery cap is charged
   only when the environment looks unhealthy between jobs, so 46 in-job 503s spent zero slots and the run
   published `aborted: false` with a score over 219 of 265. Fixed 2026-09-30: 5 consecutive `Error` rows

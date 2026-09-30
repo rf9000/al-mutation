@@ -663,6 +663,8 @@ For each remaining mutant, in id order:
 
 **Consecutive-`Error` circuit breaker.** After each mutant, the loop counts consecutive `Error` rows; any other status resets the count. At 5 it throws `LimitsExceeded` with the rows so far attached (`TargetObject`), so the pipeline exports a partial result exactly as for the recovery cap. This is the backstop for failures that present *inside* a job while the environment looks healthy between jobs — run 9 lost 46 mutants that way, spent zero recovery slots, and published `aborted: false` with a score over 219 of 265.
 
+**Non-terminating mutants (run 10, 2026-09-30).** `continia test run --timeout N` stops only the client after N seconds and returns exit code 1 with `status: failed`, `summary.total: 0`, no tests and an empty stderr; the BC session keeps running. So an empty result whose attempt took at least `ClientWaitExpiredFraction` (0.9) of the timeout handed to the backend is treated as `TimedOut`: it is never retried against the still-running session, and the Timeout branch resets the environment, which is what ends that session. `Timeout` counts as detected in the score (§7.3). A Timeout whose reset returns gives its recovery slot back — a non-terminating mutant is a verdict, not a lost environment; a reset that throws keeps the slot spent. 5 consecutive `Timeout` rows abort the run with a partial export, the same shape as the other aborts, because each costs a full stop/start and that many in a row points at the budget or the environment.
+
 ### 6.6 Spikes (`spikes/`)
 
 #### 6.6.1 `spikes/Start-SpikeEnvironment.ps1`

@@ -95,6 +95,21 @@ $script:OutageWaitDeadlineSec = 900
 $script:OutagePollIntervalSec = 30
 $script:MaxOutageRetriesPerMutant = 2
 $script:MaxConsecutiveErrors = 5
+
+# FIX (run 10, 2026-09-30): non-terminating mutants. Mutants 4371/4373/4374 make
+# BuildBatchDisplay's `repeat ... until false` loop never exit. The CLI's --timeout only stops the
+# CLIENT waiting and then reports ZERO tests; the BC session keeps looping (two were still alive
+# ~15 min later). The loop read that as an empty result ("no tests discovered"), retried it
+# against the still-looping session, and never reached the Timeout branch -- the one that resets
+# the environment and so kills the runaway session -- so every later job on that test codeunit
+# came back empty too. That is what cost runs 8, 9 and 10 every mutant from execution position
+# 219 on.
+#   ClientWaitExpiredFraction -- an empty result whose attempt took at least this fraction of the
+#                                timeout handed to the backend is the client wait expiring, and is
+#                                treated as a Timeout. A genuinely empty result returns in seconds.
+#   MaxConsecutiveTimeouts    -- see the consecutive-Timeout breaker in Invoke-MutMutantLoop.
+$script:ClientWaitExpiredFraction = 0.9
+$script:MaxConsecutiveTimeouts = 5
 $script:MutOutageWaitCount = 0
 
 function Test-MutHasProperty {
@@ -110,6 +125,16 @@ function Test-MutHasProperty {
         return $false
     }
     return $null -ne $Object.PSObject.Properties[$Name]
+}
+
+function Get-MutClockSeconds {
+    <#
+        .SYNOPSIS
+        Private. A monotonic clock in seconds, used to time each test attempt (the
+        client-wait-expired check in Invoke-MutMutantLoop). A function rather than an inline
+        Stopwatch so tests can advance time without sleeping.
+    #>
+    return [System.Diagnostics.Stopwatch]::GetTimestamp() / [double][System.Diagnostics.Stopwatch]::Frequency
 }
 
 function Request-MutEnvironmentRecoveryBudget {
@@ -796,6 +821,7 @@ function Invoke-MutMutantLoop {
     # running count of consecutive Error rows -- see the constants at the top of this module.
     $script:MutOutageWaitCount = 0
     $consecutiveErrors = 0
+    $consecutiveTimeouts = 0
 
     $rows = @()
 
@@ -880,9 +906,22 @@ function Invoke-MutMutantLoop {
                 $maxAttempts = 2
                 do {
                     $attempt++
+                    $attemptStartSec = Get-MutClockSeconds
                     $outcome = Invoke-MutTestsWithBudget -Env $Env -Targets $targets -TimeoutSec $innerTimeoutSec -BudgetSec $budget -BackendModulePath $BackendModulePath
+                    $attemptElapsedSec = (Get-MutClockSeconds) - $attemptStartSec
                     $isEmptyResult = (-not $outcome.TimedOut) -and (-not $outcome.ErrorMessage) -and ($null -ne $outcome.Result) -and
                         (([int]$outcome.Result.Passed + [int]$outcome.Result.Failed) -eq 0)
+
+                    # FIX (run 10): an empty result that took (nearly) the whole timeout handed to the
+                    # backend is not "no tests" -- it is the client wait expiring on a job that is
+                    # still running in BC, i.e. a non-terminating mutant. Treat it as TimedOut, so it
+                    # is never retried against the still-looping session and the Timeout branch below
+                    # resets the environment, which is what kills that session.
+                    if ($isEmptyResult -and ($attemptElapsedSec -ge ($script:ClientWaitExpiredFraction * $innerTimeoutSec))) {
+                        Write-Warning ("Invoke-MutMutantLoop: mutant {0} -- the test run returned zero tests after {1:N0} s of a {2} s client wait; treating it as a Timeout (a job still running in the environment), not an empty result." -f $mutant.id, $attemptElapsedSec, $innerTimeoutSec)
+                        $outcome = [pscustomobject]@{ TimedOut = $true; Result = $null; ErrorMessage = $null; ForcedKill = $false }
+                        $isEmptyResult = $false
+                    }
                     # FIX (F3b IMPORTANT 1): a dead environment does not only present as an empty
                     # result -- the reviewer reproduced it presenting as a job ErrorMessage too (10/10
                     # mutants, zero environment checks, garbage score, no abort). Treat both the same
@@ -922,6 +961,13 @@ function Invoke-MutMutantLoop {
                     # to reset forever just because it happens to present as a timeout.
                     Request-MutEnvironmentRecoveryBudget -MutantId $mutant.id -Context 'a test run timed out'
                     Reset-MutEnvironment -Env $Env -Config $Config | Out-Null
+                    # FIX (run 10): the reset returned, so the environment was stopped, started and
+                    # settled (its probe passed). The Timeout was this mutant's own verdict -- a
+                    # non-terminating mutant is a detected one -- not a lost environment, so give the
+                    # slot back. A reset that throws keeps it spent, so a dead environment presenting
+                    # as timeouts still reaches the cap; the consecutive-Timeout breaker bounds the
+                    # rest.
+                    $script:MutEnvironmentRecoveryCount--
                     Start-MutPostResetSettle
                     $status = 'Timeout'
                 }
@@ -1108,6 +1154,23 @@ function Invoke-MutMutantLoop {
             $message = "Invoke-MutMutantLoop: $consecutiveErrors consecutive mutants ended in Error (last: mutant $($mutant.id): $($rows[-1].Error)). A run whose mutants keep failing to produce real results is not producing a trustworthy score; aborting with a partial export rather than continuing."
             $exception = [System.Exception]::new($message)
             throw [System.Management.Automation.ErrorRecord]::new($exception, 'MutConsecutiveErrorsExceeded', [System.Management.Automation.ErrorCategory]::LimitsExceeded, $rows)
+        }
+
+        # FIX (run 10): a Timeout whose reset succeeded is no longer charged against the recovery
+        # cap (see the Timeout branch), so this is the bound on resets instead. Non-terminating
+        # mutants are real but sparse (72918630 has three, never five in a row); five Timeouts in
+        # a row means the budget or the environment is wrong, and every one costs a full
+        # stop/start.
+        if (@($rows).Count -gt 0 -and $rows[-1].Status -eq 'Timeout') {
+            $consecutiveTimeouts++
+        }
+        else {
+            $consecutiveTimeouts = 0
+        }
+        if ($consecutiveTimeouts -ge $script:MaxConsecutiveTimeouts) {
+            $message = "Invoke-MutMutantLoop: $consecutiveTimeouts consecutive mutants ended in Timeout (last: mutant $($mutant.id)). Every mutant timing out points at the per-mutant budget or the environment, not at that many non-terminating mutants in a row, and each Timeout costs a full environment reset; aborting with a partial export rather than continuing."
+            $exception = [System.Exception]::new($message)
+            throw [System.Management.Automation.ErrorRecord]::new($exception, 'MutConsecutiveTimeoutsExceeded', [System.Management.Automation.ErrorCategory]::LimitsExceeded, $rows)
         }
     }
 
