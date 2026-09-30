@@ -480,10 +480,64 @@ all three test codeunits passed immediately (8/8, 16/16, 13/13). The loop cannot
 environment from a genuinely empty codeunit, because the test-readiness probe is gated on
 `status -ne 'Running'` and so never runs on the common path.
 
+**Correction (run 9, below):** the readiness defect was real and is fixed, but it was not the *cause* of these
+46 losses. Run 9 reproduced the identical per-codeunit breakdown with the readiness fix in place, and recorded
+reasons: the losses are confined to the two codeunits covered by test codeunits 95058 and 95121, and are
+dominated by `(503) Server Unavailable`. The environment stopping was a symptom of what those test jobs do with
+a mutant active, not a flaky sandbox.
+
 Three fixes from the pre-merge review proved themselves here: `Error` mutants were excluded from the
 denominator (0.4201 over 219 valid mutants, not 92/265 = 0.347, which is what the old code would have
 reported), the Errors table rendered each reason, and the fully-errored codeunit reported a **null** score
 rather than a misleading 0.
+
+### Run 9: reproduction with the readiness fix (2026-09-22)
+
+Same config as run 8 (`mutation.u2.config.json`), orchestrator at `6d19f84` (readiness fixes `e248f15`,
+`6cad697`, `bc63504`; launched before `5f15812`, so the old settle-probe target was still in use). `mut-spike-02` had stopped and been emptied since run 8 (AUT, Mutation Core and test app
+all absent), so this was a full cold start; every pipeline step ran unattended. 265 mutants, 91.97 min wall
+clock. Results: `results/9.json`.
+
+| AUT codeunit | Covering test | Run 8 | Run 9 |
+|---|---|---|---|
+| 72918635 (pilot) | 95155 | 62 K / 95 S / 0 E — 0.3949 | 62 K / 95 S / 0 E — **0.3949** |
+| 72282417 | 95110 | 29 K / 29 S / 0 E — 0.5000 | 29 K / 29 S / 0 E — **0.5000** |
+| 72918630 | 95121 | 1 K / 3 S / 33 E | 1 K / 3 S / 33 E |
+| 71553757 | 95058 | 0 / 0 / 13 E — null | 0 / 0 / 13 E — null |
+
+**The per-codeunit breakdown is identical to run 8**, five days apart, on a cold-started environment. 243 of
+265 mutant ids are shared between the two runs (the generator re-ran; ids shifted slightly), so the errored
+*ids* differ, but the errored *codeunits* and their counts do not. The pilot's 0.3949 is now reproduced four
+times (runs 4, 6, 8, 9).
+
+Run 9 records reasons, which run 8's code did not:
+
+| Reason | Count | AUT codeunit |
+|---|---|---|
+| `Fjernserveren returnerede en fejl: (503) Serveren ikke tilgængelig..` (503 Server Unavailable) | 37 | 13 on 71553757, 24 on 72918630 |
+| `no tests discovered` | 8 | 72918630 |
+| `Wait-MutEnvironmentStatus: ... did not reach status 'Running' within 600 seconds` (stuck in `Starting`) | 1 | 72918630 |
+
+**Finding: running test codeunits 95058 and 95121 with a mutant of their AUT object active takes the BC
+service down.** 95110 and 95155 never do, in either run. All four test codeunits pass standalone with no
+mutant active (run 8 post-mortem). So the trigger is the combination: a mutant, then its covering test. The
+likely mechanism is the standard mutation-testing hazard of a non-terminating or resource-hungry mutant —
+`COND → true` on a loop guard, or `DEL` of an `exit` inside a loop — though this is not yet confirmed.
+Once the service returns 503, subsequent mutants in the same contiguous block inherit the failure until the
+environment recovers, which fits both runs' errors arriving as contiguous blocks. Not yet diagnosed which
+mutant(s) trigger it; 71553757's 13 mutants are a cheap set to bisect one at a time.
+
+**The readiness fix did its job, and could not have fixed this.** Silent `no tests discovered` dropped from 46
+to 8; the remaining losses now carry an actionable reason instead of looking like empty codeunits.
+
+**Run 9 also exposed a new defect: 46 mutants were lost without spending a single recovery slot.** The export
+reports `aborted: false` and a score of 0.4201 over 219 of 265 mutants. The recovery cap
+(`$script:MaxEnvironmentRecoveries = 3`) is charged only when `Confirm-MutEnvironmentServing` finds the
+environment unhealthy *between* jobs; here it always looked healthy between jobs, and the job itself returned
+503. So a run can shed an unbounded number of mutants to `Error` and still publish a plausible score. This is
+the same class the F3b review's IMPORTANT 1 targeted ("a dead environment surfacing as `outcome.ErrorMessage`:
+10/10 mutants recorded `Error`, 0 environment checks, run completes"); it was closed for the between-jobs
+symptom only. Recorded in `docs/issues.md`.
 
 ### Not proven
 
@@ -515,12 +569,19 @@ and have been removed from this list. What remains genuinely open:
   the test app before a run would start. `Publish-MutBaseline` should detect this and unpublish-then-retry.
   At pilot scale it is an annoyance; at the 8-hour or 88-hour scale discussed above it means a long run can
   die at its first real step for a reason that has nothing to do with mutation testing.
-- **Two known defects are recorded but deliberately unfixed** (`docs/issues.md`): `mutation.config.json`'s
-  settle probe targets the AUT's own test codeunit, which cannot exist before the AUT is deployed — it cost
-  ~10 minutes on a fresh environment and still ships as the default, because the real fix changes the shared
-  readiness contract. And resume matches on `(runNo, mutantId)` with nothing binding a run number to the
-  mutant set that produced it, so a resumed run after a generator-flag change would adopt rows against
-  different mutants; it needs a design decision (resume by `stableKey`, or refuse when the set differs).
+- **Some mutants take the BC service down (run 9).** Test codeunits 95058 and 95121, run with a mutant of
+  their AUT object active, produce `(503) Server Unavailable` and a stuck `Starting` environment; 46 of 265
+  mutants lost in each of runs 8 and 9. The triggering mutant(s) are not yet identified. If a comparable
+  share of the whole AUT behaves this way, a full run loses thousands of mutants. Needs a bisect, then a
+  per-mutant hard timeout and a quarantine list.
+- **A run can lose unbounded mutants to `Error` without aborting (run 9).** The recovery cap is charged
+  only when the environment looks unhealthy between jobs, so 46 in-job 503s spent zero slots and the run
+  published `aborted: false` with a score over 219 of 265. Needs a consecutive-`Error` circuit breaker.
+- **Resume is not bound to a mutant set** (`docs/issues.md`): resume matches on `(runNo, mutantId)` with
+  nothing binding a run number to the mutant set that produced it, so a resumed run after a generator-flag
+  change would adopt rows against different mutants; it needs a design decision (resume by `stableKey`, or
+  refuse when the set differs). The settle-probe hazard formerly listed here is fixed (`5f15812`: the probe
+  now targets Mutation Core's own test app), except on a first-ever run against a brand-new environment.
 - **The reference map was keyed by object name alone, and it was wrong on this very slice.** Found by the
   final review's focused pass and now fixed. AL ids are per type, so a name claimed by both a codeunit and a
   page silently overwrote and resolved to the other type's id. `page 72918635 "CTS-CB JPMorgan Assist Setup"`
