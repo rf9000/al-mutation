@@ -9,47 +9,44 @@ codeunit 50602 "MUT Spike Driver B"
     // the spec'd form (the CLI cannot be passed a TestRunner codeunit id), but F7 says
     // nothing about what an ORDINARY test codeunit does once the job is running.
     //
-    // Prior: likely blocked. BC guards against starting a test run from inside one, and
-    // the test-isolation transaction scopes conflict. If this codeunit does not compile at
-    // all, that is also an answer: the surface is not reachable from the dependency set an
-    // app on this backend can declare.
+    // Mechanism A already established that BC refuses to nest test codeunits ("You cannot
+    // nest the execution of test codeunits"), and that Codeunit.Run's return value does not
+    // capture that refusal. This asks whether going through the framework's own suite runner
+    // is treated any differently.
     //
-    // Like driver A, this test must PASS -- see the note there.
+    // The body lives in codeunit 50603 (an ordinary codeunit) rather than a [TryFunction]:
+    // a TryFunction forbids the database writes that building a suite needs.
     Subtype = Test;
     TestPermissions = Disabled;
     Access = Internal;
 
+    // Observation: "MUT Mut" is SingleInstance, so text stored there dies with the job's
+    // session and cannot be read afterwards. This test therefore FAILS on purpose with the
+    // outcome as its error message, which the job output carries. That no longer confounds
+    // the result: the driving script counts a mutantResults row only when its killing test
+    // is the victim, and the victim's row (if the hook fires for it) is inserted before this
+    // test fails -- the hook never overwrites an existing row.
     [Test]
     procedure B_DriveTestSuiteFromInsideATest()
     var
         TestMethodLine: Record "Test Method Line";
-        TestSuiteMgt: Codeunit "Test Suite Mgt.";
-        MutationCore: Codeunit "MUT Mut";
-        SuiteName: Code[10];
         Outcome: Text;
+        Ran: Boolean;
     begin
-        SuiteName := 'MUTSPIKE';
-        Outcome := 'B: not reached';
-
-        if TryDriveSuite(TestSuiteMgt, TestMethodLine, SuiteName) then
-            Outcome := 'B: suite run returned without error'
+        Ran := Codeunit.Run(Codeunit::"MUT Spike Suite Runner");
+        if Ran then
+            Outcome := 'suite run returned without error'
         else
-            Outcome := 'B: blocked -- ' + GetLastErrorText();
+            Outcome := 'suite run blocked: ' + GetLastErrorText();
 
-        MutationCore.SetLastHookError(Outcome);
-    end;
+        TestMethodLine.SetRange("Test Suite", 'MUTSPIKE');
+        if TestMethodLine.FindSet() then
+            repeat
+                Outcome += StrSubstNo(' | line %1 %2 result=%3', Format(TestMethodLine."Line Type"), TestMethodLine.Name, Format(TestMethodLine.Result));
+            until TestMethodLine.Next() = 0
+        else
+            Outcome += ' | no suite lines remain';
 
-    [TryFunction]
-    local procedure TryDriveSuite(var TestSuiteMgt: Codeunit "Test Suite Mgt."; var TestMethodLine: Record "Test Method Line"; SuiteName: Code[10])
-    begin
-        // Wrapped in a TryFunction so a platform refusal ("a test run is already in
-        // progress", a transaction-scope error, a permission denial) is captured as text
-        // rather than failing this test -- a failing driver would insert its own Killed row
-        // for the sentinel mutant and destroy the observation.
-        TestSuiteMgt.CreateTestSuite(SuiteName);
-        TestSuiteMgt.SelectTestMethodsByRange(SuiteName, Format(Codeunit::"MUT Spike Victim"));
-
-        TestMethodLine.SetRange("Test Suite", SuiteName);
-        TestSuiteMgt.RunSelectedTests(TestMethodLine);
+        Error('B outcome: %1', Outcome);
     end;
 }

@@ -24,10 +24,11 @@ codeunit 50601 "MUT Spike Driver A"
     begin
         Ran := Codeunit.Run(Codeunit::"MUT Spike Victim");
 
-        // The observation channel: IsolatedStorage via Mutation Core, which the restricted
-        // test session can write even though it cannot read Mutation Core's own tables
-        // (spike U4). The authoritative answer is whether a mutantResults row appeared,
-        // read over the API by Invoke-RunnerNestingSpike.ps1; this is supporting colour.
+        // Live result (2026-09-30): never reached. BC raises "You cannot nest the execution of
+        // test codeunits. Test codeunit 50600 MUT Spike Victim was called from another test
+        // codeunit." at the Codeunit.Run call, and the return value does not capture it.
+        // Kept only so the variable is used; "MUT Mut" is SingleInstance, so this text is not
+        // readable after the job ends.
         MutationCore.SetLastHookError('A: Codeunit.Run returned ' + Format(Ran));
     end;
 }

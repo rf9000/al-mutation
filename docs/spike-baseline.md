@@ -539,6 +539,40 @@ the same class the F3b review's IMPORTANT 1 targeted ("a dead environment surfac
 10/10 mutants recorded `Error`, 0 environment checks, run completes"); it was closed for the between-jobs
 symptom only. Recorded in `docs/issues.md`.
 
+### Runner-nesting spike: can one test job drive many mutants? (2026-09-30)
+
+**No, not on DemoPortal.** `spikes/runner-nesting/`, run against `mut-spike-02`. The question: can an ordinary test
+codeunit, once a DemoPortal test job is running, invoke other tests such that `MUT Test Hooks` fires for them?
+If yes, one job could loop many mutants and amortise the per-job overhead that is ~98% of today's ~11 s/mutant.
+The victim is codeunit 50600 with one deliberately-failing test, so a firing hook leaves a `Killed` row naming it.
+
+| Mechanism | Driver | Result |
+|---|---|---|
+| A: `Codeunit.Run` on a test codeunit | 50601 | Refused: `You cannot nest the execution of test codeunits. Test codeunit 50600 MUT Spike Victim was called from another test codeunit.` Raised at the call site; the `Codeunit.Run` return value does not capture it. |
+| B: build and run a suite through `Codeunit "Test Suite Mgt."` | 50602 via 50603 | Same refusal, captured by `Codeunit.Run` of the wrapper. No suite lines survived. |
+
+In both cases the only `mutantResults` row named the *driver*, never the victim: the hook did not fire for any
+inner test. This matches the prior stated before the run for A; B was the mechanism with a real chance, and the
+platform closes it the same way.
+
+**Consequence:** combined with F7 (the CLI cannot be passed a TestRunner codeunit id), §6.1.6's in-job mutant
+loop is not reachable on this backend by any route this project controls. The ~10× throughput lever needs
+either the CLI to gain a TestRunner option or a backend where we own the runner (the Docker stub). On DemoPortal,
+~11 s/mutant is close to the floor; full-AUT runs stay at the ~46 h scale, so sampling (see "Throughput and
+sampling") is the practical route here.
+
+Four harness defects surfaced and were fixed during the spike, each worth knowing for future spikes:
+- A first draft wrapped mechanism B in a `[TryFunction]`; BC forbids database writes inside one (`Call to the
+  function 'INSERT' is not allowed inside the call to 'RunTests' when it is used as a TryFunction`), so that run
+  said nothing about B. Moved the body into an ordinary codeunit invoked with `Codeunit.Run`.
+- The script's first verdict counted any row for the sentinel mutant as "hook fired". Both drivers failed, so
+  both rows were the drivers' own. It printed "AT LEAST ONE MECHANISM WORKS" on a run where neither did. The
+  verdict now requires the killing test to be the victim.
+- `MUT Mut` is `SingleInstance`, not IsolatedStorage, so `SetLastHookError` text does not outlive the job's
+  session. Driver B now fails on purpose with its outcome as the error message.
+- A StrictMode crash between the activate and deactivate PATCHes left sentinel mutant 9901 active in the
+  environment; the script now deactivates in a `finally`.
+
 ### Not proven
 
 Schemata compile at whole-project scale, and publish at that size, were open questions in earlier drafts of

@@ -94,37 +94,49 @@ foreach ($mechanism in $mechanisms) {
         Invoke-MutApi -Env $envHandle -Method 'DELETE' -Path "mutantResults(runNo=$RunNo,mutantId=$($mechanism.MutantId))" | Out-Null
     }
 
-    Invoke-MutApi -Env $envHandle -Method 'PATCH' -Path 'mutationSetup(0)' -Body @{
-        activeMutantId = $mechanism.MutantId
-        currentRunNo   = $RunNo
-    } | Out-Null
+    # try/finally: the first live attempt crashed on a StrictMode property read between these
+    # two PATCHes and left the sentinel mutant ACTIVE in the environment. Deactivation must
+    # happen however the job step ends.
+    try {
+        Invoke-MutApi -Env $envHandle -Method 'PATCH' -Path 'mutationSetup(0)' -Body @{
+            activeMutantId = $mechanism.MutantId
+            currentRunNo   = $RunNo
+        } | Out-Null
 
-    $targets = @([pscustomobject]@{ CodeunitId = $mechanism.CodeunitId; Function = $null })
-    $testResult = Invoke-MutTests -Env $envHandle -Targets $targets -TimeoutSec 300
-    Write-Output "  driver test job: $($testResult.Passed) passed, $($testResult.Failed) failed, $($testResult.DurationMs) ms"
-    foreach ($test in @($testResult.Tests)) {
-        Write-Output "    $($test.name): $($test.result)"
-        if (($null -ne $test.PSObject.Properties['errorMessage']) -and $test.errorMessage) {
-            Write-Output "      $($test.errorMessage)"
-        }
+        $targets = @([pscustomobject]@{ CodeunitId = $mechanism.CodeunitId; Function = $null })
+        $testResult = Invoke-MutTests -Env $envHandle -Targets $targets -TimeoutSec 300
+    }
+    finally {
+        Invoke-MutApi -Env $envHandle -Method 'PATCH' -Path 'mutationSetup(0)' -Body @{
+            activeMutantId = 0
+            currentRunNo   = 0
+        } | Out-Null
     }
 
-    Invoke-MutApi -Env $envHandle -Method 'PATCH' -Path 'mutationSetup(0)' -Body @{
-        activeMutantId = 0
-        currentRunNo   = 0
-    } | Out-Null
+    # Invoke-MutTests rows are { Codeunit; Function; Result; DurationMs; Error }.
+    Write-Output "  driver test job: $($testResult.Passed) passed, $($testResult.Failed) failed, $($testResult.DurationMs) ms"
+    foreach ($test in @($testResult.Tests)) {
+        Write-Output "    $($test.Codeunit):$($test.Function): $($test.Result)"
+        if ($test.Error) {
+            Write-Output "      $($test.Error)"
+        }
+    }
 
     $after = Invoke-MutApi -Env $envHandle -Method 'GET' -Path "mutantResults?`$filter=runNo eq $RunNo and mutantId eq $($mechanism.MutantId)"
     $rows = @($after.value)
 
-    $hookFired = $rows.Count -gt 0
+    # A row alone proves nothing: the first live run found rows for BOTH mechanisms, but
+    # each named the DRIVER as killing test -- the drivers themselves failed, so the hook
+    # recorded their own failure. Only a row whose killing test is the victim shows the hook
+    # fired for a test invoked from inside a test.
     $killingTest = ''
-    if ($hookFired) {
+    if ($rows.Count -gt 0) {
         $killingTest = $rows[0].killingTest
     }
+    $hookFired = $killingTest -like 'MUT Spike Victim:*'
 
     Write-Output "  hook fired for the inner test: $hookFired"
-    if ($hookFired) {
+    if ($killingTest) {
         Write-Output "  killingTest: $killingTest"
     }
     Write-Output ''

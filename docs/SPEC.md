@@ -273,6 +273,8 @@ mechanism that works (§6.1.4, U4). This permission set is retained for the API/
 #### 6.1.6 Custom TestRunner (deferred)
 A `SubType = TestRunner` codeunit that loops over mutants in one session would remove per-job overhead but cannot be used on DemoPortal (F7). Not built in v1; recorded in `docs/issues.md`.
 
+**Runner-nesting spike (2026-09-30, `spikes/runner-nesting/`): no workaround exists on DemoPortal.** F7 rules out passing a TestRunner codeunit id to the CLI. The spike asked whether an *ordinary* test codeunit could loop mutants from inside a running test job. BC refuses both paths with the same platform error: `You cannot nest the execution of test codeunits. Test codeunit 50600 MUT Spike Victim was called from another test codeunit.` (a) `Codeunit.Run` on a test codeunit raises it at the call site, and the boolean return value does not capture it. (b) Building and running a suite through `Codeunit "Test Suite Mgt."` (`CreateTestSuite` / `SelectTestMethodsByRange` / `RunSelectedTests`) raises it too. In neither case did `MUT Test Hooks` record a result for the inner test. So the in-job mutant loop is reachable only if the CLI gains a TestRunner option, or on a backend where the test runner is under our control (the Docker backend, §6.5.3).
+
 #### 6.1.7 API pages (`APIPublisher = 'mutation'`, `APIGroup = 'core'`, `APIVersion = 'v1.0'`, `DelayedInsert = true`, `ODataKeyFields` = the PK)
 
 | Page | EntityName / EntitySetName | Source | Fields (API name → field) |
