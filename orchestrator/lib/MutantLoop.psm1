@@ -966,6 +966,7 @@ function Invoke-MutMutantLoop {
         # once. `continue` inside this do/while (the Uncovered path, and the retry below) jumps to
         # the while condition, so it still ends this mutant when $retryMutant is false.
         $outageRetries = 0
+        $timeoutConfirmationDone = $false
         do {
             $retryMutant = $false
             $timeoutRecoveryFailure = $null
@@ -1089,6 +1090,25 @@ function Invoke-MutMutantLoop {
                             # row is written (see $timeoutRecoveryFailure below).
                             $timeoutRecoveryFailure = $_.Exception.Message
                         }
+                    }
+
+                    # FIX (run 14, 2026-10-01): confirm a Timeout before trusting it. Timeout counts as
+                    # detected in the score, so an environment hiccup that makes an ordinary mutant
+                    # run past its budget is a false kill: run 14's mutant 159 (`Count() > 0` ->
+                    # `>= 0`, which survived in 186 ms in run 13) hit its wall-clock budget with no
+                    # runaway session behind it. A non-terminating mutant times out every time; a
+                    # hiccup does not. So re-run the mutant once -- after waiting for the
+                    # environment if the reset failed -- and record Timeout only if it times out
+                    # again; otherwise the re-run's own result stands.
+                    if (-not $timeoutConfirmationDone) {
+                        if ($timeoutRecoveryFailure) {
+                            $Env = Wait-MutOutageRecovery -Env $Env -Config $Config -MutantId $mutant.id -RunNo $RunNo -Reason "the environment reset after this mutant's Timeout failed: $timeoutRecoveryFailure"
+                            $timeoutRecoveryFailure = $null
+                        }
+                        $timeoutConfirmationDone = $true
+                        Write-Warning "Invoke-MutMutantLoop: mutant $($mutant.id) -- timed out; re-running it once to confirm (a non-terminating mutant times out every time, an environment hiccup does not)."
+                        $retryMutant = $true
+                        continue
                     }
                     $status = 'Timeout'
                 }

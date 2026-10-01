@@ -534,7 +534,12 @@ Describe 'Invoke-MutMutantLoop' {
         # reset's own probe) -> RESET -> SETTLE -> PATCH(0, the usual per-mutant deactivate)
         # run 11: the Timeout branch first lists sessions to stop the runaway one; with none
         # visible (this mock lists nothing) it falls back to the reset -- still after deactivation.
-        $global:MutCallLog | Should -Be @('API:GET:mutantResults?$filter=runNo eq 7', 'API:PATCH:mutationSetup(0)', 'TESTS', 'API:PATCH:mutationSetup(0)', 'API:GET:sessions', 'RESET', 'SETTLE', 'API:PATCH:mutationSetup(0)')
+        # run 14: a Timeout is confirmed by one re-run, which repeats the same cycle -- still
+        # deactivating before each reset.
+        $global:MutCallLog | Should -Be @('API:GET:mutantResults?$filter=runNo eq 7',
+            'API:PATCH:mutationSetup(0)', 'TESTS', 'API:PATCH:mutationSetup(0)', 'API:GET:sessions', 'RESET', 'SETTLE',
+            'API:PATCH:mutationSetup(0)', 'TESTS', 'API:PATCH:mutationSetup(0)', 'API:GET:sessions', 'RESET', 'SETTLE',
+            'API:PATCH:mutationSetup(0)')
 
         Should -Invoke -ModuleName MutantLoop Invoke-MutApi -ParameterFilter {
             $Method -eq 'PATCH' -and $Body.activeMutantId -eq 0
@@ -544,8 +549,10 @@ Describe 'Invoke-MutMutantLoop' {
         # suppress the very "recovery N of 3" warning that proves the timeout spent a slot from
         # the shared cap -- -WarningVariable captures it regardless, so this assertion actually
         # fails if Request-MutEnvironmentRecoveryBudget's call on the timeout path is deleted.
+        # run 14: the confirmation re-run times out too and spends a slot again; each successful
+        # reset refunds its slot, so both warnings read "1 of 3".
         $recoveryWarning = @($timeoutWarnings) | Where-Object { $_ -like '*a test run timed out*recovering*1 of 3*' }
-        @($recoveryWarning).Count | Should -Be 1
+        @($recoveryWarning).Count | Should -Be 2
     }
 
     It 'processes mutants in id order regardless of input order' {
@@ -1628,12 +1635,13 @@ Describe 'Invoke-MutMutantLoop: non-terminating mutants (run 10, 2026-09-30)' {
             -RunNo 10 -RunDir $script:RunDir -BackendModulePath 'unused.psm1' -WarningAction SilentlyContinue
 
         $results[0].Status | Should -Be 'Timeout'
-        ($script:MutStopRequests -join ',') | Should -Be '81'
-        @($script:MutFakeSessions | Where-Object { $_.sessionId -eq 81 }).Count | Should -Be 0
+        # The attempt and its one confirmation re-run (run 14) each left a runaway, each stopped.
+        ($script:MutStopRequests -join ',') | Should -Be '81,82'
+        @($script:MutFakeSessions | Where-Object { $_.sessionId -in 81, 82 }).Count | Should -Be 0
         Should -Invoke -ModuleName MutantLoop Reset-MutEnvironment -Times 0 -Exactly
-        # No empty-result retry: re-running a hung mutant against a still-looping session is what
-        # poisoned every later job in runs 8-10.
-        Should -Invoke -ModuleName MutantLoop Invoke-MutTestsWithBudget -Times 1 -Exactly
+        # No empty-result retry against the still-looping session (what poisoned runs 8-10) --
+        # only the confirmation re-run, after the session was stopped.
+        Should -Invoke -ModuleName MutantLoop Invoke-MutTestsWithBudget -Times 2 -Exactly
     }
 
     It 'never stops a stale session row (from an earlier server instance) -- it accepts the stop but never goes away, and would force a needless reset' {
@@ -1659,7 +1667,8 @@ Describe 'Invoke-MutMutantLoop: non-terminating mutants (run 10, 2026-09-30)' {
             -RunNo 10 -RunDir $script:RunDir -BackendModulePath 'unused.psm1' -WarningAction SilentlyContinue
 
         $results[0].Status | Should -Be 'Timeout'
-        ($script:MutStopRequests -join ',') | Should -Be '81'
+        # 81 never goes away -> reset; the confirmation re-run's runaway (82) is then stopped.
+        ($script:MutStopRequests -join ',') | Should -Be '81,82'
         Should -Invoke -ModuleName MutantLoop Reset-MutEnvironment -Times 1 -Exactly
     }
 
@@ -1678,7 +1687,7 @@ Describe 'Invoke-MutMutantLoop: non-terminating mutants (run 10, 2026-09-30)' {
             -RunNo 10 -RunDir $script:RunDir -BackendModulePath 'unused.psm1' -WarningAction SilentlyContinue
 
         $results[0].Status | Should -Be 'Timeout'
-        Should -Invoke -ModuleName MutantLoop Reset-MutEnvironment -Times 1 -Exactly
+        Should -Invoke -ModuleName MutantLoop Reset-MutEnvironment -Times 2 -Exactly
     }
 
     It 'still treats a FAST empty result as empty (retry, then "no tests discovered"), not as Timeout' {
@@ -1697,10 +1706,15 @@ Describe 'Invoke-MutMutantLoop: non-terminating mutants (run 10, 2026-09-30)' {
 
     It 'does not spend a recovery slot when the runaway is stopped or the reset succeeds, so 4 non-terminating mutants in one run do not hit the cap of 3' {
         Mock -ModuleName MutantLoop Invoke-MutTestsWithBudget $script:TimedOutWithRunaway
-        # Mutants 102 and 104 leave an unstoppable session, so they take the reset path; four in a
-        # row stays under the consecutive-Timeout breaker (5), so the cap is what this measures.
-        $script:MutUnstoppable[82] = $true
-        $script:MutUnstoppable[84] = $true
+        # Every Timeout takes the reset path (no sessions API) and every reset succeeds: 4 mutants x
+        # (attempt + confirmation) = 8 resets, none of which may spend the cap of 3. Four in a row
+        # stays under the consecutive-Timeout breaker (5), so the cap is what this measures.
+        Mock -ModuleName MutantLoop Invoke-MutApi {
+            param($Env, $Method, $Path, $Body)
+            if ($Path -eq 'sessions') { throw '(404) Not Found' }
+            if ($Method -eq 'GET') { return [pscustomobject]@{ value = @() } }
+            return $null
+        }
         $mutants = @(1..4 | ForEach-Object { [pscustomobject]@{ id = 100 + $_; objectId = 72918630; line = 4 } })
 
         $results = Invoke-MutMutantLoop -Config $script:TimeoutConfig -Env $script:EnvHandle -Mutants $mutants `
@@ -1709,10 +1723,10 @@ Describe 'Invoke-MutMutantLoop: non-terminating mutants (run 10, 2026-09-30)' {
 
         @($results).Count | Should -Be 4
         ($results | ForEach-Object { $_.Status }) | Should -Be @('Timeout', 'Timeout', 'Timeout', 'Timeout')
-        Should -Invoke -ModuleName MutantLoop Reset-MutEnvironment -Times 2 -Exactly
+        Should -Invoke -ModuleName MutantLoop Reset-MutEnvironment -Times 8 -Exactly
     }
 
-    It 'records Timeout without re-running the mutant when the fallback reset fails, then waits for the environment; failed resets keep their slot, so a dead environment still hits the cap' {
+    It 'waits for the environment after a failed fallback reset before the confirmation re-run, records only confirmed Timeouts, and keeps failed resets'' slots so a dead environment still hits the cap' {
         Mock -ModuleName MutantLoop Invoke-MutTestsWithBudget {
             [pscustomobject]@{ TimedOut = $true; ErrorMessage = $null; ForcedKill = $false; Result = $null }
         }
@@ -1731,13 +1745,42 @@ Describe 'Invoke-MutMutantLoop: non-terminating mutants (run 10, 2026-09-30)' {
 
         $caught | Should -Not -BeNullOrEmpty
         $caught.CategoryInfo.Category | Should -Be ([System.Management.Automation.ErrorCategory]::LimitsExceeded)
-        # 201-203 each: no visible runaway, so reset; the reset fails and keeps its slot; Timeout is
-        # recorded (the verdict was reached) and the loop waits for the environment instead of
-        # re-running the mutant. 204's timeout finds the cap spent and aborts.
+        # 201: attempt -> no visible runaway -> reset fails (slot 1 kept) -> wait for the
+        # environment -> confirmation re-run -> times out again -> reset fails (slot 2) -> Timeout
+        # recorded, then wait. 202: attempt -> reset fails (slot 3) -> wait -> confirmation re-run
+        # times out -> the cap is spent -> abort. Only 201's confirmed Timeout is a row; 202's
+        # single, unconfirmed Timeout is not recorded (Pending), which is the point of confirming.
         $partialRows = @($caught.TargetObject)
-        ($partialRows | ForEach-Object { $_.Status }) | Should -Be @('Timeout', 'Timeout', 'Timeout')
+        ($partialRows | ForEach-Object { $_.Status }) | Should -Be @('Timeout')
         Should -Invoke -ModuleName MutantLoop Invoke-MutTestsWithBudget -Times 4 -Exactly
         Should -Invoke -ModuleName MutantLoop Wait-MutOutageRecovery -Times 3 -Exactly
+    }
+
+    It 'records the real result, not Timeout, when the confirmation re-run finishes -- an environment hiccup is not a kill (run 14, mutant 159)' {
+        $script:MutHiccupCalls = 0
+        Mock -ModuleName MutantLoop Invoke-MutTestsWithBudget {
+            $script:MutHiccupCalls++
+            if ($script:MutHiccupCalls -eq 1) {
+                return [pscustomobject]@{ TimedOut = $true; ErrorMessage = $null; ForcedKill = $false; Result = $null }
+            }
+            [pscustomobject]@{
+                TimedOut = $false; ErrorMessage = $null; ForcedKill = $false
+                Result   = [pscustomobject]@{
+                    Passed = 13; Failed = 0; DurationMs = 186
+                    Tests  = @([pscustomobject]@{ Codeunit = 'C'; Function = 'F'; Result = 'Pass'; DurationMs = 186; Error = $null })
+                }
+            }
+        }
+        $mutant = [pscustomobject]@{ id = 159; objectId = 72918630; line = 120 }
+
+        $results = Invoke-MutMutantLoop -Config $script:TimeoutConfig -Env $script:EnvHandle -Mutants @($mutant) `
+            -Baseline $script:Baseline -Coverage $script:Coverage -References $script:References `
+            -RunNo 15 -RunDir $script:RunDir -BackendModulePath 'unused.psm1' -WarningAction SilentlyContinue
+
+        $results[0].Status | Should -Be 'Survived'
+        $results[0].DurationMs | Should -Be 186
+        Should -Invoke -ModuleName MutantLoop Invoke-MutTestsWithBudget -Times 2 -Exactly
+        @(Get-Content -Path (Join-Path $script:RunDir 'results.jsonl')).Count | Should -Be 1
     }
 
     It 'aborts after 5 consecutive Timeouts -- every mutant timing out is a budget or environment problem, not five non-terminating mutants in a row' {
@@ -1758,6 +1801,6 @@ Describe 'Invoke-MutMutantLoop: non-terminating mutants (run 10, 2026-09-30)' {
         $caught.CategoryInfo.Category | Should -Be ([System.Management.Automation.ErrorCategory]::LimitsExceeded)
         $caught.Exception.Message | Should -BeLike '*5 consecutive*Timeout*'
         @($caught.TargetObject).Count | Should -Be 5
-        $script:MutStopRequests.Count | Should -Be 5
+        $script:MutStopRequests.Count | Should -Be 10
     }
 }
