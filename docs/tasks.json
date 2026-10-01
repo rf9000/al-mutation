@@ -633,5 +633,114 @@
     "acceptance": ["Baseline table complete for 181 codeunits.", "U2 median recorded.", "maxMutants set with the calculation shown."],
     "commit": "gate(g1): full baseline, U2 median and sampling default",
     "guardrails": ["Do not start before the human go.", "Sequential jobs only."]
+  },
+  {
+    "id": "T30",
+    "title": "Spec: fix suggestions for surviving mutants (Suggest-Test)",
+    "wave": 9,
+    "dependsOn": ["T27"],
+    "model": "controller",
+    "specSections": ["§1.2", "§6.0", "§6.7", "§7.7", "§7.8"],
+    "files": { "create": [], "modify": ["docs/SPEC.md", "docs/tasks.json", "docs/issues.md"], "readOnly": [] },
+    "interfaces": { "consumes": [], "produces": ["§6.7, §7.7, §7.8 and tasks T31–T33"] },
+    "steps": [
+      { "n": 1, "do": "Write §6.7, §7.7, §7.8; move Suggest-Test out of the deferred list (§1.2, docs/issues.md); add T31–T33.", "run": "git add docs; git commit -m \"docs(spec): add fix suggestions for surviving mutants (§6.7)\"" }
+    ],
+    "acceptance": ["tasks.json parses.", "§6.7 names every exported function, file and schema the later tasks build."],
+    "commit": "docs(spec): add fix suggestions for surviving mutants (§6.7)",
+    "guardrails": []
+  },
+  {
+    "id": "T31",
+    "title": "Orchestrator: test procedure index and fix briefs (stage 1)",
+    "wave": 9,
+    "dependsOn": ["T30"],
+    "model": "sonnet",
+    "specSections": ["§6.7.1", "§6.7.2", "§7.7", "§7.1", "§7.3", "§9.3"],
+    "files": {
+      "create": ["orchestrator/lib/FixBriefs.psm1", "orchestrator/Export-MutFixBriefs.ps1", "orchestrator/tests/FixBriefs.Tests.ps1"],
+      "modify": ["orchestrator/lib/References.psm1", "orchestrator/tests/References.Tests.ps1", "orchestrator/lib/Run.psm1", "orchestrator/tests/Run.Tests.ps1"],
+      "readOnly": ["out/", "results/15.json", "fixtures/fixture-test", "fixtures/fixture-aut"]
+    },
+    "interfaces": {
+      "consumes": ["Get-MutObjectHeader, Test-MutIsTestCodeunit, Remove-MutAlTrivia (References.psm1)", "Config.psm1 config loader", "results/<N>.json (§7.3)", "out/runs/<N>/gen/mutants.json (§7.1)"],
+      "produces": [
+        "Get-MutTestProcedureIndex -TestAppPath <string> [-CodeunitIds <int[]>] -> [pscustomobject[]] (§6.7.1)",
+        "Get-MutOperatorHint -Operator <string> -> [string]",
+        "New-MutFixBriefs -RunNo -Mutants -Results -AutPath -TestIndex [-ContextLines 15] -> §7.7 object",
+        "Export-MutFixBriefs -RunNo -Config [-RepoRoot] -> path of results/<N>-fix-briefs.json",
+        "orchestrator/Export-MutFixBriefs.ps1 -ConfigPath <file> -RunNo <int>"
+      ]
+    },
+    "steps": [
+      { "n": 1, "do": "Write failing Pester tests for Get-MutTestProcedureIndex in References.Tests.ps1 using small .al files written to $TestDrive: two [Test] methods, one with a multi-line attribute block ([Test] + [HandlerFunctions('X')]), one handler method ([ConfirmHandler]) and one local helper that must NOT appear, a commented-out `// [Test]` procedure that must NOT appear, a block comment above a test that must not shift line numbers, a non-test codeunit that must be skipped, and -CodeunitIds filtering. Assert exact Name/StartLine/EndLine values computed by hand." },
+      { "n": 2, "do": "Implement Get-MutTestProcedureIndex and add it to References.psm1's Export-ModuleMember. Run the tests until green.", "run": "powershell -NoProfile -Command \"Invoke-Pester orchestrator/tests/References.Tests.ps1 -Output Detailed\"", "expect": "0 failed" },
+      { "n": 3, "do": "Write failing FixBriefs.Tests.ps1: Get-MutOperatorHint returns the exact §6.7.2 texts and throws on an unknown operator; New-MutFixBriefs on an inline results object (one Survived, one Killed, one Timeout) and $TestDrive AUT files covers: only Survived rows emitted, sorted by id; line match (sourceDrift false); drift resolved to a unique other line (sourceDrift true, resolvedLine set); drift with zero and with two occurrences (resolvedLine null); missing AUT file (context null); context window clipped at file start and end; exact context text format with the `>` marker; a covering codeunit missing from the index (null name/file, empty procedures, warning); a survivor missing from mutants throws." },
+      { "n": 4, "do": "Implement FixBriefs.psm1 (Get-MutOperatorHint, New-MutFixBriefs, Export-MutFixBriefs; Test-MutFixReport and Export-MutFixMarkdown come in T32 — do not export names that do not exist yet) and orchestrator/Export-MutFixBriefs.ps1. Run the tests until green.", "run": "powershell -NoProfile -Command \"Invoke-Pester orchestrator/tests/FixBriefs.Tests.ps1 -Output Detailed\"", "expect": "0 failed" },
+      { "n": 5, "do": "Pipeline hook in Run.psm1 per §6.7.2 (after a complete Export-MutResultsStep, failure only warns). Add a Run.Tests.ps1 case: Export-MutFixBriefs mocked to throw, the pipeline still returns the export paths; and a case showing it is not called on a partial export." },
+      { "n": 6, "do": "Live check on run 15 (read-only, no environment).", "run": "powershell -NoProfile -File orchestrator/Export-MutFixBriefs.ps1 -ConfigPath mutation.config.json -RunNo 15", "expect": "results/15-fix-briefs.json with 146 survivors; every survivor has at least one covering test with a non-empty procedures list; report how many have sourceDrift true" },
+      { "n": 7, "do": "Full suite.", "run": "powershell -NoProfile -Command \"Invoke-Pester orchestrator/tests -Output Detailed\"", "expect": "0 failed" },
+      { "n": 8, "do": "Commit (include results/15-fix-briefs.json).", "run": "git add orchestrator results/15-fix-briefs.json; git commit -m \"feat(orchestrator): fix briefs for surviving mutants\"" }
+    ],
+    "acceptance": ["All Pester tests pass.", "results/15-fix-briefs.json matches §7.7 and holds 146 survivors.", "No AUT or test-app source file outside out/ is read or written."],
+    "commit": "feat(orchestrator): fix briefs for surviving mutants",
+    "guardrails": ["Never write under the AUT or test-app source paths (§4).", "No environment calls; this task needs none.", "Windows PowerShell 5.1 syntax (§9.3)."]
+  },
+  {
+    "id": "T32",
+    "title": "Orchestrator: fix report validation and markdown rendering (stage 3)",
+    "wave": 10,
+    "dependsOn": ["T31"],
+    "model": "sonnet",
+    "specSections": ["§6.7.4", "§7.7", "§7.8", "§9.3"],
+    "files": {
+      "create": ["orchestrator/Test-MutFixReport.ps1"],
+      "modify": ["orchestrator/lib/FixBriefs.psm1", "orchestrator/tests/FixBriefs.Tests.ps1"],
+      "readOnly": ["results/15-fix-briefs.json"]
+    },
+    "interfaces": {
+      "consumes": ["Get-MutTestProcedureIndex", "§7.7 brief"],
+      "produces": [
+        "Test-MutFixReport -BriefsPath -FixesPath [-TestIndex] -> [string[]] errors",
+        "Export-MutFixMarkdown -BriefsPath -FixesPath -OutPath",
+        "orchestrator/Test-MutFixReport.ps1 -RunNo <int> (exit 0 + 'ok' / exit 1 + errors)"
+      ]
+    },
+    "steps": [
+      { "n": 1, "do": "Write failing tests: a hand-written valid brief + fixes pair (fix/add-assert, fix/modify-test, new-test, equivalent, one entry covering two mutants) returns no errors; then one test per rule 1–7 of §6.7.4 that breaks exactly that rule and asserts the error string starts with the fixId (or `report`). Pass -TestIndex inline so no files are needed except the two JSON files in $TestDrive." },
+      { "n": 2, "do": "Implement Test-MutFixReport; export it.", "run": "powershell -NoProfile -Command \"Invoke-Pester orchestrator/tests/FixBriefs.Tests.ps1 -Output Detailed\"", "expect": "0 failed" },
+      { "n": 3, "do": "Write a failing test for Export-MutFixMarkdown on the valid pair: header counts, section order (codeunit id, equivalent last), each entry's fields, the alCode inside a ```al fence. Implement; export it; green." },
+      { "n": 4, "do": "Write orchestrator/Test-MutFixReport.ps1 per §6.7.4. Check that it exits 1 with a missing fixes file." },
+      { "n": 5, "do": "Full suite and commit.", "run": "powershell -NoProfile -Command \"Invoke-Pester orchestrator/tests -Output Detailed\"; git add orchestrator; git commit -m \"feat(orchestrator): validate and render fix reports\"", "expect": "0 failed" }
+    ],
+    "acceptance": ["Every rule of §6.7.4 has a test that fails without it.", "Test-MutFixReport.ps1 exits 0/1 as specified."],
+    "commit": "feat(orchestrator): validate and render fix reports",
+    "guardrails": ["Windows PowerShell 5.1 syntax (§9.3)."]
+  },
+  {
+    "id": "T33",
+    "title": "Skill mutation-fix-suggest (stage 2) and live dry run on run 15",
+    "wave": 11,
+    "dependsOn": ["T32"],
+    "model": "sonnet",
+    "specSections": ["§6.7.3", "§6.7.5", "§7.8"],
+    "files": {
+      "create": [".claude/skills/mutation-fix-suggest/SKILL.md", "results/15-fixes.json", "results/15-fixes.md"],
+      "modify": [],
+      "readOnly": ["results/15-fix-briefs.json", "out/test-app", "out/aut-original"]
+    },
+    "interfaces": {
+      "consumes": ["results/<N>-fix-briefs.json", "orchestrator/Test-MutFixReport.ps1"],
+      "produces": ["/mutation-fix-suggest <RunNo> skill", "results/15-fixes.json, results/15-fixes.md"]
+    },
+    "steps": [
+      { "n": 1, "do": "Write SKILL.md (frontmatter name + description that triggers on 'suggest fixes for surviving mutants', 'mutation fix report', '/mutation-fix-suggest'). Body: the §6.7.3 procedure, the §7.8 schema with the meaning of each change kind, the verdict criteria, the style rules for AL (one statement per line, 4-space indent, declare new variables, reuse the codeunit's Assert/library/fakes), and the read-only rule for AUT and test-app sources." },
+      { "n": 2, "do": "Dry run: follow the skill for run 15 and write results/15-fixes.json; iterate until the validator passes.", "run": "powershell -NoProfile -File orchestrator/Test-MutFixReport.ps1 -RunNo 15", "expect": "ok, exit 0" },
+      { "n": 3, "do": "Report: counts per verdict and confidence, the 10 lowest-confidence entries, and any brief with sourceDrift. The controller reviews a sample of 10 entries against the test file before commit." },
+      { "n": 4, "do": "Commit.", "run": "git add .claude/skills/mutation-fix-suggest results/15-fixes.json results/15-fixes.md; git commit -m \"feat(skill): mutation-fix-suggest and first fix report for run 15\"" }
+    ],
+    "acceptance": ["Validator prints ok for run 15.", "All 146 survivors are mapped.", "No file outside results/ and .claude/skills/mutation-fix-suggest/ is changed."],
+    "commit": "feat(skill): mutation-fix-suggest and first fix report for run 15",
+    "guardrails": ["Never edit the AUT or test-app sources, including out/ copies.", "No environment calls."]
   }
 ]

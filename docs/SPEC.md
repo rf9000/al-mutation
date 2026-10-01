@@ -79,7 +79,7 @@ Deferred from the v2 plan into `docs/issues.md`, with the reason:
 | Mutating `while` conditions | Requires body rewriting (`while true do begin … break`). v1 mutates `if` and `until` conditions only. |
 | Mutating `if` conditions in `else if`, `then if`, `do if`, or case-branch position | Requires wrapping the whole `if` statement in `begin…end`, which needs compound-statement end detection. |
 | Objects other than codeunits (table/page triggers) | Same tokenizer would work; cut for POC size. |
-| Phase 4 triage page, Phase 5 incremental runs, Suggest-Test | After Gate G0. |
+| Phase 4 triage page, Phase 5 incremental runs | After Gate G0. (Suggest-Test was pulled forward on 2026-10-01 as §6.7.) |
 
 ---
 
@@ -168,7 +168,7 @@ name and the date.
 /fixtures/coverage        sample.csv from U9                         (§6.5.5)
 /generator                TypeScript generator                       (§6.4)
 /orchestrator             PowerShell orchestrator                    (§6.5)
-   Invoke-MutationRun.ps1
+   Invoke-MutationRun.ps1, Export-MutFixBriefs.ps1, Test-MutFixReport.ps1   (§6.7)
    /lib/*.psm1
    /backends/DemoPortal.psm1, Docker.psm1
    /tests/*.Tests.ps1
@@ -177,6 +177,7 @@ name and the date.
 /results                  committed run artifacts
 /out                      ignored: AUT copies, schemata, build output
 /.tools, /.continia       ignored
+/.claude/skills/mutation-fix-suggest   skill for stage 2 of §6.7
 mutation.config.json      Tier B config                              (§6.5.1)
 mutation.fixture.config.json  Tier A config                          (§6.5.1)
 ```
@@ -728,6 +729,156 @@ the whole file and requires exactly one occurrence, else aborts with `source dri
 that occur several times in the file, so their `line` MUST match (the script reports drift otherwise); HM15's `exit;` is the
 one inside `EmitSystemNotMappedRow` after `PlaceholderConsumed := true;`.
 
+### 6.7 Fix suggestions (Suggest-Test)
+
+**Goal.** Every `Survived` mutant of a run maps to one suggested AL change to the automated tests that would kill it, or to
+a reasoned verdict that the mutant is equivalent. The output is a machine-readable report (`results/<RunNo>-fixes.json`,
+§7.8) that a separate agent picks up to apply the changes in the test app. This feature **suggests only**: it never
+compiles, publishes or runs a suggested fix, and it never writes into the AUT or test-app repositories (§4). Only
+`Survived` mutants are in scope; `Timeout`, `Error`, `CompileError`, `Uncovered`, `Pending` and `Killed` rows are ignored.
+
+The work is split in three stages. Stages 1 and 3 are deterministic PowerShell with Pester tests; stage 2 is a Claude
+Code skill (an LLM), because writing a meaningful assertion needs judgement. No Anthropic API is called from PowerShell.
+
+```
+results/<N>.json + out/runs/<N>/gen/mutants.json + out/aut-original + out/test-app
+   └─ stage 1  Export-MutFixBriefs   →  results/<N>-fix-briefs.json   (§7.7, deterministic)
+        └─ stage 2  skill mutation-fix-suggest  →  results/<N>-fixes.json  (§7.8, LLM)
+             └─ stage 3  Test-MutFixReport + Export-MutFixMarkdown  →  validation errors, results/<N>-fixes.md
+```
+
+#### 6.7.1 Test procedure index (`References.psm1`)
+`Get-MutTestProcedureIndex -TestAppPath <string> [-CodeunitIds <int[]>]` → `[pscustomobject[]]`, one per test codeunit
+(files where `Test-MutIsTestCodeunit` is true), sorted by `CodeunitId`:
+`{ CodeunitId; CodeunitName; File; Procedures }`. `File` is relative to `-TestAppPath` with forward slashes. `Procedures`
+is `[{ Name; StartLine; EndLine }]` in file order, one per test method. With `-CodeunitIds`, only those codeunits are
+returned (an id with no file is simply absent).
+
+- Header: reuse `Get-MutObjectHeader` (id and name). A file without a header is skipped, with its existing warning.
+- A **test method** is a `procedure` declaration (optionally `local`/`internal`) whose preceding attribute block (the
+  consecutive non-blank lines starting with `[` directly above it) contains `[Test]` (case-insensitive). Handler methods
+  (`[ConfirmHandler]`, `[MessageHandler]`, …) and helpers are not test methods.
+- Line numbers are 1-based lines of the **original file** (comments must not shift them; strip comments per line, or
+  use a stripping that preserves newlines). `StartLine` is the first line of the attribute block. `EndLine` is the last
+  line that starts with `end;` (after leading whitespace) before the next `procedure` declaration's attribute block, or
+  before the object's closing `}` for the last procedure.
+
+#### 6.7.2 Stage 1 — fix briefs (`orchestrator/lib/FixBriefs.psm1`)
+Exports exactly: `Get-MutOperatorHint`, `New-MutFixBriefs`, `Export-MutFixBriefs`, `Test-MutFixReport`,
+`Export-MutFixMarkdown`.
+
+`Get-MutOperatorHint -Operator <string>` → `[string]`. Fixed texts (MUST be these, verbatim):
+
+| Operator | Hint |
+|---|---|
+| REL | `A relational operator was changed. Kill it with a test whose input sits exactly on the boundary of the comparison (equal values, zero, empty string), and assert the outcome that differs between the original and the mutated operator.` |
+| BOOL | `and/or was swapped. Kill it with a test where exactly one of the operands is true, and assert the outcome that differs.` |
+| NOT | `A not was added or removed, so the branch inverts. Assert the observable effect of the branch for an input that takes it (returned value, record written, error raised).` |
+| COND | `The condition was forced to a constant. Add a test where the condition evaluates to the other value, and assert the effect of the branch it guards.` |
+| DEL | `A statement was deleted. Assert the effect of that statement: the field value it set, the record it inserted, modified or deleted, the error it raised, or the value it returned.` |
+| INSFLAG | `A flag argument was inverted (e.g. Insert(true) to Insert(false)). Assert the side effect the flag controls, such as trigger logic run by the call.` |
+| BREAK | `A break was inserted. Assert the result of loop iterations after the first one.` |
+
+Any other operator throws `Unknown operator '<op>'`.
+
+`New-MutFixBriefs -RunNo <int> -Mutants <object[]> -Results <object> -AutPath <string> -TestIndex <object[]>
+[-ContextLines <int> = 15]` → the §7.7 object (`autPath`/`testAppPath`/source-path fields are added by the caller).
+`-Mutants` are §7.1 entries; `-Results` is the parsed `results/<N>.json` (§7.3). For every row with `status = Survived`,
+in ascending `id` order:
+
+1. Join with the `mutants.json` entry of the same `id` for `objectType`, `objectName`, `file`. A survivor without a
+   `mutants.json` entry throws `Survivor <id> missing from mutants.json`.
+2. **Locate the line.** Read `<AutPath>/<file>`. If line `line` contains `original` (ordinal, exact substring),
+   `resolvedLine = line`, `sourceDrift = false`. Otherwise search the whole file: exactly one line containing `original`
+   → `resolvedLine` = that line, `sourceDrift = true`; zero or several → `resolvedLine = null`, `sourceDrift = true`.
+   A missing file gives `resolvedLine = null`, `sourceDrift = true` and `context = null`. (Why: `out/aut-original` is
+   re-synced on every run and the AUT is a moving target, §1.1.) For DEL the `original` is the deleted statement and
+   the check is the same.
+3. **Context.** Lines `max(1, c − ContextLines)` … `min(lineCount, c + ContextLines)` where `c = resolvedLine ?? line`,
+   rendered as one string, lines joined by `\n`, each formatted as `{marker}{lineNo,5}: {text}` where `marker` is `>`
+   on line `c` and a space otherwise (PowerShell: `'{0}{1,5}: {2}' -f $marker, $n, $text`). Trailing `\r` is removed.
+4. **Covering tests.** For each id in the row's `coveringTests`, the `-TestIndex` entry with that `CodeunitId` gives
+   `{ codeunitId, codeunitName, file, procedures: [{ name, startLine, endLine }] }`. An id not in the index gives
+   `codeunitName = null`, `file = null`, `procedures = []` and a `Write-Warning`; it is never dropped.
+5. `operatorHint = Get-MutOperatorHint <operator>`.
+
+`Export-MutFixBriefs -RunNo <int> -Config <object> [-RepoRoot <string>]` reads `results/<N>.json`,
+`<workDir>/runs/<N>/gen/mutants.json`, builds the index over `<workDir>/test-app` restricted to all `coveringTests` ids
+of the survivors, calls `New-MutFixBriefs` with `-AutPath <workDir>/aut-original`, sets `autPath`/`testAppPath` (repo
+relative, forward slashes) and `autSourcePath`/`testAppSourcePath` (from `Config.aut.sourcePath`/`Config.testApp.sourcePath`),
+writes `results/<N>-fix-briefs.json` (`ConvertTo-Json -Depth 10`, UTF-8) and returns its path. A run with zero survivors
+writes a brief with `survivors: []`. A missing `results/<N>.json` or `mutants.json` throws, naming the path.
+
+Script `orchestrator/Export-MutFixBriefs.ps1 -ConfigPath <file> -RunNo <int>` loads the config (`Config.psm1`),
+imports `References.psm1` and `FixBriefs.psm1`, calls `Export-MutFixBriefs` and prints the path. It works on any past
+run without touching an environment.
+
+**Pipeline hook.** `Invoke-MutRunPipeline` (`Run.psm1`) calls `Export-MutFixBriefs` after `Export-MutResultsStep` on a
+complete (non-partial) export. A failure there is caught and reported with `Write-Warning`; it MUST NOT fail the run or
+change any other output. No `.done` marker: the brief is cheap and re-generated every time.
+
+#### 6.7.3 Stage 2 — skill `mutation-fix-suggest` (`.claude/skills/mutation-fix-suggest/SKILL.md`)
+Invoked as `/mutation-fix-suggest <RunNo>` in this repo. Input: `results/<N>-fix-briefs.json`. Output:
+`results/<N>-fixes.json` (§7.8). Procedure the skill MUST prescribe:
+
+1. Read the brief. Group survivors by covering test codeunit (first `coveringTests` entry). For each group, read the
+   test file under `testAppPath` once, and the AUT file around each `context` as needed (under `autPath`).
+2. Per survivor decide the verdict:
+   - `fix` — an existing test method already drives execution through the mutated line but does not assert the
+     difference; add assertions to it (`add-assert`) or rewrite it (`modify-test`).
+   - `new-test` — no existing method reaches the line with an input that distinguishes original from mutant; write a
+     new `[Test]` procedure in a covering codeunit, following that codeunit's own style (GIVEN/WHEN/THEN comments,
+     its library codeunits, its fakes, its handler functions, its `Assert` variable).
+   - `equivalent` — no test can observe the difference (state the reason concretely, e.g. "`Count() > 0` and
+     `Count() >= 1` are identical for integers"). Use it only with a concrete reason.
+3. Mutants that the same change kills share one fix entry (`mutantIds` with several ids). Every survivor appears in
+   exactly one entry.
+4. `alCode` uses only identifiers that exist in the test codeunit or that the change itself declares (new local
+   variables are declared in the code given). For `add-assert` it is the lines to insert; for `modify-test` and
+   `new-test` it is a complete procedure including its attribute lines.
+5. Write the file, then run `orchestrator/Test-MutFixReport.ps1 -RunNo <N>` and correct every reported error until it
+   prints `ok`.
+
+The skill may fan out one subagent per test codeunit group and merge their entries; fix ids are assigned after the
+merge. It writes only `results/<N>-fixes.json` and `results/<N>-fixes.md`, and never edits AUT or test-app files.
+
+#### 6.7.4 Stage 3 — validation and rendering
+`Test-MutFixReport -BriefsPath <string> -FixesPath <string> [-TestIndex <object[]>]` → `[string[]]` errors, empty when
+valid. Without `-TestIndex`, it builds one from the brief's `testAppPath` (resolved against the repo root). Rules, each
+violation one error string that starts with the `fixId` (or `report` for file-level errors):
+
+1. The file parses and has `runNo` equal to the brief's `runNo`, and a `fixes` array.
+2. `fixId` is present and unique; `verdict` ∈ {`fix`, `new-test`, `equivalent`}; `confidence` ∈ {`high`, `medium`,
+   `low`}; `rationale` is non-empty; `mutantIds` is a non-empty array.
+3. Every survivor id of the brief is in exactly one entry's `mutantIds`; no entry names an id that is not a survivor
+   of the brief.
+4. `equivalent`: `target`, `change` and `anchor` are null and `alCode` is the empty string.
+5. `fix`: `change` ∈ {`add-assert`, `modify-test`}; `target.isNewProcedure = false`; `target.procedure` is a procedure
+   of `target.codeunitId` in the index, and `target.file` equals that codeunit's `File`. `add-assert` needs
+   `anchor.afterLine` within that procedure's `[StartLine, EndLine]`; `modify-test` needs `anchor = null`. `alCode` and
+   `expectedEffect` are non-empty.
+6. `new-test`: `change = new-test`; `target.isNewProcedure = true`; `target.procedure` is NOT already a procedure of that
+   codeunit and is unique among new-test entries of that codeunit; `anchor = null`; `alCode` contains `[Test]` and
+   `procedure <target.procedure>(` (case-insensitive); `expectedEffect` is non-empty.
+7. For `fix` and `new-test`, `target.codeunitId` is a covering test codeunit of every mutant in `mutantIds`.
+
+`Export-MutFixMarkdown -BriefsPath <string> -FixesPath <string> -OutPath <string>` writes `results/<N>-fixes.md`: a header
+(run no, survivor count, counts per verdict and per confidence), then one section per target test codeunit (equivalent
+entries last, under "Equivalent mutants"), and per entry: fix id, mutant ids with `original → mutated` and AUT
+`file:line`, verdict, change, target procedure, anchor, confidence, rationale, expected effect, and `alCode` in an
+` ```al ` fence. Ordering: codeunit id, then fix id.
+
+Script `orchestrator/Test-MutFixReport.ps1 -RunNo <int>`: runs `Test-MutFixReport` on `results/<N>-fix-briefs.json` and
+`results/<N>-fixes.json`; on errors prints each one and exits 1; on success writes `results/<N>-fixes.md` with
+`Export-MutFixMarkdown`, prints `ok` and exits 0.
+
+#### 6.7.5 Consuming the report (for the downstream agent)
+The downstream agent reads `results/<N>-fixes.json`, never the markdown. Line numbers (`anchor.afterLine`, procedure
+ranges) refer to the `out/test-app` snapshot taken at brief time. The real test-app source is at `testAppSourcePath`
+of the brief and may have moved on: locate the target procedure by **name**, treat lines as advisory, and apply
+several `add-assert` entries in one file bottom-up. It then compiles, runs the covering test codeunit on the original
+AUT (must pass) and, when a mutation run is available, re-runs the mutant (must be `Killed`).
+
 ---
 
 ## 7. Data schemas
@@ -769,6 +920,49 @@ Sections: header table (run no, backend, environment, AUT version, started/finis
 
 ### 7.6 `docs/spike-baseline.md` template
 Sections in this order, each a table with columns `Metric | Value | Backend | Date | Source task`: Environment (create s, start s, activation-app install s, deps install s, AUT deploy s, test app deploy s); U1/U3; U4; U5; U6; U7 (single-method job s, 95155 s, 95913 s, per-test median s); U8 (API base URL pattern); U9 (job id field name, CSV header line); Tier B baseline (pass/fail per codeunit); Hand mutants (20 rows + kill count); Recommendation (`go` / `no-go`, `--max-mutants` default, `timeouts.jobOverheadSeconds`, `schemata.publishStrategy`).
+
+### 7.7 `results/<RunNo>-fix-briefs.json`
+```json
+{ "runNo": 15, "generatedUtc": "2026-10-01T12:00:00Z",
+  "autPath": "out/aut-original", "testAppPath": "out/test-app",
+  "autSourcePath": "C:/GeneralDev/AL/…/base-application", "testAppSourcePath": "C:/GeneralDev/AL/…/base-application-test",
+  "survivors": [{
+    "mutantId": 140, "stableKey": "…", "objectType": "codeunit", "objectId": 72918635,
+    "objectName": "CTS-CB Auth Share Detection", "procedure": "DetectInCompany",
+    "file": "Authentication/Codeunit/AuthShareDetection.Codeunit.al", "line": 119, "resolvedLine": 119, "sourceDrift": false,
+    "operator": "REL", "original": "MatchingAccounts.Count() > 0", "mutated": "MatchingAccounts.Count() >= 0",
+    "operatorHint": "A relational operator was changed. …",
+    "context": { "startLine": 104, "endLine": 134, "text": "    104:     …\n>  119:         if MatchingAccounts.Count() > 0 then\n…" },
+    "coveringTests": [{ "codeunitId": 95155, "codeunitName": "CTS-CB Test Auth Share Detect",
+                        "file": "Authentication/TestAuthShareDetect.Codeunit.al",
+                        "procedures": [{ "name": "DetectInCompany_…", "startLine": 40, "endLine": 71 }] }] }] }
+```
+Field rules are in §6.7.2. `survivors` is sorted by `mutantId`. `context` is `null` only when the AUT file is missing.
+
+### 7.8 `results/<RunNo>-fixes.json`
+```json
+{ "runNo": 15, "generatedUtc": "2026-10-01T12:30:00Z",
+  "fixes": [{
+    "fixId": "F001", "mutantIds": [140, 141], "verdict": "fix",
+    "target": { "codeunitId": 95155, "codeunitName": "CTS-CB Test Auth Share Detect",
+                "file": "Authentication/TestAuthShareDetect.Codeunit.al",
+                "procedure": "DetectInCompany_NoMatchingAccounts_EmitsNothing", "isNewProcedure": false },
+    "change": "add-assert", "anchor": { "afterLine": 68 },
+    "alCode": "        Assert.RecordIsEmpty(TempAuthShareTarget);",
+    "rationale": "The test reaches line 119 with zero matching accounts but never checks the result buffer.",
+    "expectedEffect": "Fails on mutants 140/141 (the buffer gets a row for Count() = 0); passes on the original.",
+    "confidence": "high" }] }
+```
+| Field | Values |
+|---|---|
+| `fixId` | `F` + 3-digit sequence, unique |
+| `verdict` | `fix` \| `new-test` \| `equivalent` |
+| `change` | `add-assert` (alCode = lines inserted after `anchor.afterLine`) \| `modify-test` (alCode = full replacement procedure, `anchor` null) \| `new-test` (alCode = full new procedure, `anchor` null) \| `null` for `equivalent` |
+| `target` | object as above; `null` for `equivalent` |
+| `alCode` | AL source, lines joined by `\n`, 4-space indentation matching the target file; `""` for `equivalent` |
+| `confidence` | `high` \| `medium` \| `low` |
+
+Validation rules are in §6.7.4.
 
 ---
 
