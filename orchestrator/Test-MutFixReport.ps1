@@ -22,7 +22,9 @@ $briefsPath = Join-Path $repoRoot "results/$RunNo-fix-briefs.json"
 $fixesPath = Join-Path $repoRoot "results/$RunNo-fixes.json"
 $markdownPath = Join-Path $repoRoot "results/$RunNo-fixes.md"
 
-$errors = @(Test-MutFixReport -BriefsPath $briefsPath -FixesPath $fixesPath -RepoRoot $repoRoot)
+# Test-MutFixReport returns its [string[]] with the unary comma; wrapping it in @() again would
+# make a one-element array holding an empty array, so a valid report would still exit 1.
+$errors = Test-MutFixReport -BriefsPath $briefsPath -FixesPath $fixesPath -RepoRoot $repoRoot
 if ($errors.Count -gt 0) {
     foreach ($message in $errors) {
         Write-Output $message

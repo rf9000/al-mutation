@@ -642,3 +642,46 @@ Describe 'Export-MutFixMarkdown' {
         $tail | Should -Not -Match '```'
     }
 }
+
+Describe 'Test-MutFixReport.ps1' {
+    # Regression: the script wrapped the function's comma-returned [string[]] in @(), so an
+    # empty error list became a one-element array and a valid report exited 1 with no output.
+    BeforeAll {
+        $script:ScriptRepo = Join-Path $TestDrive 'script-repo'
+        $orch = Join-Path $script:ScriptRepo 'orchestrator'
+        New-Item -ItemType Directory -Path (Join-Path $orch 'lib') -Force | Out-Null
+        Copy-Item -Path "$PSScriptRoot/../Test-MutFixReport.ps1" -Destination $orch
+        Copy-Item -Path "$PSScriptRoot/../lib/*.psm1" -Destination (Join-Path $orch 'lib')
+        $app = Join-Path $script:ScriptRepo 'out/test-app'
+        New-Item -ItemType Directory -Path $app -Force | Out-Null
+        New-Item -ItemType Directory -Path (Join-Path $script:ScriptRepo 'results') -Force | Out-Null
+        $al = @('codeunit 50300 "CU 50300"', '{', '    Subtype = Test;', '', '    [Test]', '    procedure Test_A()', '    begin', '    end;', '}')
+        Set-Content -Path (Join-Path $app 'T50300.Codeunit.al') -Value $al -Encoding UTF8
+        $survivor = [pscustomobject]@{
+            mutantId = 1; file = 'Aut/A.Codeunit.al'; line = 11; resolvedLine = 11; original = 'orig1'; mutated = 'mut1'
+            coveringTests = @([pscustomobject]@{ codeunitId = 50300 })
+        }
+        $script:ScriptBrief = @{ runNo = 7; testAppPath = 'out/test-app'; survivors = @($survivor) }
+        $script:ScriptFix = @{ fixId = 'F001'; mutantIds = @(1); verdict = 'fix'
+            target = @{ codeunitId = 50300; codeunitName = 'CU 50300'; file = 'T50300.Codeunit.al'; procedure = 'Test_A'; isNewProcedure = $false }
+            change = 'modify-test'; anchor = $null; alCode = 'x'; rationale = 'r'; expectedEffect = 'e'; confidence = 'high' }
+        ConvertTo-Json -InputObject $script:ScriptBrief -Depth 10 | Set-Content -Path (Join-Path $script:ScriptRepo 'results/7-fix-briefs.json') -Encoding UTF8
+    }
+
+    It 'exits 0, prints ok and writes the markdown for a valid report' {
+        $fixes = @{ runNo = 7; fixes = @($script:ScriptFix) }
+        ConvertTo-Json -InputObject $fixes -Depth 10 | Set-Content -Path (Join-Path $script:ScriptRepo 'results/7-fixes.json') -Encoding UTF8
+        $output = & powershell -NoProfile -File (Join-Path $script:ScriptRepo 'orchestrator/Test-MutFixReport.ps1') -RunNo 7
+        $LASTEXITCODE | Should -Be 0
+        ($output -join "`n") | Should -Match '(?m)^ok$'
+        Test-Path (Join-Path $script:ScriptRepo 'results/7-fixes.md') | Should -BeTrue
+    }
+
+    It 'exits 1 and prints the errors for an invalid report' {
+        $fixes = @{ runNo = 7; fixes = @() }
+        ConvertTo-Json -InputObject $fixes -Depth 10 | Set-Content -Path (Join-Path $script:ScriptRepo 'results/7-fixes.json') -Encoding UTF8
+        $output = & powershell -NoProfile -File (Join-Path $script:ScriptRepo 'orchestrator/Test-MutFixReport.ps1') -RunNo 7
+        $LASTEXITCODE | Should -Be 1
+        ($output -join "`n") | Should -Match 'mutant 1'
+    }
+}
