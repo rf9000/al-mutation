@@ -665,6 +665,32 @@ is the three full stop/starts run 12 needed.
 
 Two complete, clean runs (12 and 13) now agree exactly. 72918635's 0.3949 has been reproduced eight times.
 
+### Runs 14 and 15: unpinned AUT HEAD, and confirming Timeouts (2026-10-01)
+
+Upstream `1aae00528` (PR 57467 "BugFixes") widened `idRanges` to `72282525..72282526`, so AUT HEAD publishes again
+and the pin is retired. None of the 4 target or 4 test codeunits differ between the pin and HEAD. Unpinned runs copy
+the AUT *working tree*, which on 2026-10-01 had one uncommitted change outside the scope (`CTS-CB Core Mgt.`
+`GetContiniaOnlineEnvironment` forced to `prod`).
+
+**Run 14** first failed in `Publish-MutBaseline` with the stale-installed-test-suite problem, a third time: HEAD added
+`CTS-CB IErrorHandlingFactory.DecodeResponseContent`, the installed suite's `CTS-CB FakeErrHandlingFactory` failed
+`AL0582`, and BC left the AUT and suite uninstalled. Relaunched, it passed the baseline, then recorded **three false
+`Timeout`s** (mutants 159, 218, 257 — `Count() > 0 → >= 0`, `COND ToBank.Get(...) → false`, `COND TotalAttempted > 0 →
+true`; all *Survived* in under 300 ms in run 13): the environment stalled every 20–40 minutes, each stall pushed an
+ordinary mutant past its budget, and each reset needed up to three `env start` calls. `Timeout` counts as a kill, so
+each was a false kill. Run 14 was stopped at ~125 mutants and is not recorded as a result. Two fixes followed:
+`4a0f70c` (unpublish the stale test app and retry the AUT once) and `867be28` (confirm every Timeout with one re-run).
+
+**Run 15** (`867be28`, unpinned HEAD): **identical to run 13 on all 265 mutants** (0 status differences, score 0.4491,
+0 `Error`, 0 `Pending`), 60.8 min. One stall occurred: mutant 286 (`DEL exit(Result.ToText())`, *Killed* in 505 ms in
+run 13) timed out with a live session behind it; the session was stopped, the confirmation re-run returned
+**Killed** in 151 ms, and that was recorded. The three non-terminating mutants (now ids 4512, 4514, 4515 — same stable
+keys as run 13's 4371, 4373, 4374) each timed out on both the attempt and the confirmation, both runaway sessions
+were stopped, and `Timeout` was recorded: six session stops, zero environment resets. The stale-suite recovery did
+not trigger (the installed suite was already current).
+
+Three complete, clean runs (12, 13, 15) agree mutant for mutant, the last on unpinned AUT HEAD.
+
 **The readiness fix did its job, and could not have fixed this on its own.** Silent `no tests discovered` dropped from 46
 to 8; the remaining losses now carry an actionable reason instead of looking like empty codeunits.
 
