@@ -756,7 +756,7 @@ returned (an id with no file is simply absent).
 
 - Header: reuse `Get-MutObjectHeader` (id and name). A file without a header is skipped, with its existing warning.
 - A **test method** is a `procedure` declaration (optionally `local`/`internal`) whose preceding attribute block (the
-  consecutive non-blank lines starting with `[` directly above it) contains `[Test]` (case-insensitive). Handler methods
+  consecutive lines starting with `[` directly above it; comment-only lines inside the block are skipped, not treated as its end, so a commented line between `[Test]` and `procedure` never drops a test) contains `[Test]` (case-insensitive). Handler methods
   (`[ConfirmHandler]`, `[MessageHandler]`, …) and helpers are not test methods.
 - Line numbers are 1-based lines of the **original file** (comments must not shift them; strip comments per line, or
   use a stripping that preserves newlines). `StartLine` is the first line of the attribute block. `EndLine` is the last
@@ -791,10 +791,10 @@ in ascending `id` order:
 2. **Locate the line.** Read `<AutPath>/<file>`. If line `line` contains `original` (ordinal, exact substring),
    `resolvedLine = line`, `sourceDrift = false`. Otherwise search the whole file: exactly one line containing `original`
    → `resolvedLine` = that line, `sourceDrift = true`; zero or several → `resolvedLine = null`, `sourceDrift = true`.
-   A missing file gives `resolvedLine = null`, `sourceDrift = true` and `context = null`. (Why: `out/aut-original` is
+   A missing or empty file gives `resolvedLine = null`, `sourceDrift = true` and `context = null`. (Why: `out/aut-original` is
    re-synced on every run and the AUT is a moving target, §1.1.) For DEL the `original` is the deleted statement and
    the check is the same.
-3. **Context.** Lines `max(1, c − ContextLines)` … `min(lineCount, c + ContextLines)` where `c = resolvedLine ?? line`,
+3. **Context.** Lines `max(1, c − ContextLines)` … `min(lineCount, c + ContextLines)` where `c = resolvedLine ?? min(line, lineCount)`,
    rendered as one string, lines joined by `\n`, each formatted as `{marker}{lineNo,5}: {text}` where `marker` is `>`
    on line `c` and a space otherwise (PowerShell: `'{0}{1,5}: {2}' -f $marker, $n, $text`). Trailing `\r` is removed.
 4. **Covering tests.** For each id in the row's `coveringTests`, the `-TestIndex` entry with that `CodeunitId` gives

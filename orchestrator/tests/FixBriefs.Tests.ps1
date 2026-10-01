@@ -140,6 +140,50 @@ Describe 'New-MutFixBriefs' {
         $brief.survivors[0].context.text | Should -Match '(?s)^     3: if alpha then.*>    8: x := alpha;.*    10: l10$'
     }
 
+    It 'centres on min(line, lineCount) when the line is past the end and nothing resolves' {
+        $results = [pscustomobject]@{ mutants = @((New-FbRow 1 'Survived')) }
+        $brief = New-MutFixBriefs -RunNo 1 -Mutants @((New-FbMutant 1 99 'gone')) -Results $results -AutPath $script:Aut -TestIndex (New-FbIndex) -ContextLines 2
+
+        # c = min(99, 10) = 10, window 8..10
+        $brief.survivors[0].resolvedLine | Should -BeNullOrEmpty
+        $brief.survivors[0].sourceDrift | Should -Be $true
+        $brief.survivors[0].context.startLine | Should -Be 8
+        $brief.survivors[0].context.endLine | Should -Be 10
+        $brief.survivors[0].context.text | Should -BeExactly ("     8: x := alpha;`n     9: l9`n>   10: l10")
+    }
+
+    It 'gives a null context for an empty AUT file' {
+        Set-Content -Path (Join-Path $script:Aut 'Empty.al') -Value @() -Encoding ASCII
+        $results = [pscustomobject]@{ mutants = @((New-FbRow 1 'Survived')) }
+        $brief = New-MutFixBriefs -RunNo 1 -Mutants @((New-FbMutant 1 3 'alpha' 'Empty.al')) -Results $results -AutPath $script:Aut -TestIndex (New-FbIndex)
+
+        $brief.survivors[0].context | Should -BeNullOrEmpty
+        $brief.survivors[0].resolvedLine | Should -BeNullOrEmpty
+        $brief.survivors[0].sourceDrift | Should -Be $true
+    }
+
+    It 'centres on min(line, lineCount) when the line is past the end and nothing resolves' {
+        $results = [pscustomobject]@{ mutants = @((New-FbRow 1 'Survived')) }
+        $brief = New-MutFixBriefs -RunNo 1 -Mutants @((New-FbMutant 1 99 'gone')) -Results $results -AutPath $script:Aut -TestIndex (New-FbIndex) -ContextLines 2
+
+        # c = min(99, 10) = 10, window 8..10
+        $brief.survivors[0].resolvedLine | Should -BeNullOrEmpty
+        $brief.survivors[0].sourceDrift | Should -Be $true
+        $brief.survivors[0].context.startLine | Should -Be 8
+        $brief.survivors[0].context.endLine | Should -Be 10
+        $brief.survivors[0].context.text | Should -BeExactly ("     8: x := alpha;`n     9: l9`n>   10: l10")
+    }
+
+    It 'gives a null context for an empty AUT file' {
+        Set-Content -Path (Join-Path $script:Aut 'Empty.al') -Value @() -Encoding ASCII
+        $results = [pscustomobject]@{ mutants = @((New-FbRow 1 'Survived')) }
+        $brief = New-MutFixBriefs -RunNo 1 -Mutants @((New-FbMutant 1 3 'alpha' 'Empty.al')) -Results $results -AutPath $script:Aut -TestIndex (New-FbIndex)
+
+        $brief.survivors[0].context | Should -BeNullOrEmpty
+        $brief.survivors[0].resolvedLine | Should -BeNullOrEmpty
+        $brief.survivors[0].sourceDrift | Should -Be $true
+    }
+
     It 'maps covering tests through the index' {
         $results = [pscustomobject]@{ mutants = @((New-FbRow 1 'Survived')) }
         $brief = New-MutFixBriefs -RunNo 1 -Mutants @((New-FbMutant 1 3 'alpha')) -Results $results -AutPath $script:Aut -TestIndex (New-FbIndex)

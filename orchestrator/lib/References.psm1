@@ -441,6 +441,7 @@ function Get-MutTestProcedureIndex {
         }
 
         $lines = @((Remove-MutAlTrivia -Content $content) -split "`r?`n")
+        $originalLines = @($content -split "`r?`n")
 
         # Pass 1: every procedure declaration and the first line of its attribute block.
         $declarations = @()
@@ -454,6 +455,10 @@ function Get-MutTestProcedureIndex {
             $isTest = $false
             for ($j = $i - 1; $j -ge 0; $j--) {
                 $attributeLine = $lines[$j].Trim()
+                if ($attributeLine -eq '' -and $j -lt $originalLines.Count -and $originalLines[$j].Trim() -ne '') {
+                    # Comment-only line: part of the block, never its end.
+                    continue
+                }
                 if (-not $attributeLine.StartsWith('[')) {
                     break
                 }

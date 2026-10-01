@@ -931,4 +931,51 @@ codeunit 50302 "T Plain"
         $index.Count | Should -Be 1
         $index[0].CodeunitId | Should -Be 50301
     }
+
+    It 'keeps tests whose attribute block holds comment-only lines; a blank line still ends the block' {
+        $root = Join-Path $TestDrive 'idx-comments'
+        New-Item -ItemType Directory -Path $root -Force | Out-Null
+        Set-Content -Path (Join-Path $root 'C.Codeunit.al') -Encoding UTF8 -Value @'
+codeunit 50310 "T Comments"
+{
+    Subtype = Test;
+
+    [Test]
+    // a note
+    procedure A()
+    begin
+    end;
+
+    [Test]
+    /* block note */
+    [HandlerFunctions('X')]
+    // another
+    procedure B()
+    begin
+    end;
+
+    [Test]
+
+    procedure NotATest()
+    begin
+    end;
+}
+'@
+        $procs = @((Get-MutTestProcedureIndex -TestAppPath $root)[0].Procedures)
+
+        $procs.Count | Should -Be 2
+        $procs[0].Name | Should -Be 'A'
+        $procs[0].StartLine | Should -Be 5
+        $procs[0].EndLine | Should -Be 9
+        $procs[1].Name | Should -Be 'B'
+        $procs[1].StartLine | Should -Be 11
+        $procs[1].EndLine | Should -Be 17
+    }
+
+    It 'returns Procedures as a 1-element array for a codeunit with a single test' {
+        $index = @(Get-MutTestProcedureIndex -TestAppPath $script:IdxRoot -CodeunitIds 50301)
+
+        ($index[0].Procedures -is [array]) | Should -BeTrue
+        @($index[0].Procedures).Count | Should -Be 1
+    }
 }

@@ -92,7 +92,7 @@ function New-MutFixBriefs {
         $resolvedLine = $null
         $sourceDrift = $true
         $context = $null
-        if ($null -ne $sourceLines) {
+        if ($null -ne $sourceLines -and @($sourceLines).Count -gt 0) {
             $sourceLines = @($sourceLines)
             $lineCount = $sourceLines.Count
 
@@ -112,7 +112,7 @@ function New-MutFixBriefs {
                 }
             }
 
-            $centre = $line
+            $centre = [Math]::Min($line, $lineCount)
             if ($null -ne $resolvedLine) {
                 $centre = $resolvedLine
             }
