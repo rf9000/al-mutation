@@ -145,6 +145,25 @@ Describe 'Invoke-MutRunPipeline (fully mocked backend/lib boundary)' {
             $script:CallLog.Add('Export-MutResults')
             [pscustomobject]@{ ResultsPath = "$script:WorkDir/results/1.json"; SummaryPath = "$script:WorkDir/results/1-summary.md" }
         }
+        # §6.7.2 hook: mocked so no test writes into the real repo's results/ directory.
+        Mock -ModuleName Run Export-MutFixBriefs { "$script:WorkDir/results/1-fix-briefs.json" }
+    }
+
+    It 'writes the fix briefs after a complete export' {
+        Invoke-MutRunPipeline -Config $script:Config -RunNo 1 | Out-Null
+
+        Should -Invoke -ModuleName Run Export-MutFixBriefs -Times 1 -ParameterFilter { $RunNo -eq 1 }
+    }
+
+    It 'still returns the export paths (and only warns) when the fix briefs throw' {
+        Mock -ModuleName Run Export-MutFixBriefs { throw 'briefs boom' }
+        Mock -ModuleName Run Write-Warning {}
+
+        $result = Invoke-MutRunPipeline -Config $script:Config -RunNo 1
+
+        $result.ResultsPath | Should -Be "$script:WorkDir/results/1.json"
+        $result.SummaryPath | Should -Be "$script:WorkDir/results/1-summary.md"
+        Should -Invoke -ModuleName Run Write-Warning -ParameterFilter { $Message -like '*briefs boom*' } -Times 1
     }
 
     It 'runs the nine steps in order and writes every .done marker' {
@@ -256,6 +275,9 @@ Describe 'Invoke-MutRunPipeline (fully mocked backend/lib boundary)' {
         Should -Invoke -ModuleName Run Export-MutResults -ParameterFilter {
             @($Results).Count -eq 2 -and $Results[0].Id -eq 1 -and $Partial -eq $true
         } -Times 1
+
+        # §6.7.2: the fix briefs are only written after a complete export, never a partial one.
+        Should -Invoke -ModuleName Run Export-MutFixBriefs -Times 0
 
         # F3c (F3b review finding 3): the resume message must not oversell -- mutant 2 (Error)
         # is named as NOT retried on a resume, since Get-MutRecordedResultsForRun skips any

@@ -24,6 +24,7 @@ Import-Module (Join-Path $PSScriptRoot 'Coverage.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot 'Schemata.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot 'MutantLoop.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot 'Results.psm1') -Force
+Import-Module (Join-Path $PSScriptRoot 'FixBriefs.psm1') -Force
 
 # A generous, fixed wall-clock budget (seconds) for the two whole-suite test runs this module
 # makes directly (the baseline run, §6.5.4 step 3, and the inactive-schemata behaviour-preserving
@@ -1149,6 +1150,17 @@ function Invoke-MutRunPipeline {
     $exportResult = Export-MutResultsStep -Config $Config -Env $env -RunNo $runNo -Mutants $allMutantsForExport `
         -Results @($loopResults) -CompileErrorIds $schemata.CompileErrorIds -StartedUtc $startedUtc `
         -FinishedUtc $finishedUtc -RunDir $runDir
+
+    # §6.7.2 pipeline hook: the fix briefs are cheap and re-generated every time (no .done
+    # marker). Only a complete export gets here -- the partial-export path above re-throws
+    # before it. A failure must not fail the run or change any other output.
+    try {
+        $briefsPath = Export-MutFixBriefs -RunNo $runNo -Config $Config
+        Write-Host "Fix briefs: $briefsPath"
+    }
+    catch {
+        Write-Warning "Invoke-MutRunPipeline: fix briefs were not written (the run itself is unaffected): $($_.Exception.Message)"
+    }
 
     return $exportResult
 }

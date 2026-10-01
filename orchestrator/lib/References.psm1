@@ -396,4 +396,119 @@ function Save-MutReferenceMap {
     ($ordered | ConvertTo-Json -Depth 10) | Set-Content -Path $Path -Encoding UTF8
 }
 
-Export-ModuleMember -Function Get-MutReferenceMap, Save-MutReferenceMap
+function Get-MutTestProcedureIndex {
+    <#
+        .SYNOPSIS
+        §6.7.1. One entry per test codeunit under $TestAppPath (a file where
+        Test-MutIsTestCodeunit is true and Get-MutObjectHeader yields a header), sorted by
+        CodeunitId: `{ CodeunitId; CodeunitName; File; Procedures }`. File is relative to
+        $TestAppPath with forward slashes. Procedures is `[{ Name; StartLine; EndLine }]` in
+        file order, one per test method: a `procedure` declaration whose attribute block (the
+        consecutive non-blank lines starting with `[` directly above it) contains `[Test]`.
+        Handlers and helpers are not test methods but still bound the previous method's range.
+
+        Lines are 1-based in the ORIGINAL file: Remove-MutAlTrivia preserves every newline, so
+        stripping comments per whole file never shifts a number. StartLine is the first line of
+        the attribute block; EndLine is the last line starting with `end;` before the next
+        procedure's attribute block (or, for the last procedure, before the end of the file).
+
+        .PARAMETER CodeunitIds
+        Optional filter; an id with no matching file is simply absent from the result.
+    #>
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$TestAppPath,
+        [int[]]$CodeunitIds = $null
+    )
+
+    $root = (Resolve-Path -Path $TestAppPath).Path.TrimEnd('\', '/')
+    $entries = @()
+    foreach ($file in @(Get-ChildItem -Path $root -Filter '*.al' -Recurse -File)) {
+        $content = Get-Content -Path $file.FullName -Raw
+        if ($null -eq $content) {
+            continue
+        }
+        if (-not (Test-MutIsTestCodeunit -Content $content)) {
+            continue
+        }
+
+        $header = Get-MutObjectHeader -Path $file.FullName
+        if ($null -eq $header) {
+            continue
+        }
+        if ($null -ne $CodeunitIds -and -not (@($CodeunitIds) -contains $header.Id)) {
+            continue
+        }
+
+        $lines = @((Remove-MutAlTrivia -Content $content) -split "`r?`n")
+
+        # Pass 1: every procedure declaration and the first line of its attribute block.
+        $declarations = @()
+        for ($i = 0; $i -lt $lines.Count; $i++) {
+            $match = [regex]::Match($lines[$i], '^\s*(?:(?:local|internal)\s+)?procedure\s+("[^"]+"|\w+)', 'IgnoreCase')
+            if (-not $match.Success) {
+                continue
+            }
+
+            $blockStart = $i
+            $isTest = $false
+            for ($j = $i - 1; $j -ge 0; $j--) {
+                $attributeLine = $lines[$j].Trim()
+                if (-not $attributeLine.StartsWith('[')) {
+                    break
+                }
+                if ([regex]::IsMatch($attributeLine, '^\[\s*Test\s*\]', 'IgnoreCase')) {
+                    $isTest = $true
+                }
+                $blockStart = $j
+            }
+
+            $declarations += [pscustomobject]@{
+                Name       = $match.Groups[1].Value.Trim('"')
+                BlockStart = $blockStart
+                IsTest     = $isTest
+            }
+        }
+
+        # Pass 2: EndLine for each test method.
+        $procedures = @()
+        for ($d = 0; $d -lt $declarations.Count; $d++) {
+            if (-not $declarations[$d].IsTest) {
+                continue
+            }
+
+            $limit = $lines.Count - 1
+            if (($d + 1) -lt $declarations.Count) {
+                $limit = $declarations[$d + 1].BlockStart - 1
+            }
+
+            $endIndex = -1
+            for ($k = $declarations[$d].BlockStart; $k -le $limit; $k++) {
+                if ($lines[$k] -match '^\s*end;') {
+                    $endIndex = $k
+                }
+            }
+            if ($endIndex -lt 0) {
+                $endIndex = $limit
+            }
+
+            $procedures += [pscustomobject]@{
+                Name      = $declarations[$d].Name
+                StartLine = $declarations[$d].BlockStart + 1
+                EndLine   = $endIndex + 1
+            }
+        }
+
+        $relative = $file.FullName.Substring($root.Length).TrimStart('\', '/').Replace('\', '/')
+        $entries += [pscustomobject]@{
+            CodeunitId   = $header.Id
+            CodeunitName = $header.Name
+            File         = $relative
+            Procedures   = @($procedures)
+        }
+    }
+
+    return @($entries | Sort-Object -Property CodeunitId)
+}
+
+Export-ModuleMember -Function Get-MutReferenceMap, Save-MutReferenceMap, Get-MutTestProcedureIndex

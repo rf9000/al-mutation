@@ -832,3 +832,103 @@ Describe 'Save-MutReferenceMap' {
         @($loaded.'50001') | Should -Be @(50300)
     }
 }
+
+Describe 'Get-MutTestProcedureIndex (§6.7.1)' {
+    BeforeAll {
+        $script:IdxRoot = Join-Path $TestDrive 'idx-test-app'
+        New-Item -ItemType Directory -Path (Join-Path $script:IdxRoot 'Sub') -Force | Out-Null
+
+        # Line numbers (1-based) are computed by hand; the block comment above First() spans two
+        # lines and must not shift them.
+        Set-Content -Path (Join-Path $script:IdxRoot 'One.Codeunit.al') -Encoding UTF8 -Value @'
+codeunit 50300 "T One"
+{
+    Subtype = Test;
+
+    /* block
+       comment */
+    [Test]
+    [HandlerFunctions('ConfirmX')]
+    procedure First()
+    begin
+        // [Test]
+    end;
+
+    // [Test]
+    procedure Commented()
+    begin
+    end;
+
+    [ConfirmHandler]
+    procedure ConfirmX(Question: Text; var Reply: Boolean)
+    begin
+        Reply := true;
+    end;
+
+    local procedure Helper()
+    begin
+    end;
+
+    [Test]
+    local procedure Second()
+    begin
+        if true then
+            Foo();
+    end;
+}
+'@
+
+        Set-Content -Path (Join-Path $script:IdxRoot 'Sub/Two.Codeunit.al') -Encoding UTF8 -Value @'
+codeunit 50301 "T Two"
+{
+    Subtype = Test;
+
+    [Test]
+    procedure Only()
+    begin
+    end;
+}
+'@
+
+        # Not a test codeunit: skipped even though it has a [Test] attribute.
+        Set-Content -Path (Join-Path $script:IdxRoot 'Plain.Codeunit.al') -Encoding UTF8 -Value @'
+codeunit 50302 "T Plain"
+{
+    [Test]
+    procedure NotATest()
+    begin
+    end;
+}
+'@
+    }
+
+    It 'indexes only test codeunits, sorted by id, with exact procedure ranges' {
+        $index = @(Get-MutTestProcedureIndex -TestAppPath $script:IdxRoot)
+
+        $index.Count | Should -Be 2
+        $index[0].CodeunitId | Should -Be 50300
+        $index[0].CodeunitName | Should -Be 'T One'
+        $index[0].File | Should -Be 'One.Codeunit.al'
+        $procs = @($index[0].Procedures)
+        $procs.Count | Should -Be 2
+        $procs[0].Name | Should -Be 'First'
+        $procs[0].StartLine | Should -Be 7
+        $procs[0].EndLine | Should -Be 12
+        $procs[1].Name | Should -Be 'Second'
+        $procs[1].StartLine | Should -Be 29
+        $procs[1].EndLine | Should -Be 34
+
+        $index[1].CodeunitId | Should -Be 50301
+        $index[1].File | Should -Be 'Sub/Two.Codeunit.al'
+        @($index[1].Procedures)[0].Name | Should -Be 'Only'
+        @($index[1].Procedures)[0].StartLine | Should -Be 5
+        @($index[1].Procedures)[0].EndLine | Should -Be 8
+    }
+
+    It 'filters by -CodeunitIds and omits ids with no file' {
+        $index = @(Get-MutTestProcedureIndex -TestAppPath $script:IdxRoot -CodeunitIds 50301, 99999)
+
+        $index.Count | Should -Be 1
+        $index[0].CodeunitId | Should -Be 50301
+    }
+}
