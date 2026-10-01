@@ -243,3 +243,358 @@ codeunit 50300 "Test One"
         { Export-MutFixBriefs -RunNo 78 -Config $script:Cfg -RepoRoot $script:Repo } | Should -Throw '*mutants.json*'
     }
 }
+
+Describe 'Test-MutFixReport' {
+    BeforeAll {
+        function script:New-FxSurvivor {
+            param([int]$Id, [int[]]$Covering)
+            $tests = @()
+            foreach ($c in $Covering) {
+                $tests += @{ codeunitId = $c; codeunitName = "CU $c"; file = "T$c.Codeunit.al"; procedures = @() }
+            }
+            @{
+                mutantId = $Id; file = 'Aut/A.Codeunit.al'; line = 10 + $Id; resolvedLine = 10 + $Id
+                original = "orig$Id"; mutated = "mut$Id"; coveringTests = $tests
+            }
+        }
+
+        function script:New-FxIndex {
+            @(
+                [pscustomobject]@{
+                    CodeunitId = 50300; CodeunitName = 'CU 50300'; File = 'T50300.Codeunit.al'
+                    Procedures = @(
+                        [pscustomobject]@{ Name = 'Test_A'; StartLine = 10; EndLine = 20 }
+                        [pscustomobject]@{ Name = 'Test_B'; StartLine = 30; EndLine = 40 })
+                }
+                [pscustomobject]@{
+                    CodeunitId = 50301; CodeunitName = 'CU 50301'; File = 'T50301.Codeunit.al'
+                    Procedures = @([pscustomobject]@{ Name = 'Test_C'; StartLine = 5; EndLine = 9 })
+                }
+            )
+        }
+
+        # Valid pair: add-assert covering two mutants, modify-test, new-test, equivalent.
+        function script:New-FxPair {
+            $brief = @{
+                runNo = 15; testAppPath = 'out/test-app'
+                survivors = @(
+                    (New-FxSurvivor 1 @(50300)), (New-FxSurvivor 2 @(50300)), (New-FxSurvivor 3 @(50300)),
+                    (New-FxSurvivor 4 @(50300, 50301)), (New-FxSurvivor 5 @(50300)))
+            }
+            $fixes = @{
+                runNo = 15
+                fixes = @(
+                    @{ fixId = 'F001'; mutantIds = @(1, 2); verdict = 'fix'
+                        target = @{ codeunitId = 50300; codeunitName = 'CU 50300'; file = 'T50300.Codeunit.al'; procedure = 'Test_A'; isNewProcedure = $false }
+                        change = 'add-assert'; anchor = @{ afterLine = 15 }; alCode = '        Assert.IsTrue(true, 1);'
+                        rationale = 'r'; expectedEffect = 'e'; confidence = 'high' }
+                    @{ fixId = 'F002'; mutantIds = @(3); verdict = 'fix'
+                        target = @{ codeunitId = 50300; codeunitName = 'CU 50300'; file = 'T50300.Codeunit.al'; procedure = 'Test_B'; isNewProcedure = $false }
+                        change = 'modify-test'; anchor = $null; alCode = "    [Test]`n    procedure Test_B()`n    begin`n    end;"
+                        rationale = 'r'; expectedEffect = 'e'; confidence = 'medium' }
+                    @{ fixId = 'F003'; mutantIds = @(4); verdict = 'new-test'
+                        target = @{ codeunitId = 50301; codeunitName = 'CU 50301'; file = 'T50301.Codeunit.al'; procedure = 'Test_New'; isNewProcedure = $true }
+                        change = 'new-test'; anchor = $null; alCode = "    [Test]`n    procedure Test_New()`n    begin`n    end;"
+                        rationale = 'r'; expectedEffect = 'e'; confidence = 'low' }
+                    @{ fixId = 'F004'; mutantIds = @(5); verdict = 'equivalent'
+                        target = $null; change = $null; anchor = $null; alCode = ''
+                        rationale = 'Count() > 0 and Count() >= 1 are identical'; expectedEffect = $null; confidence = 'high' }
+                )
+            }
+            @{ Brief = $brief; Fixes = $fixes }
+        }
+
+        function script:Invoke-FxCase {
+            param([hashtable]$Pair)
+            $b = Join-Path $TestDrive 'brief.json'
+            $f = Join-Path $TestDrive 'fixes.json'
+            ConvertTo-Json -InputObject $Pair.Brief -Depth 10 | Set-Content -Path $b -Encoding UTF8
+            ConvertTo-Json -InputObject $Pair.Fixes -Depth 10 | Set-Content -Path $f -Encoding UTF8
+            , @(Test-MutFixReport -BriefsPath $b -FixesPath $f -TestIndex (New-FxIndex))
+        }
+
+        function script:Get-FxMatch {
+            param($Errors, [string]$Pattern)
+            @(@($Errors) | Where-Object { $_ -like $Pattern }).Count
+        }
+    }
+
+    It 'returns no errors for a valid pair (fix, modify, new-test, equivalent, one entry for two mutants)' {
+        $errors = Invoke-FxCase (New-FxPair)
+        $errors | Should -BeNullOrEmpty
+    }
+
+    It 'rule 1: reports a missing fixes file' {
+        $b = Join-Path $TestDrive 'brief.json'
+        ConvertTo-Json -InputObject (New-FxPair).Brief -Depth 10 | Set-Content -Path $b -Encoding UTF8
+        $errors = @(Test-MutFixReport -BriefsPath $b -FixesPath (Join-Path $TestDrive 'nope.json') -TestIndex (New-FxIndex))
+        $errors.Count | Should -Be 1
+        $errors[0] | Should -BeLike 'report*'
+    }
+
+    It 'rule 1: reports unparseable JSON' {
+        $b = Join-Path $TestDrive 'brief.json'
+        $f = Join-Path $TestDrive 'bad.json'
+        ConvertTo-Json -InputObject (New-FxPair).Brief -Depth 10 | Set-Content -Path $b -Encoding UTF8
+        Set-Content -Path $f -Value '{ not json' -Encoding UTF8
+        $errors = @(Test-MutFixReport -BriefsPath $b -FixesPath $f -TestIndex (New-FxIndex))
+        $errors[0] | Should -BeLike 'report*'
+    }
+
+    It 'rule 1: reports a runNo that differs from the brief' {
+        $p = New-FxPair; $p.Fixes.runNo = 16
+        Get-FxMatch (Invoke-FxCase $p) 'report*runNo*' | Should -Be 1
+    }
+
+    It 'rule 1: reports a missing fixes array' {
+        $p = New-FxPair; $p.Fixes.Remove('fixes')
+        Get-FxMatch (Invoke-FxCase $p) 'report*fixes*' | Should -BeGreaterThan 0
+    }
+
+    It 'rule 2: reports a duplicate fixId' {
+        $p = New-FxPair; $p.Fixes.fixes[1].fixId = 'F001'
+        Get-FxMatch (Invoke-FxCase $p) 'F001*unique*' | Should -Be 1
+    }
+
+    It 'rule 2: reports a missing fixId under report' {
+        $p = New-FxPair; $p.Fixes.fixes[1].Remove('fixId')
+        Get-FxMatch (Invoke-FxCase $p) 'report*fixId*' | Should -Be 1
+    }
+
+    It 'rule 2: reports an invalid verdict' {
+        $p = New-FxPair; $p.Fixes.fixes[3].verdict = 'maybe'
+        Get-FxMatch (Invoke-FxCase $p) 'F004*verdict*' | Should -Be 1
+    }
+
+    It 'rule 2: reports an invalid confidence' {
+        $p = New-FxPair; $p.Fixes.fixes[0].confidence = 'certain'
+        Get-FxMatch (Invoke-FxCase $p) 'F001*confidence*' | Should -Be 1
+    }
+
+    It 'rule 2: reports an empty rationale' {
+        $p = New-FxPair; $p.Fixes.fixes[0].rationale = ''
+        Get-FxMatch (Invoke-FxCase $p) 'F001*rationale*' | Should -Be 1
+    }
+
+    It 'rule 2: reports an empty mutantIds' {
+        $p = New-FxPair; $p.Fixes.fixes[3].mutantIds = @()
+        Get-FxMatch (Invoke-FxCase $p) 'F004*mutantIds*' | Should -BeGreaterThan 0
+    }
+
+    It 'rule 3: reports a survivor that is in no entry' {
+        $p = New-FxPair; $p.Fixes.fixes[0].mutantIds = @(1)
+        Get-FxMatch (Invoke-FxCase $p) 'report*mutant 2*' | Should -Be 1
+    }
+
+    It 'rule 3: reports a survivor that is in two entries' {
+        $p = New-FxPair; $p.Fixes.fixes[1].mutantIds = @(3, 1)
+        Get-FxMatch (Invoke-FxCase $p) 'report*mutant 1*' | Should -Be 1
+    }
+
+    It 'rule 3: reports an id that is not a survivor' {
+        $p = New-FxPair; $p.Fixes.fixes[3].mutantIds = @(5, 99)
+        Get-FxMatch (Invoke-FxCase $p) 'F004*99*' | Should -Be 1
+    }
+
+    It 'rule 4: reports an equivalent entry with a target' {
+        $p = New-FxPair
+        $p.Fixes.fixes[3].target = @{ codeunitId = 50300; file = 'T50300.Codeunit.al'; procedure = 'Test_A'; isNewProcedure = $false }
+        Get-FxMatch (Invoke-FxCase $p) 'F004*target*' | Should -Be 1
+    }
+
+    It 'rule 4: reports an equivalent entry with a change' {
+        $p = New-FxPair; $p.Fixes.fixes[3].change = 'add-assert'
+        Get-FxMatch (Invoke-FxCase $p) 'F004*change*' | Should -Be 1
+    }
+
+    It 'rule 4: reports an equivalent entry with an anchor' {
+        $p = New-FxPair; $p.Fixes.fixes[3].anchor = @{ afterLine = 1 }
+        Get-FxMatch (Invoke-FxCase $p) 'F004*anchor*' | Should -Be 1
+    }
+
+    It 'rule 4: reports an equivalent entry with alCode' {
+        $p = New-FxPair; $p.Fixes.fixes[3].alCode = 'x'
+        Get-FxMatch (Invoke-FxCase $p) 'F004*alCode*' | Should -Be 1
+    }
+
+    It 'rule 5: reports a fix change outside add-assert/modify-test' {
+        $p = New-FxPair; $p.Fixes.fixes[0].change = 'new-test'
+        Get-FxMatch (Invoke-FxCase $p) 'F001*change*' | Should -Be 1
+    }
+
+    It 'rule 5: reports isNewProcedure true on a fix' {
+        $p = New-FxPair; $p.Fixes.fixes[0].target.isNewProcedure = $true
+        Get-FxMatch (Invoke-FxCase $p) 'F001*isNewProcedure*' | Should -Be 1
+    }
+
+    It 'rule 5: reports a procedure that is not in the codeunit' {
+        $p = New-FxPair; $p.Fixes.fixes[0].target.procedure = 'Test_Zzz'
+        Get-FxMatch (Invoke-FxCase $p) 'F001*Test_Zzz*' | Should -Be 1
+    }
+
+    It 'rule 5: reports a file that differs from the index' {
+        $p = New-FxPair; $p.Fixes.fixes[0].target.file = 'Other.al'
+        Get-FxMatch (Invoke-FxCase $p) 'F001*file*' | Should -Be 1
+    }
+
+    It 'rule 5: reports an add-assert anchor outside the procedure' {
+        $p = New-FxPair; $p.Fixes.fixes[0].anchor.afterLine = 25
+        Get-FxMatch (Invoke-FxCase $p) 'F001*afterLine*' | Should -Be 1
+    }
+
+    It 'rule 5: reports an add-assert without an anchor' {
+        $p = New-FxPair; $p.Fixes.fixes[0].anchor = $null
+        Get-FxMatch (Invoke-FxCase $p) 'F001*anchor*' | Should -Be 1
+    }
+
+    It 'rule 5: reports a modify-test with an anchor' {
+        $p = New-FxPair; $p.Fixes.fixes[1].anchor = @{ afterLine = 35 }
+        Get-FxMatch (Invoke-FxCase $p) 'F002*anchor*' | Should -Be 1
+    }
+
+    It 'rule 5: reports empty alCode on a fix' {
+        $p = New-FxPair; $p.Fixes.fixes[0].alCode = ''
+        Get-FxMatch (Invoke-FxCase $p) 'F001*alCode*' | Should -Be 1
+    }
+
+    It 'rule 5: reports empty expectedEffect on a fix' {
+        $p = New-FxPair; $p.Fixes.fixes[0].expectedEffect = ''
+        Get-FxMatch (Invoke-FxCase $p) 'F001*expectedEffect*' | Should -Be 1
+    }
+
+    It 'rule 6: reports a new-test with change other than new-test' {
+        $p = New-FxPair; $p.Fixes.fixes[2].change = 'add-assert'
+        Get-FxMatch (Invoke-FxCase $p) 'F003*change*' | Should -Be 1
+    }
+
+    It 'rule 6: reports isNewProcedure false on a new-test' {
+        $p = New-FxPair; $p.Fixes.fixes[2].target.isNewProcedure = $false
+        Get-FxMatch (Invoke-FxCase $p) 'F003*isNewProcedure*' | Should -Be 1
+    }
+
+    It 'rule 6: reports a new procedure that already exists in the codeunit' {
+        $p = New-FxPair
+        $p.Fixes.fixes[2].target.procedure = 'Test_C'
+        $p.Fixes.fixes[2].alCode = "    [Test]`n    procedure Test_C()`n    begin`n    end;"
+        Get-FxMatch (Invoke-FxCase $p) 'F003*already*' | Should -Be 1
+    }
+
+    It 'rule 6: reports two new-tests with the same procedure in one codeunit' {
+        $p = New-FxPair
+        $p.Brief.survivors += (New-FxSurvivor 6 @(50301))
+        $p.Fixes.fixes += @{ fixId = 'F005'; mutantIds = @(6); verdict = 'new-test'
+            target = @{ codeunitId = 50301; codeunitName = 'CU 50301'; file = 'T50301.Codeunit.al'; procedure = 'test_new'; isNewProcedure = $true }
+            change = 'new-test'; anchor = $null; alCode = "    [Test]`n    procedure test_new()`n    begin`n    end;"
+            rationale = 'r'; expectedEffect = 'e'; confidence = 'low' }
+        Get-FxMatch (Invoke-FxCase $p) 'F005*unique*' | Should -Be 1
+    }
+
+    It 'rule 6: reports a new-test with an anchor' {
+        $p = New-FxPair; $p.Fixes.fixes[2].anchor = @{ afterLine = 6 }
+        Get-FxMatch (Invoke-FxCase $p) 'F003*anchor*' | Should -Be 1
+    }
+
+    It 'rule 6: reports alCode without [Test]' {
+        $p = New-FxPair; $p.Fixes.fixes[2].alCode = "    procedure Test_New()`n    begin`n    end;"
+        Get-FxMatch (Invoke-FxCase $p) 'F003*`[Test`]*' | Should -Be 1
+    }
+
+    It 'rule 6: reports alCode that does not declare the target procedure' {
+        $p = New-FxPair; $p.Fixes.fixes[2].alCode = "    [Test]`n    procedure Other()`n    begin`n    end;"
+        Get-FxMatch (Invoke-FxCase $p) 'F003*procedure Test_New(*' | Should -Be 1
+    }
+
+    It 'rule 6: reports empty expectedEffect on a new-test' {
+        $p = New-FxPair; $p.Fixes.fixes[2].expectedEffect = ''
+        Get-FxMatch (Invoke-FxCase $p) 'F003*expectedEffect*' | Should -Be 1
+    }
+
+    It 'rule 7: reports a target codeunit that does not cover every mutant' {
+        $p = New-FxPair
+        $p.Brief.survivors[3].coveringTests = @(@{ codeunitId = 50300; codeunitName = 'CU 50300'; file = 'T50300.Codeunit.al'; procedures = @() })
+        Get-FxMatch (Invoke-FxCase $p) 'F003*covering*' | Should -Be 1
+    }
+
+    It 'handles a single-element fixes array and survivors array' {
+        $p = New-FxPair
+        $p.Brief.survivors = @((New-FxSurvivor 5 @(50300)))
+        $p.Fixes.fixes = @($p.Fixes.fixes[3])
+        $errors = Invoke-FxCase $p
+        $errors | Should -BeNullOrEmpty
+    }
+
+    It 'builds the index from the brief testAppPath when -TestIndex is omitted' {
+        $repo = Join-Path $TestDrive 'repo'
+        $app = Join-Path $repo 'out/test-app'
+        New-Item -ItemType Directory -Path $app -Force | Out-Null
+        $al = @('codeunit 50300 "CU 50300"', '{', '    Subtype = Test;', '', '    [Test]', '    procedure Test_A()', '    begin', '    end;', '}')
+        Set-Content -Path (Join-Path $app 'T50300.Codeunit.al') -Value $al -Encoding UTF8
+        $brief = @{ runNo = 1; testAppPath = 'out/test-app'; survivors = @((New-FxSurvivor 1 @(50300))) }
+        $fixes = @{ runNo = 1; fixes = @(@{ fixId = 'F001'; mutantIds = @(1); verdict = 'fix'
+                    target = @{ codeunitId = 50300; codeunitName = 'CU 50300'; file = 'T50300.Codeunit.al'; procedure = 'Test_A'; isNewProcedure = $false }
+                    change = 'modify-test'; anchor = $null; alCode = 'x'; rationale = 'r'; expectedEffect = 'e'; confidence = 'high' }) }
+        ConvertTo-Json -InputObject $brief -Depth 10 | Set-Content -Path (Join-Path $repo 'b.json') -Encoding UTF8
+        ConvertTo-Json -InputObject $fixes -Depth 10 | Set-Content -Path (Join-Path $repo 'f.json') -Encoding UTF8
+
+        $errors = @(Test-MutFixReport -BriefsPath (Join-Path $repo 'b.json') -FixesPath (Join-Path $repo 'f.json') -RepoRoot $repo)
+        $errors | Should -BeNullOrEmpty
+    }
+}
+
+Describe 'Export-MutFixMarkdown' {
+    BeforeAll {
+        $p = New-FxPair
+        $script:MdBrief = Join-Path $TestDrive 'md-brief.json'
+        $script:MdFixes = Join-Path $TestDrive 'md-fixes.json'
+        $script:MdOut = Join-Path $TestDrive 'out/15-fixes.md'
+        ConvertTo-Json -InputObject $p.Brief -Depth 10 | Set-Content -Path $script:MdBrief -Encoding UTF8
+        ConvertTo-Json -InputObject $p.Fixes -Depth 10 | Set-Content -Path $script:MdFixes -Encoding UTF8
+        Export-MutFixMarkdown -BriefsPath $script:MdBrief -FixesPath $script:MdFixes -OutPath $script:MdOut
+        $script:Md = Get-Content -Path $script:MdOut -Raw
+    }
+
+    It 'writes the header with run no, survivor count and per-verdict/confidence counts' {
+        $script:Md | Should -Match '(?m)^# Fix suggestions for run 15?$'
+        $script:Md | Should -Match '(?m)^- Survivors: 5?$'
+        $script:Md | Should -Match '(?m)^- Fix entries: 4?$'
+        $script:Md | Should -Match '(?m)^- Verdicts: fix 2, new-test 1, equivalent 1?$'
+        $script:Md | Should -Match '(?m)^- Confidence: high 2, medium 1, low 1?$'
+    }
+
+    It 'orders sections by codeunit id with equivalent mutants last' {
+        $a = $script:Md.IndexOf('## Test codeunit 50300')
+        $b = $script:Md.IndexOf('## Test codeunit 50301')
+        $e = $script:Md.IndexOf('## Equivalent mutants')
+        $a | Should -BeGreaterThan -1
+        $b | Should -BeGreaterThan $a
+        $e | Should -BeGreaterThan $b
+    }
+
+    It 'orders entries by fix id within a section' {
+        $script:Md.IndexOf('### F001') | Should -BeLessThan $script:Md.IndexOf('### F002')
+        $script:Md.IndexOf('### F002') | Should -BeLessThan $script:Md.IndexOf('### F003')
+        $script:Md.IndexOf('### F003') | Should -BeLessThan $script:Md.IndexOf('### F004')
+    }
+
+    It 'renders each entry field' {
+        $script:Md | Should -Match '(?m)^  - 1: `orig1` -> `mut1` \(Aut/A\.Codeunit\.al:11\)?$'
+        $script:Md | Should -Match '(?m)^  - 2: `orig2` -> `mut2` \(Aut/A\.Codeunit\.al:12\)?$'
+        $script:Md | Should -Match '(?m)^- Verdict: fix?$'
+        $script:Md | Should -Match '(?m)^- Change: add-assert?$'
+        $script:Md | Should -Match '(?m)^- Target procedure: Test_A?$'
+        $script:Md | Should -Match '(?m)^- Anchor: after line 15?$'
+        $script:Md | Should -Match '(?m)^- Confidence: medium?$'
+        $script:Md | Should -Match '(?m)^- Rationale: Count\(\) > 0 and Count\(\) >= 1 are identical?$'
+        $script:Md | Should -Match '(?m)^- Expected effect: e?$'
+    }
+
+    It 'puts alCode inside an al fence' {
+        $script:Md | Should -Match '(?s)```al\r?\n        Assert\.IsTrue\(true, 1\);\r?\n```'
+        $script:Md | Should -Match '(?s)```al\r?\n    \[Test\]\r?\n    procedure Test_New\(\)'
+    }
+
+    It 'does not fence the empty alCode of an equivalent entry' {
+        $tail = $script:Md.Substring($script:Md.IndexOf('## Equivalent mutants'))
+        $tail | Should -Not -Match '```'
+    }
+}

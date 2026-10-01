@@ -3,8 +3,8 @@ $ErrorActionPreference = 'Stop'
 
 # §6.7.2 stage 1: deterministic fix briefs for the Survived mutants of a run. Read-only on the
 # AUT copy and test-app snapshot under <workDir>; writes only results/<N>-fix-briefs.json.
-# Test-MutFixReport and Export-MutFixMarkdown (stage 3) arrive in a later task and are not
-# exported until they exist.
+# Stage 3 (§6.7.4) validates and renders results/<N>-fixes.json: Test-MutFixReport and
+# Export-MutFixMarkdown.
 
 Import-Module (Join-Path $PSScriptRoot 'Config.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot 'References.psm1') -Force
@@ -264,4 +264,405 @@ function Export-MutFixBriefs {
     return $outPath
 }
 
-Export-ModuleMember -Function Get-MutOperatorHint, New-MutFixBriefs, Export-MutFixBriefs
+function Get-MutFixProp {
+    <#
+        .SYNOPSIS
+        Private. The named property of $Object, or $null when $Object is null or lacks it
+        (StrictMode-safe).
+    #>
+    param($Object, [string]$Name)
+
+    if ($null -eq $Object) {
+        return $null
+    }
+    $property = $Object.PSObject.Properties[$Name]
+    if ($null -eq $property) {
+        return $null
+    }
+    return $property.Value
+}
+
+function Test-MutFixText {
+    # Private. True for a string with a non-whitespace character.
+    param($Value)
+    return (($Value -is [string]) -and ($Value.Trim().Length -gt 0))
+}
+
+function Read-MutFixJson {
+    # Private. Parses a JSON file; arrays of the top level are not expected here (objects only).
+    param([string]$Path)
+    return (Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json)
+}
+
+function Test-MutFixReport {
+    <#
+        .SYNOPSIS
+        §6.7.4. Validates a fixes report against its brief. Returns [string[]] errors (empty
+        when valid); each starts with the fixId, or `report` for file-level problems. Without
+        -TestIndex the index is built from the brief's testAppPath (resolved against -RepoRoot).
+    #>
+    param(
+        [Parameter(Mandatory = $true)][string]$BriefsPath,
+        [Parameter(Mandatory = $true)][string]$FixesPath,
+        [object[]]$TestIndex = $null,
+        [string]$RepoRoot = (Get-MutRepoRoot)
+    )
+
+    $errors = New-Object System.Collections.Generic.List[string]
+
+    if (-not (Test-Path -LiteralPath $BriefsPath -PathType Leaf)) {
+        return , [string[]]@("report: briefs file not found: '$BriefsPath'")
+    }
+    try {
+        $brief = Read-MutFixJson -Path $BriefsPath
+    }
+    catch {
+        return , [string[]]@("report: briefs file '$BriefsPath' is not valid JSON: $($_.Exception.Message)")
+    }
+    if (-not (Test-Path -LiteralPath $FixesPath -PathType Leaf)) {
+        return , [string[]]@("report: fixes file not found: '$FixesPath'")
+    }
+    try {
+        $report = Read-MutFixJson -Path $FixesPath
+    }
+    catch {
+        return , [string[]]@("report: fixes file '$FixesPath' is not valid JSON: $($_.Exception.Message)")
+    }
+
+    # Rule 1.
+    $briefRunNo = Get-MutFixProp $brief 'runNo'
+    $runNo = Get-MutFixProp $report 'runNo'
+    if ($null -eq $runNo -or $null -eq $briefRunNo -or [string]$runNo -ne [string]$briefRunNo) {
+        $errors.Add("report: runNo '$runNo' does not equal the brief's runNo '$briefRunNo'")
+    }
+    $fixesProp = $null
+    if ($null -ne $report -and $null -ne $report.PSObject.Properties['fixes']) {
+        $fixesProp = $report.fixes
+    }
+    if ($null -eq $fixesProp -or $fixesProp -is [string] -or $fixesProp -isnot [System.Collections.IEnumerable]) {
+        $errors.Add('report: fixes must be an array')
+        return , [string[]]$errors.ToArray()
+    }
+    $fixes = @($fixesProp)
+
+    # Brief survivors: id -> covering codeunit ids.
+    $survivorCovering = @{}
+    foreach ($survivor in @(Get-MutFixProp $brief 'survivors')) {
+        if ($null -eq $survivor) { continue }
+        $covering = @()
+        foreach ($test in @(Get-MutFixProp $survivor 'coveringTests')) {
+            $covering += [int](Get-MutFixProp $test 'codeunitId')
+        }
+        $survivorCovering[[int]$survivor.mutantId] = $covering
+    }
+
+    # Test index.
+    $index = $TestIndex
+    if ($null -eq $index) {
+        $testAppPath = [string](Get-MutFixProp $brief 'testAppPath')
+        if (-not [System.IO.Path]::IsPathRooted($testAppPath)) {
+            $testAppPath = Join-Path $RepoRoot $testAppPath
+        }
+        if (-not (Test-Path -LiteralPath $testAppPath -PathType Container)) {
+            $errors.Add("report: test app path not found: '$testAppPath'")
+            $index = @()
+        }
+        else {
+            $ids = @($survivorCovering.Values | ForEach-Object { $_ } | Sort-Object -Unique)
+            if ($ids.Count -gt 0) {
+                $index = @(Get-MutTestProcedureIndex -TestAppPath $testAppPath -CodeunitIds ([int[]]$ids))
+            }
+            else {
+                $index = @()
+            }
+        }
+    }
+    $indexById = @{}
+    foreach ($entry in @($index)) {
+        $indexById[[int]$entry.CodeunitId] = $entry
+    }
+
+    $seenFixIds = @{}
+    $mutantUse = @{}
+    $newProcedures = @{}
+    $position = 0
+    foreach ($fix in $fixes) {
+        $position++
+        $fixId = Get-MutFixProp $fix 'fixId'
+        $prefix = $fixId
+        # Rule 2.
+        if (-not (Test-MutFixText $fixId)) {
+            $prefix = 'report'
+            $errors.Add("report: fixes[$($position - 1)] has no fixId")
+        }
+        elseif ($seenFixIds.ContainsKey($fixId)) {
+            $errors.Add("${prefix}: fixId is not unique")
+        }
+        else {
+            $seenFixIds[$fixId] = $true
+        }
+
+        $verdict = Get-MutFixProp $fix 'verdict'
+        if (@('fix', 'new-test', 'equivalent') -notcontains $verdict) {
+            $errors.Add("${prefix}: verdict '$verdict' must be fix, new-test or equivalent")
+        }
+        $confidence = Get-MutFixProp $fix 'confidence'
+        if (@('high', 'medium', 'low') -notcontains $confidence) {
+            $errors.Add("${prefix}: confidence '$confidence' must be high, medium or low")
+        }
+        if (-not (Test-MutFixText (Get-MutFixProp $fix 'rationale'))) {
+            $errors.Add("${prefix}: rationale must be non-empty")
+        }
+        $mutantIds = @(Get-MutFixProp $fix 'mutantIds')
+        if ($mutantIds.Count -eq 0 -or $null -eq $mutantIds[0]) {
+            $errors.Add("${prefix}: mutantIds must be a non-empty array")
+            $mutantIds = @()
+        }
+
+        # Rule 3 (per entry).
+        foreach ($mutantId in $mutantIds) {
+            $id = [int]$mutantId
+            if (-not $survivorCovering.ContainsKey($id)) {
+                $errors.Add("${prefix}: mutantId $id is not a survivor of the brief")
+                continue
+            }
+            if (-not $mutantUse.ContainsKey($id)) {
+                $mutantUse[$id] = @()
+            }
+            $mutantUse[$id] += $prefix
+        }
+
+        $target = Get-MutFixProp $fix 'target'
+        $change = Get-MutFixProp $fix 'change'
+        $anchor = Get-MutFixProp $fix 'anchor'
+        $alCode = Get-MutFixProp $fix 'alCode'
+
+        if ($verdict -eq 'equivalent') {
+            # Rule 4.
+            if ($null -ne $target) { $errors.Add("${prefix}: target must be null for an equivalent entry") }
+            if ($null -ne $change) { $errors.Add("${prefix}: change must be null for an equivalent entry") }
+            if ($null -ne $anchor) { $errors.Add("${prefix}: anchor must be null for an equivalent entry") }
+            if ($alCode -isnot [string] -or $alCode -ne '') { $errors.Add("${prefix}: alCode must be the empty string for an equivalent entry") }
+        }
+        elseif ($verdict -eq 'fix' -or $verdict -eq 'new-test') {
+            $codeunitId = $null
+            $entry = $null
+            $procedureName = $null
+            if ($null -eq $target) {
+                $errors.Add("${prefix}: target is required for a $verdict entry")
+            }
+            else {
+                $codeunitId = Get-MutFixProp $target 'codeunitId'
+                $procedureName = [string](Get-MutFixProp $target 'procedure')
+                if ($null -ne $codeunitId -and $indexById.ContainsKey([int]$codeunitId)) {
+                    $entry = $indexById[[int]$codeunitId]
+                }
+                else {
+                    $errors.Add("${prefix}: target.codeunitId '$codeunitId' is not a test codeunit in the test index")
+                }
+            }
+            $existing = @()
+            if ($null -ne $entry) {
+                $existing = @($entry.Procedures)
+            }
+            $isNew = Get-MutFixProp $target 'isNewProcedure'
+
+            if ($verdict -eq 'fix') {
+                # Rule 5.
+                if (@('add-assert', 'modify-test') -notcontains $change) {
+                    $errors.Add("${prefix}: change '$change' must be add-assert or modify-test for a fix entry")
+                }
+                if ($null -ne $target -and $isNew -ne $false) {
+                    $errors.Add("${prefix}: target.isNewProcedure must be false for a fix entry")
+                }
+                if ($null -ne $entry) {
+                    $procedure = @($existing | Where-Object { $_.Name -eq $procedureName }) | Select-Object -First 1
+                    if ($null -eq $procedure) {
+                        $errors.Add("${prefix}: target.procedure '$procedureName' is not a procedure of codeunit $codeunitId")
+                    }
+                    if ([string](Get-MutFixProp $target 'file') -ne [string]$entry.File) {
+                        $errors.Add("${prefix}: target.file '$(Get-MutFixProp $target 'file')' does not equal the codeunit's file '$($entry.File)'")
+                    }
+                    if ($change -eq 'add-assert' -and $null -ne $procedure) {
+                        $afterLine = Get-MutFixProp $anchor 'afterLine'
+                        if ($null -eq $afterLine -or [int]$afterLine -lt [int]$procedure.StartLine -or [int]$afterLine -gt [int]$procedure.EndLine) {
+                            $errors.Add("${prefix}: anchor.afterLine '$afterLine' is not within procedure '$procedureName' [$($procedure.StartLine), $($procedure.EndLine)]")
+                        }
+                    }
+                }
+                elseif ($change -eq 'add-assert' -and $null -eq (Get-MutFixProp $anchor 'afterLine')) {
+                    $errors.Add("${prefix}: anchor.afterLine is required for add-assert")
+                }
+                if ($change -eq 'modify-test' -and $null -ne $anchor) {
+                    $errors.Add("${prefix}: anchor must be null for modify-test")
+                }
+                if (-not (Test-MutFixText $alCode)) { $errors.Add("${prefix}: alCode must be non-empty") }
+                if (-not (Test-MutFixText (Get-MutFixProp $fix 'expectedEffect'))) { $errors.Add("${prefix}: expectedEffect must be non-empty") }
+            }
+            else {
+                # Rule 6.
+                if ($change -ne 'new-test') {
+                    $errors.Add("${prefix}: change '$change' must be new-test for a new-test entry")
+                }
+                if ($null -ne $target -and $isNew -ne $true) {
+                    $errors.Add("${prefix}: target.isNewProcedure must be true for a new-test entry")
+                }
+                if ($null -ne $entry) {
+                    if (@($existing | Where-Object { $_.Name -eq $procedureName }).Count -gt 0) {
+                        $errors.Add("${prefix}: target.procedure '$procedureName' already exists in codeunit $codeunitId")
+                    }
+                    $key = "$codeunitId|$($procedureName.ToLowerInvariant())"
+                    if ($newProcedures.ContainsKey($key)) {
+                        $errors.Add("${prefix}: target.procedure '$procedureName' is not unique among new-test entries of codeunit $codeunitId")
+                    }
+                    else {
+                        $newProcedures[$key] = $true
+                    }
+                }
+                if ($null -ne $anchor) {
+                    $errors.Add("${prefix}: anchor must be null for a new-test entry")
+                }
+                if ($alCode -isnot [string] -or $alCode.IndexOf('[Test]', [System.StringComparison]::OrdinalIgnoreCase) -lt 0) {
+                    $errors.Add("${prefix}: alCode must contain [Test]")
+                }
+                if ($alCode -isnot [string] -or $null -eq $target -or $alCode.IndexOf("procedure $procedureName(", [System.StringComparison]::OrdinalIgnoreCase) -lt 0) {
+                    $errors.Add("${prefix}: alCode must declare 'procedure $procedureName('")
+                }
+                if (-not (Test-MutFixText (Get-MutFixProp $fix 'expectedEffect'))) { $errors.Add("${prefix}: expectedEffect must be non-empty") }
+            }
+
+            # Rule 7.
+            if ($null -ne $codeunitId) {
+                foreach ($mutantId in $mutantIds) {
+                    $id = [int]$mutantId
+                    if ($survivorCovering.ContainsKey($id) -and @($survivorCovering[$id]) -notcontains [int]$codeunitId) {
+                        $errors.Add("${prefix}: target.codeunitId $codeunitId is not a covering test codeunit of mutant $id")
+                    }
+                }
+            }
+        }
+    }
+
+    # Rule 3 (coverage of the brief).
+    foreach ($id in @($survivorCovering.Keys | Sort-Object)) {
+        if (-not $mutantUse.ContainsKey($id)) {
+            $errors.Add("report: mutant $id is in no fix entry")
+        }
+        elseif (@($mutantUse[$id]).Count -gt 1) {
+            $errors.Add("report: mutant $id is in more than one fix entry ($(@($mutantUse[$id]) -join ', '))")
+        }
+    }
+
+    return , [string[]]$errors.ToArray()
+}
+
+function Export-MutFixMarkdown {
+    <#
+        .SYNOPSIS
+        §6.7.4. Writes results/<N>-fixes.md: a header (run no, survivor count, counts per
+        verdict and confidence), one section per target test codeunit ordered by id (equivalent
+        entries last under "Equivalent mutants"), entries ordered by fixId. Assumes a report
+        that passed Test-MutFixReport.
+    #>
+    param(
+        [Parameter(Mandatory = $true)][string]$BriefsPath,
+        [Parameter(Mandatory = $true)][string]$FixesPath,
+        [Parameter(Mandatory = $true)][string]$OutPath
+    )
+
+    $brief = Read-MutFixJson -Path $BriefsPath
+    $report = Read-MutFixJson -Path $FixesPath
+    $survivors = @(Get-MutFixProp $brief 'survivors')
+    $fixes = @(Get-MutFixProp $report 'fixes')
+
+    $survivorById = @{}
+    foreach ($survivor in $survivors) {
+        $survivorById[[int]$survivor.mutantId] = $survivor
+    }
+
+    $count = {
+        param([string]$Property, [string]$Value)
+        @($fixes | Where-Object { (Get-MutFixProp $_ $Property) -eq $Value }).Count
+    }
+
+    $lines = New-Object System.Collections.Generic.List[string]
+    $lines.Add("# Fix suggestions for run $($report.runNo)")
+    $lines.Add('')
+    $lines.Add("- Run: $($report.runNo)")
+    $lines.Add("- Survivors: $($survivors.Count)")
+    $lines.Add("- Fix entries: $($fixes.Count)")
+    $lines.Add("- Verdicts: fix $(& $count 'verdict' 'fix'), new-test $(& $count 'verdict' 'new-test'), equivalent $(& $count 'verdict' 'equivalent')")
+    $lines.Add("- Confidence: high $(& $count 'confidence' 'high'), medium $(& $count 'confidence' 'medium'), low $(& $count 'confidence' 'low')")
+
+    $renderEntry = {
+        param($Fix)
+        $lines.Add('')
+        $lines.Add("### $($Fix.fixId)")
+        $lines.Add('')
+        $lines.Add('- Mutants:')
+        foreach ($mutantId in @($Fix.mutantIds)) {
+            $survivor = $survivorById[[int]$mutantId]
+            if ($null -eq $survivor) {
+                $lines.Add("  - ${mutantId}")
+                continue
+            }
+            $lineNo = Get-MutFixProp $survivor 'resolvedLine'
+            if ($null -eq $lineNo) {
+                $lineNo = $survivor.line
+            }
+            $lines.Add("  - ${mutantId}: ``$($survivor.original)`` -> ``$($survivor.mutated)`` ($($survivor.file):$lineNo)")
+        }
+        $lines.Add("- Verdict: $($Fix.verdict)")
+        if ($null -ne $Fix.change) {
+            $lines.Add("- Change: $($Fix.change)")
+        }
+        if ($null -ne $Fix.target) {
+            $lines.Add("- Target procedure: $($Fix.target.procedure)")
+        }
+        if ($null -ne $Fix.anchor) {
+            $lines.Add("- Anchor: after line $($Fix.anchor.afterLine)")
+        }
+        $lines.Add("- Confidence: $($Fix.confidence)")
+        $lines.Add("- Rationale: $($Fix.rationale)")
+        if (Test-MutFixText $Fix.expectedEffect) {
+            $lines.Add("- Expected effect: $($Fix.expectedEffect)")
+        }
+        if (Test-MutFixText $Fix.alCode) {
+            $lines.Add('')
+            $lines.Add('```al')
+            $lines.Add([string]$Fix.alCode)
+            $lines.Add('```')
+        }
+    }
+
+    $targeted = @($fixes | Where-Object { $_.verdict -ne 'equivalent' -and $null -ne $_.target })
+    $codeunitIds = @($targeted | ForEach-Object { [int]$_.target.codeunitId } | Sort-Object -Unique)
+    foreach ($codeunitId in $codeunitIds) {
+        $group = @($targeted | Where-Object { [int]$_.target.codeunitId -eq $codeunitId } | Sort-Object -Property fixId)
+        $lines.Add('')
+        $lines.Add("## Test codeunit $codeunitId $($group[0].target.codeunitName)")
+        $lines.Add('')
+        $lines.Add("File: $($group[0].target.file)")
+        foreach ($fix in $group) {
+            & $renderEntry $fix
+        }
+    }
+
+    $equivalent = @($fixes | Where-Object { $_.verdict -eq 'equivalent' } | Sort-Object -Property fixId)
+    if ($equivalent.Count -gt 0) {
+        $lines.Add('')
+        $lines.Add('## Equivalent mutants')
+        foreach ($fix in $equivalent) {
+            & $renderEntry $fix
+        }
+    }
+
+    $lines.Add('')
+    $directory = Split-Path -Parent $OutPath
+    if ($directory -and -not (Test-Path -LiteralPath $directory)) {
+        New-Item -ItemType Directory -Path $directory -Force | Out-Null
+    }
+    Set-Content -Path $OutPath -Value ($lines.ToArray()) -Encoding UTF8
+}
+
+Export-ModuleMember -Function Get-MutOperatorHint, New-MutFixBriefs, Export-MutFixBriefs, Test-MutFixReport, Export-MutFixMarkdown
