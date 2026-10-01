@@ -1,0 +1,1281 @@
+{
+  "runNo": 15,
+  "generatedUtc": "2026-10-01T19:26:11Z",
+  "fixes": [
+    {
+      "fixId": "F001",
+      "mutantIds": [
+        140,
+        141
+      ],
+      "verdict": "new-test",
+      "target": {
+        "codeunitId": 95155,
+        "codeunitName": "CTS-CB Test Auth Share Detect",
+        "file": "Authentication/TestAuthShareDetect.Codeunit.al",
+        "procedure": "MutA_DetectInCompany_TargetNotActivated_AnnotatesNotActivatedAndStops",
+        "isNewProcedure": true
+      },
+      "change": "new-test",
+      "anchor": null,
+      "alCode": "    [Test]\n    procedure MutA_DetectInCompany_TargetNotActivated_AnnotatesNotActivatedAndStops()\n    var\n        TempAuthShareTarget: Record \"CTS-CB Auth Share Target\" temporary;\n        AuthShareDetection: Codeunit \"CTS-CB Auth Share Detection\";\n        AuthShareHttpFixture: Codeunit \"CTS-CB Auth Share Http Fixture\";\n        IHttpFactory: Codeunit \"CTS-CB Http Factory\";\n        FakeHTTPClient: Codeunit \"CTS-CB Fake HTTP Client\";\n        FakeIHttpResponse: Codeunit \"CTS-CB FakeIHttpResponse\";\n        LibraryPermissions: Codeunit \"CTS-CB Library Permissions\";\n        LibraryActivationMgt: Codeunit \"CTS-CB Library Activation Mgt.\";\n        SourceEntryNo: Integer;\n        CurrentCo: Text[30];\n    begin\n        // [Scenario] The target company is not activated: detection must only annotate the placeholder\n        // and stop. It must not probe bank accounts (no HTTP) or overwrite the annotation.\n\n        LibraryPermissions.SetSuperPermissions();\n        CleanupDetectionTables();\n        CurrentCo := CopyStr(CompanyName(), 1, 30);\n        SourceEntryNo := SeedDetectionPocFixture();\n        AuthShareHttpFixture.Setup(IHttpFactory, FakeHTTPClient, FakeIHttpResponse, '{\"name\":\"DetectPocBank\",\"country-code\":\"DK\"}');\n        InitPlaceholderInCurrentCompany(TempAuthShareTarget, CurrentCo);\n\n        // [Given] The target company is deactivated after the seed (source entry, bank and an unbound account exist).\n        LibraryActivationMgt.DeactivateCompany();\n\n        // [When] DetectInCompany runs against the deactivated company.\n        AuthShareDetection.DetectInCompany(SourceEntryNo, CurrentCo, TempAuthShareTarget, IHttpFactory);\n\n        // Restore the activation so later tests are unaffected, even if an assertion below fails.\n        LibraryActivationMgt.ActivateCompany();\n\n        // [Then] The placeholder is annotated NotActivated, nothing else is written and no lookup ran.\n        Assert.AreEqual(1, CountRows(TempAuthShareTarget), 'Expected exactly one row');\n        AssertRow(TempAuthShareTarget, '', Enum::\"CTS-CB Share Target Annotation\"::NotActivated, 0, '');\n        Assert.IsFalse(FakeHTTPClient.WasCalled(), 'No bank lookup may run for a company where the app is not activated.');\n    end;",
+      "rationale": "Line 69 (`if not CoreMgt.IsAppActiveInCompany(TargetCompany)`) and its `exit` on line 71 are only ever exercised with an activated company: the sole DetectInCompany test calls the fixture Setup, which activates the company, so the NotActivated branch is never taken and AnnotatePlaceholderAsNotActivated is never asserted.",
+      "expectedEffect": "Fails on mutant 140 (condition forced false) because detection then proceeds, the fake HTTP client is called and the placeholder becomes SystemNotMapped instead of NotActivated; fails on mutant 141 (exit deleted) because the source entry, bank and account exist, so detection continues after the annotation and overwrites it; passes on the original, which annotates NotActivated and exits before any lookup.",
+      "confidence": "medium"
+    },
+    {
+      "fixId": "F002",
+      "mutantIds": [
+        151,
+        152
+      ],
+      "verdict": "new-test",
+      "target": {
+        "codeunitId": 95155,
+        "codeunitName": "CTS-CB Test Auth Share Detect",
+        "file": "Authentication/TestAuthShareDetect.Codeunit.al",
+        "procedure": "MutA_DetectInCompany_SourceBankCodeBlank_LeavesPlaceholderUntouched",
+        "isNewProcedure": true
+      },
+      "change": "new-test",
+      "anchor": null,
+      "alCode": "    [Test]\n    procedure MutA_DetectInCompany_SourceBankCodeBlank_LeavesPlaceholderUntouched()\n    var\n        TempAuthShareTarget: Record \"CTS-CB Auth Share Target\" temporary;\n        AuthShareDetection: Codeunit \"CTS-CB Auth Share Detection\";\n        AuthShareHttpFixture: Codeunit \"CTS-CB Auth Share Http Fixture\";\n        IHttpFactory: Codeunit \"CTS-CB Http Factory\";\n        FakeHTTPClient: Codeunit \"CTS-CB Fake HTTP Client\";\n        FakeIHttpResponse: Codeunit \"CTS-CB FakeIHttpResponse\";\n        LibraryPermissions: Codeunit \"CTS-CB Library Permissions\";\n        AuthenticationEntry: Record \"CTS-CB Authentication Entry\";\n        SourceEntryNo: Integer;\n        CurrentCo: Text[30];\n    begin\n        // [Scenario] The source authentication entry has no bank code, so no source bank can be\n        // resolved. Detection must abort (the guard after ResolveAccessibleSourceCompany) without\n        // probing accounts or touching the placeholder.\n\n        LibraryPermissions.SetSuperPermissions();\n        CleanupDetectionTables();\n        CurrentCo := CopyStr(CompanyName(), 1, 30);\n        SourceEntryNo := SeedDetectionPocFixture();\n        AuthShareHttpFixture.Setup(IHttpFactory, FakeHTTPClient, FakeIHttpResponse, '{\"name\":\"DetectPocBank\",\"country-code\":\"DK\"}');\n        InitPlaceholderInCurrentCompany(TempAuthShareTarget, CurrentCo);\n\n        // [Given] The source entry loses its bank code.\n        AuthenticationEntry.Get(SourceEntryNo);\n        AuthenticationEntry.\"Bank Code\" := '';\n        AuthenticationEntry.Modify();\n\n        // [When]\n        AuthShareDetection.DetectInCompany(SourceEntryNo, CurrentCo, TempAuthShareTarget, IHttpFactory);\n\n        // [Then] The placeholder is unchanged and no lookup ran.\n        Assert.AreEqual(1, CountRows(TempAuthShareTarget), 'Expected exactly one row');\n        AssertRow(TempAuthShareTarget, '', Enum::\"CTS-CB Share Target Annotation\"::NeedsDetection, 0, '');\n        Assert.IsFalse(FakeHTTPClient.WasCalled(), 'No bank lookup may run when the source bank cannot be resolved.');\n    end;",
+      "rationale": "Lines 85-86 (`if SourceBank.Code = '' then exit`) are never reached with an empty source bank: the only DetectInCompany test seeds a valid source bank, so the early exit is never taken.",
+      "expectedEffect": "Fails on mutant 151 (condition forced false) and mutant 152 (exit deleted) because detection continues with an empty source bank, calls the fake HTTP client and turns the placeholder into a SystemNotMapped row; passes on the original, which exits at line 86 leaving the NeedsDetection placeholder and making no HTTP call.",
+      "confidence": "high"
+    },
+    {
+      "fixId": "F003",
+      "mutantIds": [
+        153
+      ],
+      "verdict": "new-test",
+      "target": {
+        "codeunitId": 95155,
+        "codeunitName": "CTS-CB Test Auth Share Detect",
+        "file": "Authentication/TestAuthShareDetect.Codeunit.al",
+        "procedure": "MutA_DetectInCompany_NoUnboundAccounts_BecomesNoMatchingAccounts",
+        "isNewProcedure": true
+      },
+      "change": "new-test",
+      "anchor": null,
+      "alCode": "    [Test]\n    procedure MutA_DetectInCompany_NoUnboundAccounts_BecomesNoMatchingAccounts()\n    var\n        TempAuthShareTarget: Record \"CTS-CB Auth Share Target\" temporary;\n        AuthShareDetection: Codeunit \"CTS-CB Auth Share Detection\";\n        AuthShareHttpFixture: Codeunit \"CTS-CB Auth Share Http Fixture\";\n        IHttpFactory: Codeunit \"CTS-CB Http Factory\";\n        FakeHTTPClient: Codeunit \"CTS-CB Fake HTTP Client\";\n        FakeIHttpResponse: Codeunit \"CTS-CB FakeIHttpResponse\";\n        LibraryPermissions: Codeunit \"CTS-CB Library Permissions\";\n        BankAccount: Record \"Bank Account\";\n        SourceEntryNo: Integer;\n        CurrentCo: Text[30];\n    begin\n        // [Scenario] The target company has no unbound bank accounts. FindSet must be false, no\n        // account is probed and the placeholder becomes NoMatchingAccounts.\n\n        LibraryPermissions.SetSuperPermissions();\n        CleanupDetectionTables();\n        CurrentCo := CopyStr(CompanyName(), 1, 30);\n        SourceEntryNo := SeedDetectionPocFixture();\n        AuthShareHttpFixture.Setup(IHttpFactory, FakeHTTPClient, FakeIHttpResponse, '{\"name\":\"DetectPocBank\",\"country-code\":\"DK\"}');\n        InitPlaceholderInCurrentCompany(TempAuthShareTarget, CurrentCo);\n\n        // [Given] Every bank account is removed again.\n        BankAccount.DeleteAll();\n\n        // [When]\n        AuthShareDetection.DetectInCompany(SourceEntryNo, CurrentCo, TempAuthShareTarget, IHttpFactory);\n\n        // [Then] NoMatchingAccounts (not DetectionFailed) and no lookup.\n        Assert.AreEqual(1, CountRows(TempAuthShareTarget), 'Expected exactly one row');\n        AssertRow(TempAuthShareTarget, '', Enum::\"CTS-CB Share Target Annotation\"::NoMatchingAccounts, 0, '');\n        Assert.IsFalse(FakeHTTPClient.WasCalled(), 'No bank lookup may run when there are no unbound accounts.');\n    end;",
+      "rationale": "Line 94 (`if BankAccount.FindSet() then`) is only ever true in the existing test, which always seeds one unbound account, so the no-accounts path is not covered.",
+      "expectedEffect": "Fails on mutant 153 (FindSet forced true) because the loop body then runs once on an empty Bank Account record (blank IBAN and branch), counts it as a missing-info failure and the placeholder becomes DetectionFailed; passes on the original, where the placeholder becomes NoMatchingAccounts with Account Count 0.",
+      "confidence": "high"
+    },
+    {
+      "fixId": "F004",
+      "mutantIds": [
+        157,
+        158,
+        173,
+        176
+      ],
+      "verdict": "new-test",
+      "target": {
+        "codeunitId": 95155,
+        "codeunitName": "CTS-CB Test Auth Share Detect",
+        "file": "Authentication/TestAuthShareDetect.Codeunit.al",
+        "procedure": "MutA_DetectInCompany_FailedAccounts_SplitHttpAndMissingInfoCounts",
+        "isNewProcedure": true
+      },
+      "change": "new-test",
+      "anchor": null,
+      "alCode": "    [Test]\n    procedure MutA_DetectInCompany_FailedAccounts_SplitHttpAndMissingInfoCounts()\n    var\n        TempAuthShareTarget: Record \"CTS-CB Auth Share Target\" temporary;\n        AuthShareDetection: Codeunit \"CTS-CB Auth Share Detection\";\n        AuthShareHttpFixture: Codeunit \"CTS-CB Auth Share Http Fixture\";\n        IHttpFactory: Codeunit \"CTS-CB Http Factory\";\n        FakeHTTPClient: Codeunit \"CTS-CB Fake HTTP Client\";\n        FakeIHttpResponse: Codeunit \"CTS-CB FakeIHttpResponse\";\n        LibraryPermissions: Codeunit \"CTS-CB Library Permissions\";\n        BankAccount: Record \"Bank Account\";\n        MissingInfoAccountNoTok: Label 'BA-DETECT-MISS', Locked = true;\n        ExpectedMessage: Text;\n        SourceEntryNo: Integer;\n        CurrentCo: Text[30];\n    begin\n        // [Scenario] One unbound account has no IBAN/branch (missing info) and one fails on the\n        // lookup (HTTP failure). The DetectionFailed message reports the two counts separately.\n\n        LibraryPermissions.SetSuperPermissions();\n        CleanupDetectionTables();\n        CurrentCo := CopyStr(CompanyName(), 1, 30);\n        SourceEntryNo := SeedDetectionPocFixture();\n        AuthShareHttpFixture.Setup(IHttpFactory, FakeHTTPClient, FakeIHttpResponse, '{\"name\":\"DetectPocBank\",\"country-code\":\"DK\"}');\n        InitPlaceholderInCurrentCompany(TempAuthShareTarget, CurrentCo);\n\n        // [Given] A second unbound account without IBAN and branch, and an HTTP client that fails.\n        BankAccount.Init();\n        BankAccount.\"No.\" := MissingInfoAccountNoTok;\n        BankAccount.Insert();\n        FakeHTTPClient.SetShouldFail(true);\n\n        // [When]\n        AuthShareDetection.DetectInCompany(SourceEntryNo, CurrentCo, TempAuthShareTarget, IHttpFactory);\n\n        // [Then] One DetectionFailed row: 2 failed of 2, 1 lookup failure and 1 missing-info account.\n        TempAuthShareTarget.Reset();\n        TempAuthShareTarget.SetRange(Annotation, Enum::\"CTS-CB Share Target Annotation\"::DetectionFailed);\n        Assert.IsTrue(TempAuthShareTarget.FindFirst(), 'Expected a DetectionFailed row');\n        Assert.AreEqual(2, TempAuthShareTarget.\"Account Count\", 'Account Count mismatch');\n        ExpectedMessage := 'Bank detection failed for 2 of 2 bank accounts in this company. 1 accounts had lookup or connection errors, and 1 accounts had missing IBAN or branch information.';\n        Assert.AreEqual(ExpectedMessage, TempAuthShareTarget.\"Outcome Message\", 'The failure counts must split into 1 lookup failure and 1 missing-info account.');\n    end;",
+      "rationale": "Line 113 (`if MissingInfo then`) and line 204 (the blank IBAN and blank branch test in ResolveBankCodeForAccount) are never exercised with a failing account: the existing test only has one account that resolves, so neither failure counter is ever incremented and no DetectionFailed message is checked.",
+      "expectedEffect": "Fails on mutant 157 (MissingInfo forced true) because the lookup-failure account is counted as missing info (message reads 0 lookup / 2 missing); fails on mutant 158 (forced false) because the blank account is counted as a lookup failure (2 lookup / 0 missing); fails on mutants 173 and 176 because the blank-IBAN/blank-branch account no longer sets MissingInfo (2 lookup / 0 missing); passes on the original (1 lookup / 1 missing).",
+      "confidence": "medium"
+    },
+    {
+      "fixId": "F005",
+      "mutantIds": [
+        171
+      ],
+      "verdict": "new-test",
+      "target": {
+        "codeunitId": 95155,
+        "codeunitName": "CTS-CB Test Auth Share Detect",
+        "file": "Authentication/TestAuthShareDetect.Codeunit.al",
+        "procedure": "MutA_DetectInCompany_TwoAccountsSameOtherBank_AccountsAccumulate",
+        "isNewProcedure": true
+      },
+      "change": "new-test",
+      "anchor": null,
+      "alCode": "    [Test]\n    procedure MutA_DetectInCompany_TwoAccountsSameOtherBank_AccountsAccumulate()\n    var\n        TempAuthShareTarget: Record \"CTS-CB Auth Share Target\" temporary;\n        AuthShareDetection: Codeunit \"CTS-CB Auth Share Detection\";\n        AuthShareHttpFixture: Codeunit \"CTS-CB Auth Share Http Fixture\";\n        IHttpFactory: Codeunit \"CTS-CB Http Factory\";\n        FakeHTTPClient: Codeunit \"CTS-CB Fake HTTP Client\";\n        FakeIHttpResponse: Codeunit \"CTS-CB FakeIHttpResponse\";\n        LibraryPermissions: Codeunit \"CTS-CB Library Permissions\";\n        BankAccount: Record \"Bank Account\";\n        FirstAccountNoTok: Label 'BA-DETECT-POC', Locked = true;\n        SecondAccountNoTok: Label 'BA-DETECT-ALT', Locked = true;\n        SourceEntryNo: Integer;\n        CurrentCo: Text[30];\n    begin\n        // [Scenario] Two unbound accounts resolve to the same bank, which does not support the source\n        // bank system. Both accounts accumulate under that bank in a single SystemNotMapped row.\n\n        LibraryPermissions.SetSuperPermissions();\n        CleanupDetectionTables();\n        CurrentCo := CopyStr(CompanyName(), 1, 30);\n        SourceEntryNo := SeedDetectionPocFixture();\n        AuthShareHttpFixture.Setup(IHttpFactory, FakeHTTPClient, FakeIHttpResponse, '{\"name\":\"DetectPocBank\",\"country-code\":\"DK\"}');\n        InitPlaceholderInCurrentCompany(TempAuthShareTarget, CurrentCo);\n\n        // [Given] A second unbound account with an IBAN, resolving to the same canned bank.\n        BankAccount.Init();\n        BankAccount.\"No.\" := SecondAccountNoTok;\n        BankAccount.IBAN := 'DK1234567890123457';\n        BankAccount.\"Country/Region Code\" := 'DK';\n        BankAccount.Insert();\n\n        // [When]\n        AuthShareDetection.DetectInCompany(SourceEntryNo, CurrentCo, TempAuthShareTarget, IHttpFactory);\n\n        // [Then] One SystemNotMapped row that lists both accounts.\n        Assert.AreEqual(1, CountRows(TempAuthShareTarget), 'Expected exactly one row');\n        TempAuthShareTarget.Reset();\n        TempAuthShareTarget.SetRange(Annotation, Enum::\"CTS-CB Share Target Annotation\"::SystemNotMapped);\n        Assert.IsTrue(TempAuthShareTarget.FindFirst(), 'Expected a SystemNotMapped row');\n        Assert.AreEqual(2, TempAuthShareTarget.\"Account Count\", 'Both accounts must be counted for the bank');\n        Assert.IsTrue(StrPos(TempAuthShareTarget.\"Resolved Account Nos\", FirstAccountNoTok) > 0, 'The first account must be listed');\n        Assert.IsTrue(StrPos(TempAuthShareTarget.\"Resolved Account Nos\", SecondAccountNoTok) > 0, 'The second account must be listed');\n    end;",
+      "rationale": "Line 179 (`if ResolvedOtherAccountsByBank.ContainsKey(BankCode)`) is only ever false: the existing DetectInCompany test resolves exactly one account, so the append-to-existing-list branch is never taken.",
+      "expectedEffect": "Fails on mutant 171 (ContainsKey forced false) because the second account starts a fresh list and overwrites the first, giving Account Count 1 and only the last account in Resolved Account Nos; passes on the original, which appends and yields Account Count 2 with both accounts.",
+      "confidence": "high"
+    },
+    {
+      "fixId": "F006",
+      "mutantIds": [
+        161,
+        193,
+        194,
+        196,
+        199
+      ],
+      "verdict": "new-test",
+      "target": {
+        "codeunitId": 95155,
+        "codeunitName": "CTS-CB Test Auth Share Detect",
+        "file": "Authentication/TestAuthShareDetect.Codeunit.al",
+        "procedure": "MutA_DetectInCompany_ExactCommTypeMapping_BecomesReadyAndLinksAccount",
+        "isNewProcedure": true
+      },
+      "change": "new-test",
+      "anchor": null,
+      "alCode": "    [Test]\n    procedure MutA_DetectInCompany_ExactCommTypeMapping_BecomesReadyAndLinksAccount()\n    var\n        TempAuthShareTarget: Record \"CTS-CB Auth Share Target\" temporary;\n        AuthShareDetection: Codeunit \"CTS-CB Auth Share Detection\";\n        AuthShareHttpFixture: Codeunit \"CTS-CB Auth Share Http Fixture\";\n        IHttpFactory: Codeunit \"CTS-CB Http Factory\";\n        FakeHTTPClient: Codeunit \"CTS-CB Fake HTTP Client\";\n        FakeIHttpResponse: Codeunit \"CTS-CB FakeIHttpResponse\";\n        LibraryPermissions: Codeunit \"CTS-CB Library Permissions\";\n        BankAccount: Record \"Bank Account\";\n        BankSystemMapping2: Record \"CTS-CB Bank System Mapping2\";\n        TempBank: Record \"CTS-CB Bank\" temporary;\n        SourceBankTok: Label 'DETECT-SRC', Locked = true;\n        SourceSystemTok: Label 'DETECT-SYS', Locked = true;\n        AccountNoTok: Label 'BA-DETECT-POC', Locked = true;\n        ResolvedBankNameTok: Label 'DetectPocBank', Locked = true;\n        ResolvedBankCode: Code[30];\n        SourceEntryNo: Integer;\n        CurrentCo: Text[30];\n    begin\n        // [Scenario] The resolved bank has a Bank System Mapping2 row for the source bank system with\n        // the source's communication type: the account is an exact match, the placeholder becomes\n        // Ready and the account is linked to the source bank.\n\n        LibraryPermissions.SetSuperPermissions();\n        CleanupDetectionTables();\n        CurrentCo := CopyStr(CompanyName(), 1, 30);\n        SourceEntryNo := SeedDetectionPocFixture();\n        AuthShareHttpFixture.Setup(IHttpFactory, FakeHTTPClient, FakeIHttpResponse, '{\"name\":\"DetectPocBank\",\"country-code\":\"DK\"}');\n        InitPlaceholderInCurrentCompany(TempAuthShareTarget, CurrentCo);\n\n        TempBank.Init();\n        TempBank.Validate(Name, ResolvedBankNameTok);\n        ResolvedBankCode := TempBank.Code;\n\n        // [Given] Mapping2 row (resolved bank, source system) with the source bank's Direct comm type.\n\n        BankSystemMapping2.Init();\n        BankSystemMapping2.\"Bank Code\" := ResolvedBankCode;\n        BankSystemMapping2.\"Bank System Code\" := SourceSystemTok;\n        BankSystemMapping2.\"Supported Communication\" := Enum::\"CTS-CB Communication Type\"::Manual;\n        BankSystemMapping2.\"Import/Export Comm Type\" := Enum::\"CTS-CB Import/Export Comm Type\"::Direct;\n        BankSystemMapping2.Insert();\n\n        // [When]\n        AuthShareDetection.DetectInCompany(SourceEntryNo, CurrentCo, TempAuthShareTarget, IHttpFactory);\n\n        // [Then] Ready against the source bank, and the account is linked to it.\n        Assert.AreEqual(1, CountRows(TempAuthShareTarget), 'Expected exactly one row');\n        AssertRow(TempAuthShareTarget, SourceBankTok, Enum::\"CTS-CB Share Target Annotation\"::Ready, 1, '');\n        BankAccount.Get(AccountNoTok);\n        Assert.AreEqual(SourceBankTok, BankAccount.\"CTS-CB Bank Code\", 'The matching account must be linked to the source bank.');\n    end;",
+      "rationale": "The existing DetectInCompany test never has a Bank System Mapping2 row for the resolved bank, so IsSourceCommTypeSupportedByBank (lines 249-254) always returns false, the exact-match branch (MatchingAccounts.Add, then the line 120 block with EnsureTargetBankFromSource/LinkBankAccountsToBank) is never run and nothing asserts the Ready outcome or the account link.",
+      "expectedEffect": "Fails on mutants 193, 194 and 196 because the guard on line 249 now exits false for a non-blank bank and system, so the account is no longer an exact match (CommTypeMismatch instead of Ready); fails on mutant 199 (final exit deleted, function returns false) for the same reason; fails on mutant 161 (Count() > 0 forced false) because LinkBankAccountsToBank is skipped and the Bank Account keeps a blank CTS-CB Bank Code; passes on the original (Ready, account linked to DETECT-SRC).",
+      "confidence": "medium"
+    },
+    {
+      "fixId": "F007",
+      "mutantIds": [
+        186,
+        187,
+        189,
+        192
+      ],
+      "verdict": "new-test",
+      "target": {
+        "codeunitId": 95155,
+        "codeunitName": "CTS-CB Test Auth Share Detect",
+        "file": "Authentication/TestAuthShareDetect.Codeunit.al",
+        "procedure": "MutA_DetectInCompany_SystemMappedWithOtherCommType_BecomesCommTypeMismatch",
+        "isNewProcedure": true
+      },
+      "change": "new-test",
+      "anchor": null,
+      "alCode": "    [Test]\n    procedure MutA_DetectInCompany_SystemMappedWithOtherCommType_BecomesCommTypeMismatch()\n    var\n        TempAuthShareTarget: Record \"CTS-CB Auth Share Target\" temporary;\n        AuthShareDetection: Codeunit \"CTS-CB Auth Share Detection\";\n        AuthShareHttpFixture: Codeunit \"CTS-CB Auth Share Http Fixture\";\n        IHttpFactory: Codeunit \"CTS-CB Http Factory\";\n        FakeHTTPClient: Codeunit \"CTS-CB Fake HTTP Client\";\n        FakeIHttpResponse: Codeunit \"CTS-CB FakeIHttpResponse\";\n        LibraryPermissions: Codeunit \"CTS-CB Library Permissions\";\n        BankSystemMapping2: Record \"CTS-CB Bank System Mapping2\";\n        TempBank: Record \"CTS-CB Bank\" temporary;\n        SourceBankTok: Label 'DETECT-SRC', Locked = true;\n        SourceSystemTok: Label 'DETECT-SYS', Locked = true;\n        ResolvedBankNameTok: Label 'DetectPocBank', Locked = true;\n        ResolvedBankCode: Code[30];\n        SourceEntryNo: Integer;\n        CurrentCo: Text[30];\n    begin\n        // [Scenario] The resolved bank supports the source bank system but with another communication\n        // type than the source's: soft mismatch, placeholder becomes CommTypeMismatch.\n\n        LibraryPermissions.SetSuperPermissions();\n        CleanupDetectionTables();\n        CurrentCo := CopyStr(CompanyName(), 1, 30);\n        SourceEntryNo := SeedDetectionPocFixture();\n        AuthShareHttpFixture.Setup(IHttpFactory, FakeHTTPClient, FakeIHttpResponse, '{\"name\":\"DetectPocBank\",\"country-code\":\"DK\"}');\n        InitPlaceholderInCurrentCompany(TempAuthShareTarget, CurrentCo);\n\n        TempBank.Init();\n        TempBank.Validate(Name, ResolvedBankNameTok);\n        ResolvedBankCode := TempBank.Code;\n\n        // [Given] Mapping2 row (resolved bank, source system) with Manual while the source bank is Direct.\n\n        BankSystemMapping2.Init();\n        BankSystemMapping2.\"Bank Code\" := ResolvedBankCode;\n        BankSystemMapping2.\"Bank System Code\" := SourceSystemTok;\n        BankSystemMapping2.\"Supported Communication\" := Enum::\"CTS-CB Communication Type\"::Manual;\n        BankSystemMapping2.\"Import/Export Comm Type\" := Enum::\"CTS-CB Import/Export Comm Type\"::Manual;\n        BankSystemMapping2.Insert();\n\n        // [When]\n        AuthShareDetection.DetectInCompany(SourceEntryNo, CurrentCo, TempAuthShareTarget, IHttpFactory);\n\n        // [Then] CommTypeMismatch against the source bank.\n        Assert.AreEqual(1, CountRows(TempAuthShareTarget), 'Expected exactly one row');\n        AssertRow(TempAuthShareTarget, SourceBankTok, Enum::\"CTS-CB Share Target Annotation\"::CommTypeMismatch, 1, '');\n    end;",
+      "rationale": "IsSourceSystemMappedToBank (lines 232-236) is never given a Mapping2 row for the resolved bank, so its guard always passes and its final `exit(not IsEmpty())` always returns false; the CommTypeMismatch outcome of DetectInCompany is not covered end to end.",
+      "expectedEffect": "Fails on mutants 186, 187 and 189 because the guard on line 232 wrongly exits false for a non-blank bank and system, so the account falls through to SystemNotMapped; fails on mutant 192 (final exit deleted, function returns false) for the same reason; passes on the original, which finds the Mapping2 row and reports CommTypeMismatch.",
+      "confidence": "medium"
+    },
+    {
+      "fixId": "F008",
+      "mutantIds": [
+        188,
+        190,
+        191,
+        195,
+        197,
+        198
+      ],
+      "verdict": "new-test",
+      "target": {
+        "codeunitId": 95155,
+        "codeunitName": "CTS-CB Test Auth Share Detect",
+        "file": "Authentication/TestAuthShareDetect.Codeunit.al",
+        "procedure": "MutA_DetectInCompany_BlankSourceBankSystem_IgnoresMappingRows",
+        "isNewProcedure": true
+      },
+      "change": "new-test",
+      "anchor": null,
+      "alCode": "    [Test]\n    procedure MutA_DetectInCompany_BlankSourceBankSystem_IgnoresMappingRows()\n    var\n        TempAuthShareTarget: Record \"CTS-CB Auth Share Target\" temporary;\n        AuthShareDetection: Codeunit \"CTS-CB Auth Share Detection\";\n        AuthShareHttpFixture: Codeunit \"CTS-CB Auth Share Http Fixture\";\n        IHttpFactory: Codeunit \"CTS-CB Http Factory\";\n        FakeHTTPClient: Codeunit \"CTS-CB Fake HTTP Client\";\n        FakeIHttpResponse: Codeunit \"CTS-CB FakeIHttpResponse\";\n        LibraryPermissions: Codeunit \"CTS-CB Library Permissions\";\n        AuthenticationEntry: Record \"CTS-CB Authentication Entry\";\n        BankSystemMapping2: Record \"CTS-CB Bank System Mapping2\";\n        TempBank: Record \"CTS-CB Bank\" temporary;\n        AccountNoTok: Label 'BA-DETECT-POC', Locked = true;\n        ResolvedBankNameTok: Label 'DetectPocBank', Locked = true;\n        ResolvedBankCode: Code[30];\n        SourceEntryNo: Integer;\n        CurrentCo: Text[30];\n    begin\n        // [Scenario] The source entry has no bank system code. Mapping checks must treat that as\n        // \"cannot match\" even when a Mapping2 row with a blank system code exists for the resolved bank.\n\n        LibraryPermissions.SetSuperPermissions();\n        CleanupDetectionTables();\n        CurrentCo := CopyStr(CompanyName(), 1, 30);\n        SourceEntryNo := SeedDetectionPocFixture();\n        AuthShareHttpFixture.Setup(IHttpFactory, FakeHTTPClient, FakeIHttpResponse, '{\"name\":\"DetectPocBank\",\"country-code\":\"DK\"}');\n        InitPlaceholderInCurrentCompany(TempAuthShareTarget, CurrentCo);\n\n        TempBank.Init();\n        TempBank.Validate(Name, ResolvedBankNameTok);\n        ResolvedBankCode := TempBank.Code;\n\n        // [Given] The source entry's bank system code is blank, and a Mapping2 row with a blank\n        // system code and the source's Direct comm type exists for the resolved bank.\n        AuthenticationEntry.Get(SourceEntryNo);\n        AuthenticationEntry.\"Bank System Code\" := '';\n        AuthenticationEntry.Modify();\n\n        BankSystemMapping2.Init();\n        BankSystemMapping2.\"Bank Code\" := ResolvedBankCode;\n        BankSystemMapping2.\"Bank System Code\" := '';\n        BankSystemMapping2.\"Supported Communication\" := Enum::\"CTS-CB Communication Type\"::Manual;\n        BankSystemMapping2.\"Import/Export Comm Type\" := Enum::\"CTS-CB Import/Export Comm Type\"::Direct;\n        BankSystemMapping2.Insert();\n\n        // [When]\n        AuthShareDetection.DetectInCompany(SourceEntryNo, CurrentCo, TempAuthShareTarget, IHttpFactory);\n\n        // [Then] No mapping counts: the account lands in the unmapped-bank bucket (SystemNotMapped).\n        Assert.AreEqual(1, CountRows(TempAuthShareTarget), 'Expected exactly one row');\n        AssertRow(TempAuthShareTarget, ResolvedBankCode, Enum::\"CTS-CB Share Target Annotation\"::SystemNotMapped, 1, AccountNoTok);\n    end;",
+      "rationale": "The blank-source-system guards on lines 232-233 and 249-250 never fire in the existing test, because the source entry always has a bank system code; the guard conditions and their `exit(false)` are therefore unobserved.",
+      "expectedEffect": "Fails on mutants 188, 190, 191 (system-mapped guard weakened or its exit deleted) and 195, 197, 198 (comm-type guard weakened or its exit deleted) because, without the guard, SetRange on a blank system code matches the blank Mapping2 row, so the account is classified CommTypeMismatch or Ready instead of SystemNotMapped; passes on the original, where both helpers return false for a blank system code.",
+      "confidence": "medium"
+    },
+    {
+      "fixId": "F009",
+      "mutantIds": [
+        146,
+        148,
+        201,
+        202
+      ],
+      "verdict": "new-test",
+      "target": {
+        "codeunitId": 95155,
+        "codeunitName": "CTS-CB Test Auth Share Detect",
+        "file": "Authentication/TestAuthShareDetect.Codeunit.al",
+        "procedure": "MutA_DetectInCompany_OriginatingCompanyBank_UsesOriginatingCompanyBank",
+        "isNewProcedure": true
+      },
+      "change": "new-test",
+      "anchor": null,
+      "alCode": "    [Test]\n    procedure MutA_DetectInCompany_OriginatingCompanyBank_UsesOriginatingCompanyBank()\n    var\n        TempAuthShareTarget: Record \"CTS-CB Auth Share Target\" temporary;\n        AuthShareDetection: Codeunit \"CTS-CB Auth Share Detection\";\n        AuthShareHttpFixture: Codeunit \"CTS-CB Auth Share Http Fixture\";\n        IHttpFactory: Codeunit \"CTS-CB Http Factory\";\n        FakeHTTPClient: Codeunit \"CTS-CB Fake HTTP Client\";\n        FakeIHttpResponse: Codeunit \"CTS-CB FakeIHttpResponse\";\n        LibraryPermissions: Codeunit \"CTS-CB Library Permissions\";\n        Company: Record Company;\n        AuthenticationEntry: Record \"CTS-CB Authentication Entry\";\n        OriginBank: Record \"CTS-CB Bank\";\n        BankSystemMapping2: Record \"CTS-CB Bank System Mapping2\";\n        TempBank: Record \"CTS-CB Bank\" temporary;\n        OriginBankTok: Label 'MUTA-ORIG', Locked = true;\n        SecondCompanyRequiredErr: Label 'Test needs a second company', Locked = true;\n        LeftoverOriginBankErr: Label 'Test needs a second company without a leftover MUTA-ORIG bank', Locked = true;\n        SourceSystemTok: Label 'DETECT-SYS', Locked = true;\n        ResolvedBankNameTok: Label 'DetectPocBank', Locked = true;\n        ResolvedBankCode: Code[30];\n        OriginatingCo: Text[30];\n        SourceEntryNo: Integer;\n        CurrentCo: Text[30];\n    begin\n        // [Scenario] The source entry originates in another company that holds the source bank with a\n        // different default comm type than the copy in the current company. Detection must read the\n        // bank from the originating company first. Fails (does not silently pass) when the database has a single company.\n        LibraryPermissions.SetSuperPermissions();\n        Company.SetFilter(Name, '<>%1', CompanyName());\n        if not Company.FindFirst() then\n            Error(SecondCompanyRequiredErr);\n        OriginatingCo := CopyStr(Company.Name, 1, 30);\n        OriginBank.ChangeCompany(OriginatingCo);\n        if OriginBank.Get(OriginBankTok) then\n            Error(LeftoverOriginBankErr);\n\n        LibraryPermissions.SetSuperPermissions();\n        CleanupDetectionTables();\n        CurrentCo := CopyStr(CompanyName(), 1, 30);\n        SourceEntryNo := SeedDetectionPocFixture();\n        AuthShareHttpFixture.Setup(IHttpFactory, FakeHTTPClient, FakeIHttpResponse, '{\"name\":\"DetectPocBank\",\"country-code\":\"DK\"}');\n        InitPlaceholderInCurrentCompany(TempAuthShareTarget, CurrentCo);\n\n        TempBank.Init();\n        TempBank.Validate(Name, ResolvedBankNameTok);\n        ResolvedBankCode := TempBank.Code;\n\n        // [Given] Source bank copy in the current company is Direct, the originating company's copy is Manual.\n        CreateBank(OriginBankTok, 'Originating Source Bank', \"CTS-CB Import/Export Comm Type\"::Direct);\n        OriginBank.Init();\n        OriginBank.Code := OriginBankTok;\n        OriginBank.Name := 'Originating Source Bank';\n        OriginBank.\"Default Import/Export\" := \"CTS-CB Import/Export Comm Type\"::Manual;\n        OriginBank.Insert();\n        AuthenticationEntry.Get(SourceEntryNo);\n        AuthenticationEntry.\"Bank Code\" := OriginBankTok;\n        AuthenticationEntry.\"Originating Company\" := OriginatingCo;\n        AuthenticationEntry.Modify();\n\n        BankSystemMapping2.Init();\n        BankSystemMapping2.\"Bank Code\" := ResolvedBankCode;\n        BankSystemMapping2.\"Bank System Code\" := SourceSystemTok;\n        BankSystemMapping2.\"Supported Communication\" := Enum::\"CTS-CB Communication Type\"::Manual;\n        BankSystemMapping2.\"Import/Export Comm Type\" := Enum::\"CTS-CB Import/Export Comm Type\"::Manual;\n        BankSystemMapping2.Insert();\n\n        // [When]\n        AuthShareDetection.DetectInCompany(SourceEntryNo, CurrentCo, TempAuthShareTarget, IHttpFactory);\n\n        // Remove the row written into the originating company before asserting.\n        OriginBank.Get(OriginBankTok);\n        OriginBank.Delete();\n\n        // [Then] The Manual comm type of the originating company's bank is used, so the account is an exact match.\n        Assert.AreEqual(1, CountRows(TempAuthShareTarget), 'Expected exactly one row');\n        AssertRow(TempAuthShareTarget, OriginBankTok, Enum::\"CTS-CB Share Target Annotation\"::Ready, 1, '');\n    end;",
+      "rationale": "The existing test never sets AuthenticationEntry.\"Originating Company\", so line 79 always takes the else branch (current company) and the preferred-company read on lines 271-272 is the same company as the fallback; nothing distinguishes reading the bank from the originating company from reading it from the current one. Environment requirement: two or more companies and WritePermission() true. A silent exit on a missing precondition would pass on every mutant and kill nothing, so the precondition now fails the test.",
+      "expectedEffect": "Fails on mutants 146 and 148 (line 79 picks the current company instead of the originating one) and on mutants 201 and 202 (the originating company's bank is skipped, so the current company's copy is read) because the source comm type becomes Direct and the Manual Mapping2 row yields CommTypeMismatch instead of Ready; passes on the original, which reads the Manual bank from the originating company and reports Ready. The test raises an explicit error when the database has only one company, so it can never pass without exercising the mutated line.",
+      "confidence": "low"
+    },
+    {
+      "fixId": "F010",
+      "mutantIds": [
+        159,
+        160
+      ],
+      "verdict": "new-test",
+      "target": {
+        "codeunitId": 95155,
+        "codeunitName": "CTS-CB Test Auth Share Detect",
+        "file": "Authentication/TestAuthShareDetect.Codeunit.al",
+        "procedure": "MutA_DetectInCompany_NoMatchingAccounts_DoesNotCopySourceBankToTarget",
+        "isNewProcedure": true
+      },
+      "change": "new-test",
+      "anchor": null,
+      "alCode": "    [Test]\n    procedure MutA_DetectInCompany_NoMatchingAccounts_DoesNotCopySourceBankToTarget()\n    var\n        TempAuthShareTarget: Record \"CTS-CB Auth Share Target\" temporary;\n        AuthShareDetection: Codeunit \"CTS-CB Auth Share Detection\";\n        AuthShareHttpFixture: Codeunit \"CTS-CB Auth Share Http Fixture\";\n        IHttpFactory: Codeunit \"CTS-CB Http Factory\";\n        FakeHTTPClient: Codeunit \"CTS-CB Fake HTTP Client\";\n        FakeIHttpResponse: Codeunit \"CTS-CB FakeIHttpResponse\";\n        LibraryPermissions: Codeunit \"CTS-CB Library Permissions\";\n        Company: Record Company;\n        AuthenticationEntry: Record \"CTS-CB Authentication Entry\";\n        OriginBank: Record \"CTS-CB Bank\";\n        TargetBank: Record \"CTS-CB Bank\";\n        OriginBankTok: Label 'MUTA-ORIG', Locked = true;\n        SecondCompanyRequiredErr: Label 'Test needs a second company', Locked = true;\n        LeftoverOriginBankErr: Label 'Test needs a second company without a leftover MUTA-ORIG bank', Locked = true;\n        OriginatingCo: Text[30];\n        SourceEntryNo: Integer;\n        CurrentCo: Text[30];\n    begin\n        // [Scenario] No account matches the source bank system, so the source bank must not be copied\n        // into the target company. The source bank lives only in the originating company, so a copy into\n        // the current (target) company would be visible. Fails (does not silently pass) when the database has a single company.\n        LibraryPermissions.SetSuperPermissions();\n        Company.SetFilter(Name, '<>%1', CompanyName());\n        if not Company.FindFirst() then\n            Error(SecondCompanyRequiredErr);\n        OriginatingCo := CopyStr(Company.Name, 1, 30);\n        OriginBank.ChangeCompany(OriginatingCo);\n        if OriginBank.Get(OriginBankTok) then\n            Error(LeftoverOriginBankErr);\n\n        LibraryPermissions.SetSuperPermissions();\n        CleanupDetectionTables();\n        CurrentCo := CopyStr(CompanyName(), 1, 30);\n        SourceEntryNo := SeedDetectionPocFixture();\n        AuthShareHttpFixture.Setup(IHttpFactory, FakeHTTPClient, FakeIHttpResponse, '{\"name\":\"DetectPocBank\",\"country-code\":\"DK\"}');\n        InitPlaceholderInCurrentCompany(TempAuthShareTarget, CurrentCo);\n\n        // [Given] The source bank exists only in the originating company; no Mapping2 rows exist.\n        OriginBank.Init();\n        OriginBank.Code := OriginBankTok;\n        OriginBank.Name := 'Originating Source Bank';\n        OriginBank.\"Default Import/Export\" := \"CTS-CB Import/Export Comm Type\"::Direct;\n        OriginBank.Insert();\n        AuthenticationEntry.Get(SourceEntryNo);\n        AuthenticationEntry.\"Bank Code\" := OriginBankTok;\n        AuthenticationEntry.\"Originating Company\" := OriginatingCo;\n        AuthenticationEntry.Modify();\n\n        // [When]\n        AuthShareDetection.DetectInCompany(SourceEntryNo, CurrentCo, TempAuthShareTarget, IHttpFactory);\n\n        // Remove the row written into the originating company before asserting.\n        OriginBank.Get(OriginBankTok);\n        OriginBank.Delete();\n\n        // [Then] The detection ran (SystemNotMapped) but the source bank was not copied into the target company.\n        Assert.AreEqual(1, CountRows(TempAuthShareTarget), 'Expected exactly one row');\n        Assert.IsTrue(FakeHTTPClient.WasCalled(), 'Detection must have run');\n        Assert.IsFalse(TargetBank.Get(OriginBankTok), 'The source bank must not be copied into the target company when no account matches.');\n    end;",
+      "rationale": "Line 120 (`if MatchingAccounts.Count() > 0`) guards EnsureTargetBankFromSource, which is a no-op whenever the target company already holds the source bank. In the existing single-company test the source bank is always in the target company, so the guard being false, or `>= 0`, makes no observable difference. Environment requirement: two or more companies and WritePermission() true. A silent exit on a missing precondition would pass on every mutant and kill nothing, so the precondition now fails the test.",
+      "expectedEffect": "Fails on mutants 159 (`>= 0`) and 160 (forced true) because EnsureTargetBankFromSource then inserts the originating company's source bank into the target company although no account matched; passes on the original, which skips the copy. The test raises an explicit error when the database has only one company, so it can never pass without exercising the mutated line.",
+      "confidence": "low"
+    },
+    {
+      "fixId": "F011",
+      "mutantIds": [
+        203,
+        205,
+        206,
+        207
+      ],
+      "verdict": "new-test",
+      "target": {
+        "codeunitId": 95155,
+        "codeunitName": "CTS-CB Test Auth Share Detect",
+        "file": "Authentication/TestAuthShareDetect.Codeunit.al",
+        "procedure": "MutA_DetectInCompany_OriginatingCompanyUnavailable_FallsBackToCurrentCompany",
+        "isNewProcedure": true
+      },
+      "change": "new-test",
+      "anchor": null,
+      "alCode": "    [Test]\n    procedure MutA_DetectInCompany_OriginatingCompanyUnavailable_FallsBackToCurrentCompany()\n    var\n        TempAuthShareTarget: Record \"CTS-CB Auth Share Target\" temporary;\n        AuthShareDetection: Codeunit \"CTS-CB Auth Share Detection\";\n        AuthShareHttpFixture: Codeunit \"CTS-CB Auth Share Http Fixture\";\n        IHttpFactory: Codeunit \"CTS-CB Http Factory\";\n        FakeHTTPClient: Codeunit \"CTS-CB Fake HTTP Client\";\n        FakeIHttpResponse: Codeunit \"CTS-CB FakeIHttpResponse\";\n        LibraryPermissions: Codeunit \"CTS-CB Library Permissions\";\n        AuthenticationEntry: Record \"CTS-CB Authentication Entry\";\n        BankSystemActiveMap: Record \"CTS-CB Bank System Active Map\";\n        BankSystemMapping2: Record \"CTS-CB Bank System Mapping2\";\n        TempBank: Record \"CTS-CB Bank\" temporary;\n        SourceBankTok: Label 'DETECT-SRC', Locked = true;\n        SourceSystemTok: Label 'DETECT-SYS', Locked = true;\n        UnreadableCompanyTok: Label 'MUTA NO SUCH CO', Locked = true;\n        ResolvedBankNameTok: Label 'DetectPocBank', Locked = true;\n        SourceBankNameTxt: Label 'Detect POC Source Bank', Locked = true;\n        ResolvedBankCode: Code[30];\n        SourceEntryNo: Integer;\n        CurrentCo: Text[30];\n    begin\n        // [Scenario] The originating company cannot be read (it does not exist here). The source bank\n        // is then read from the current company and its active comm type is taken from that company.\n\n        LibraryPermissions.SetSuperPermissions();\n        CleanupDetectionTables();\n        CurrentCo := CopyStr(CompanyName(), 1, 30);\n        SourceEntryNo := SeedDetectionPocFixture();\n        AuthShareHttpFixture.Setup(IHttpFactory, FakeHTTPClient, FakeIHttpResponse, '{\"name\":\"DetectPocBank\",\"country-code\":\"DK\"}');\n        InitPlaceholderInCurrentCompany(TempAuthShareTarget, CurrentCo);\n\n        TempBank.Init();\n        TempBank.Validate(Name, ResolvedBankNameTok);\n        ResolvedBankCode := TempBank.Code;\n\n        // [Given] The source entry points at an unreadable company; the current company holds the\n        // source bank (default Direct) with an active Manual comm type for the source system, and the\n        // resolved bank has a Manual Mapping2 row.\n        AuthenticationEntry.Get(SourceEntryNo);\n        AuthenticationEntry.\"Originating Company\" := UnreadableCompanyTok;\n        AuthenticationEntry.Modify();\n        BankSystemActiveMap.SetRange(\"Bank Code\", SourceBankTok);\n        BankSystemActiveMap.DeleteAll();\n        BankSystemActiveMap.Reset();\n        BankSystemActiveMap.Init();\n        BankSystemActiveMap.\"Bank Code\" := SourceBankTok;\n        BankSystemActiveMap.\"Bank System Code\" := SourceSystemTok;\n        BankSystemActiveMap.ImportExportCommType := \"CTS-CB Import/Export Comm Type\"::Manual;\n        BankSystemActiveMap.Active := true;\n        BankSystemActiveMap.Insert();\n\n        BankSystemMapping2.Init();\n        BankSystemMapping2.\"Bank Code\" := ResolvedBankCode;\n        BankSystemMapping2.\"Bank System Code\" := SourceSystemTok;\n        BankSystemMapping2.\"Supported Communication\" := Enum::\"CTS-CB Communication Type\"::Manual;\n        BankSystemMapping2.\"Import/Export Comm Type\" := Enum::\"CTS-CB Import/Export Comm Type\"::Manual;\n        BankSystemMapping2.Insert();\n\n        // [When]\n        AuthShareDetection.DetectInCompany(SourceEntryNo, CurrentCo, TempAuthShareTarget, IHttpFactory);\n\n        // Clean up the active map row before asserting.\n        BankSystemActiveMap.Reset();\n        BankSystemActiveMap.SetRange(\"Bank Code\", SourceBankTok);\n        BankSystemActiveMap.DeleteAll();\n\n        // [Then] Ready against the source bank, named from the bank record read in the current company.\n        Assert.AreEqual(1, CountRows(TempAuthShareTarget), 'Expected exactly one row');\n        AssertRow(TempAuthShareTarget, SourceBankTok, Enum::\"CTS-CB Share Target Annotation\"::Ready, 1, '');\n        TempAuthShareTarget.Reset();\n        Assert.IsTrue(TempAuthShareTarget.FindFirst(), 'Expected a row');\n        Assert.AreEqual(SourceBankNameTxt, TempAuthShareTarget.\"Target Bank Name\", 'The source bank must have been read from the current company.');\n    end;",
+      "rationale": "The fallback in ResolveAccessibleSourceCompany (lines 274-278) is never reached: the existing test always finds the bank in the preferred company, which is also the current company, so `(CurrentCompany <> PreferredCompany) and TryGetSourceBank(...)` is never evaluated to true and the returned company is never checked. Mutant 204 (and -> or) is analysed separately in F066.",
+      "expectedEffect": "Fails on mutants 203, 205 and 206 because the fallback is skipped or taken without reading the bank, so the source bank is not loaded (detection aborts and the placeholder stays NeedsDetection, or the bank name is blank); fails on mutant 207 (exit(CurrentCompany) deleted) because the unreadable company name is returned and the active map is read there, losing the Manual active comm type (error, or CommTypeMismatch); passes on the original (Ready, bank read from the current company).",
+      "confidence": "low"
+    },
+    {
+      "fixId": "F012",
+      "mutantIds": [
+        145
+      ],
+      "verdict": "equivalent",
+      "target": null,
+      "change": null,
+      "anchor": null,
+      "alCode": "",
+      "rationale": "Line 76 `exit` after a failed AuthenticationEntry.Get. Without it the code continues with an empty Authentication Entry record, whose Bank Code is blank.",
+      "expectedEffect": "No test can tell the difference: the continuing path resolves the source bank with a blank bank code, SourceBank.Code stays blank and the guard on lines 85-86 exits, leaving the buffer untouched and making no HTTP call, exactly like the original exit on line 76.",
+      "confidence": "high"
+    },
+    {
+      "fixId": "F013",
+      "mutantIds": [
+        147
+      ],
+      "verdict": "equivalent",
+      "target": null,
+      "change": null,
+      "anchor": null,
+      "alCode": "",
+      "rationale": "Line 79 forced to always take the originating-company branch. The only differing case is a blank Originating Company, which then yields SourceCompany = '' instead of the current company name.",
+      "expectedEffect": "A blank company name resolves to the current company everywhere SourceCompany is used: Record.ChangeCompany('') and GetActiveCommType (documented 'Blank reads the current company') both read the current company, and a refused read falls back to the current company anyway. Non-blank values behave identically to the original.",
+      "confidence": "medium"
+    },
+    {
+      "fixId": "F014",
+      "mutantIds": [
+        162,
+        163,
+        164,
+        165
+      ],
+      "verdict": "equivalent",
+      "target": null,
+      "change": null,
+      "anchor": null,
+      "alCode": "",
+      "rationale": "EmitShareDetectionRan lines 153-154 (`if AccountsAttempted = 0 then exit`) only decide whether a telemetry message is logged.",
+      "expectedEffect": "The only effect of the guard is whether Session.LogMessage telemetry is emitted; AL tests cannot capture telemetry and the procedure changes no record, return value or buffer, so no test can distinguish the mutants. Running the body with zero attempts completes without error.",
+      "confidence": "medium"
+    },
+    {
+      "fixId": "F015",
+      "mutantIds": [
+        168,
+        169
+      ],
+      "verdict": "equivalent",
+      "target": null,
+      "change": null,
+      "anchor": null,
+      "alCode": "",
+      "rationale": "AppendAccountForBank lines 177-178 guard against a blank BankCode.",
+      "expectedEffect": "Unreachable: the procedure is only called when ResolveBankCodeForAccount returned true, and that function returns ResolvedBankCode <> '', so BankCode is never blank here.",
+      "confidence": "high"
+    },
+    {
+      "fixId": "F016",
+      "mutantIds": [
+        177
+      ],
+      "verdict": "equivalent",
+      "target": null,
+      "change": null,
+      "anchor": null,
+      "alCode": "",
+      "rationale": "ResolveBankCodeForAccount line 206 `exit(false)` inside the blank IBAN and blank branch block (MissingInfo is already set to true).",
+      "expectedEffect": "Without the exit the code calls GetBankInfo with a blank IBAN and blank branch; UpdateAccountInfo.LookupInfoPresent returns false for that input, so GetBankInfo returns false and line 210 exits false with MissingInfo still true: same result, and no HTTP call in either case.",
+      "confidence": "high"
+    },
+    {
+      "fixId": "F017",
+      "mutantIds": [
+        181
+      ],
+      "verdict": "equivalent",
+      "target": null,
+      "change": null,
+      "anchor": null,
+      "alCode": "",
+      "rationale": "ResolveBankCodeForAccount line 210 `exit(false)` after a failed GetBankInfo.",
+      "expectedEffect": "GetBankInfo only returns false while leaving TempBank (a fresh temporary record, never pre-populated) with a blank Code, so the fall-through skips ImportBank, sets ResolvedBankCode to blank and exits with ResolvedBankCode <> '' = false: identical to the original.",
+      "confidence": "high"
+    },
+    {
+      "fixId": "F018",
+      "mutantIds": [
+        183
+      ],
+      "verdict": "equivalent",
+      "target": null,
+      "change": null,
+      "anchor": null,
+      "alCode": "",
+      "rationale": "ResolveBankCodeForAccount line 212 `if TempBank.Code <> '' then ImportBank(...)` forced true.",
+      "expectedEffect": "The only differing case is TempBank.Code = '', and ImportSetup.ImportBank exits immediately for a blank bank code (`if BankCode = '' then exit`), so nothing changes.",
+      "confidence": "high"
+    },
+    {
+      "fixId": "F019",
+      "mutantIds": [
+        208
+      ],
+      "verdict": "equivalent",
+      "target": null,
+      "change": null,
+      "anchor": null,
+      "alCode": "",
+      "rationale": "ResolveAccessibleSourceCompany line 278 final `exit(PreferredCompany)`: without it the function returns a blank company name.",
+      "expectedEffect": "The final line is reached only when the bank could not be read from either company; the caller then has SourceBank.Code blank and exits on lines 85-86 before the returned company is used, so the returned value is never observed. Low confidence: if a failed Get leaves the primary key in the record, SourceBank.Code would be non-blank there and the return value would reach GetActiveCommType.",
+      "confidence": "low"
+    },
+    {
+      "fixId": "F020",
+      "mutantIds": [
+        218,
+        219,
+        227,
+        228,
+        231
+      ],
+      "verdict": "new-test",
+      "target": {
+        "codeunitId": 95155,
+        "codeunitName": "CTS-CB Test Auth Share Detect",
+        "file": "Authentication/TestAuthShareDetect.Codeunit.al",
+        "procedure": "MutB_DetectInCompany_ExactMatchInSameCompany_LinksAccountAndKeepsSourceBank",
+        "isNewProcedure": true
+      },
+      "change": "new-test",
+      "anchor": null,
+      "alCode": "    [Test]\n    procedure MutB_DetectInCompany_ExactMatchInSameCompany_LinksAccountAndKeepsSourceBank()\n    var\n        TempAuthShareTarget: Record \"CTS-CB Auth Share Target\" temporary;\n        TempResolvedBank: Record \"CTS-CB Bank\" temporary;\n        Bank: Record \"CTS-CB Bank\";\n        BankAccount: Record \"Bank Account\";\n        BankSystemMapping2: Record \"CTS-CB Bank System Mapping2\";\n        AuthShareDetection: Codeunit \"CTS-CB Auth Share Detection\";\n        AuthShareHttpFixture: Codeunit \"CTS-CB Auth Share Http Fixture\";\n        IHttpFactory: Codeunit \"CTS-CB Http Factory\";\n        FakeHTTPClient: Codeunit \"CTS-CB Fake HTTP Client\";\n        FakeIHttpResponse: Codeunit \"CTS-CB FakeIHttpResponse\";\n        LibraryPermissions: Codeunit \"CTS-CB Library Permissions\";\n        SourceEntryNo: Integer;\n        CurrentCo: Text[30];\n        DetectPocSourceBankCodeTok: Label 'DETECT-SRC', Locked = true;\n        DetectPocSourceSystemTok: Label 'DETECT-SYS', Locked = true;\n        DetectPocBankAccountNoTok: Label 'BA-DETECT-POC', Locked = true;\n    begin\n        LibraryPermissions.SetSuperPermissions();\n        CleanupDetectionTables();\n        CurrentCo := CopyStr(CompanyName(), 1, 30);\n\n        // [Given] source AuthEntry + Bank and one unbound BankAccount in the current company, which is also the target.\n        SourceEntryNo := SeedDetectionPocFixture();\n\n        // [Given] the bank the canned directory response resolves to supports the source system with the source comm type (Direct).\n        TempResolvedBank.Validate(Name, 'DetectPocBank');\n        BankSystemMapping2.Init();\n        BankSystemMapping2.\"Bank Code\" := TempResolvedBank.Code;\n        BankSystemMapping2.\"Bank System Code\" := DetectPocSourceSystemTok;\n        BankSystemMapping2.\"Supported Communication\" := Enum::\"CTS-CB Communication Type\"::Webservice;\n        BankSystemMapping2.\"Import/Export Comm Type\" := \"CTS-CB Import/Export Comm Type\"::Direct;\n        BankSystemMapping2.Insert(false);\n\n        AuthShareHttpFixture.Setup(IHttpFactory, FakeHTTPClient, FakeIHttpResponse, '{\"name\":\"DetectPocBank\",\"country-code\":\"DK\"}');\n        InitPlaceholderInCurrentCompany(TempAuthShareTarget, CurrentCo);\n\n        // [When] DetectInCompany runs end-to-end through the fakes.\n        AuthShareDetection.DetectInCompany(SourceEntryNo, CurrentCo, TempAuthShareTarget, IHttpFactory);\n\n        // [Then] the placeholder is Ready against the source bank with the one matched account.\n        Assert.AreEqual(1, CountRows(TempAuthShareTarget), 'Expected exactly one row');\n        AssertRow(TempAuthShareTarget, DetectPocSourceBankCodeTok, Enum::\"CTS-CB Share Target Annotation\"::Ready, 1, '');\n\n        // [Then] the matched account is linked to the source bank, and the existing bank is kept (not re-inserted).\n        BankAccount.Get(DetectPocBankAccountNoTok);\n        Assert.AreEqual('DETECT-SRC', BankAccount.\"CTS-CB Bank Code\", 'The matched Bank Account must be linked to the source bank.');\n        Bank.SetRange(Code, DetectPocSourceBankCodeTok);\n        Assert.AreEqual(1, Bank.Count(), 'The source bank must still exist exactly once.');\n    end;",
+      "rationale": "Lines 306-307 (ToBank.Get / exit), 337-338 (BankAccount.WritePermission guard) and 342 (BankAccount.Modify) are only reached when MatchingAccounts is non-empty, i.e. an exact or mismatch Mapping2 hit. The only DetectInCompany test (UnboundAccount_EmitsSystemNotMappedRow) has no Mapping2 row, so EnsureTargetBankFromSource and LinkBankAccountsToBank never run and nothing asserts the Bank Account link.",
+      "expectedEffect": "Fails on mutants 218/219 because ToBank.Get no longer short-circuits and Insert(true) raises a duplicate-record error (target company = source company, so the bank already exists); fails on 227/228 because the guard exits before linking and Bank Account.'CTS-CB Bank Code' stays blank; fails on 231 because Modify is gone and the re-read Bank Account still has a blank bank code; passes on the original where the account is linked and the placeholder becomes Ready.",
+      "confidence": "medium"
+    },
+    {
+      "fixId": "F021",
+      "mutantIds": [
+        209,
+        212,
+        213,
+        214,
+        217,
+        220
+      ],
+      "verdict": "new-test",
+      "target": {
+        "codeunitId": 95155,
+        "codeunitName": "CTS-CB Test Auth Share Detect",
+        "file": "Authentication/TestAuthShareDetect.Codeunit.al",
+        "procedure": "MutB_DetectInCompany_ExactMatchInOtherCompany_CopiesSourceBankAndLinksAccount",
+        "isNewProcedure": true
+      },
+      "change": "new-test",
+      "anchor": null,
+      "alCode": "    [Test]\n    procedure MutB_DetectInCompany_ExactMatchInOtherCompany_CopiesSourceBankAndLinksAccount()\n    var\n        TempAuthShareTarget: Record \"CTS-CB Auth Share Target\" temporary;\n        TempResolvedBank: Record \"CTS-CB Bank\" temporary;\n        AuthenticationEntry: Record \"CTS-CB Authentication Entry\";\n        BankSystemMapping2: Record \"CTS-CB Bank System Mapping2\";\n        Company: Record Company;\n        CSCSubscription: Record \"CSC Subscription\";\n        TargetCSCSubscription: Record \"CSC Subscription\";\n        TargetBank: Record \"CTS-CB Bank\";\n        TargetBankAccount: Record \"Bank Account\";\n        AuthShareDetection: Codeunit \"CTS-CB Auth Share Detection\";\n        AuthShareHttpFixture: Codeunit \"CTS-CB Auth Share Http Fixture\";\n        IHttpFactory: Codeunit \"CTS-CB Http Factory\";\n        FakeHTTPClient: Codeunit \"CTS-CB Fake HTTP Client\";\n        FakeIHttpResponse: Codeunit \"CTS-CB FakeIHttpResponse\";\n        LibraryPermissions: Codeunit \"CTS-CB Library Permissions\";\n        CoreMgt: Codeunit \"CTS-CB Core Mgt.\";\n        SourceEntryNo: Integer;\n        MutBTargetCompanyTok: Label 'MUTB-TARGET', Locked = true;\n        DetectPocSourceBankCodeTok: Label 'DETECT-SRC', Locked = true;\n        DetectPocSourceSystemTok: Label 'DETECT-SYS', Locked = true;\n        DetectPocBankAccountNoTok: Label 'BA-DETECT-POC', Locked = true;\n        DetectPocIbanTok: Label 'DK1234567890123456', Locked = true;\n    begin\n        LibraryPermissions.SetSuperPermissions();\n        CleanupDetectionTables();\n\n        // [Given] a second, empty company that has Continia Banking activated and one unbound Bank Account.\n        if not Company.Get(MutBTargetCompanyTok) then begin\n            Company.Init();\n            Company.Name := MutBTargetCompanyTok;\n            Company.\"Display Name\" := MutBTargetCompanyTok;\n            Company.Insert(true);\n        end;\n        AuthShareHttpFixture.Setup(IHttpFactory, FakeHTTPClient, FakeIHttpResponse, '{\"name\":\"DetectPocBank\",\"country-code\":\"DK\"}');\n        CSCSubscription.SetRange(\"App Code\", CoreMgt.ProductCode());\n        CSCSubscription.FindFirst();\n        TargetCSCSubscription.ChangeCompany(MutBTargetCompanyTok);\n        TargetCSCSubscription := CSCSubscription;\n        if TargetCSCSubscription.Insert() then;\n        TargetBankAccount.ChangeCompany(MutBTargetCompanyTok);\n        TargetBankAccount.Init();\n        TargetBankAccount.\"No.\" := DetectPocBankAccountNoTok;\n        TargetBankAccount.IBAN := DetectPocIbanTok;\n        TargetBankAccount.\"Country/Region Code\" := 'DK';\n        TargetBankAccount.Insert();\n\n        // [Given] the source AuthEntry + Bank live only in the current company; the AuthEntry names the empty target company as its origin, so the source bank is found through the current-company fallback.\n        SourceEntryNo := SeedDetectionPocFixture();\n        AuthenticationEntry.Get(SourceEntryNo);\n        AuthenticationEntry.\"Originating Company\" := MutBTargetCompanyTok;\n        AuthenticationEntry.Modify();\n\n        // [Given] the resolved bank supports the source system with the source comm type (Direct).\n        TempResolvedBank.Validate(Name, 'DetectPocBank');\n        BankSystemMapping2.Init();\n        BankSystemMapping2.\"Bank Code\" := TempResolvedBank.Code;\n        BankSystemMapping2.\"Bank System Code\" := DetectPocSourceSystemTok;\n        BankSystemMapping2.\"Supported Communication\" := Enum::\"CTS-CB Communication Type\"::Webservice;\n        BankSystemMapping2.\"Import/Export Comm Type\" := \"CTS-CB Import/Export Comm Type\"::Direct;\n        BankSystemMapping2.Insert(false);\n        InitPlaceholderInCurrentCompany(TempAuthShareTarget, MutBTargetCompanyTok);\n\n        // [When] detection runs against the second company.\n        AuthShareDetection.DetectInCompany(SourceEntryNo, MutBTargetCompanyTok, TempAuthShareTarget, IHttpFactory);\n\n        // [Then] the placeholder is Ready against the source bank.\n        AssertRow(TempAuthShareTarget, DetectPocSourceBankCodeTok, Enum::\"CTS-CB Share Target Annotation\"::Ready, 1, '');\n\n        // [Then] the source bank was copied into the target company and the account there is linked to it.\n        TargetBank.ChangeCompany(MutBTargetCompanyTok);\n        Assert.IsTrue(TargetBank.Get(DetectPocSourceBankCodeTok), 'The source bank must be copied into the target company.');\n        Assert.AreEqual('Detect POC Source Bank', TargetBank.Name, 'The copied bank must carry the source bank name.');\n        TargetBankAccount.Get(DetectPocBankAccountNoTok);\n        Assert.AreEqual('DETECT-SRC', TargetBankAccount.\"CTS-CB Bank Code\", 'The target Bank Account must be linked to the copied bank.');\n\n        // Cleanup of the second company.\n        if Company.Get(MutBTargetCompanyTok) then\n            Company.Delete(true);\n    end;",
+      "rationale": "Lines 295-296 (TryGetSourceBank Get/Error) only matter when the bank is missing in the preferred company, and lines 304-309 (EnsureTargetBankFromSource WritePermission guard, ToBank.Get, ToBank.Insert) only matter when the target company lacks the bank. Every existing test runs with target = source = current company, so the preferred-company read always succeeds and ToBank.Get always finds the bank; the mutated branches are never distinguishable. Environment requirement: the test creates its own second company, so it needs WritePermission() true and an installed CSC Subscription for Continia Banking in the current company (FindFirst raises an error otherwise); it has no silent exit that could skip it. The reviewer's silent-exit remark does not apply to this procedure (only F009/F010 had one).",
+      "expectedEffect": "Fails on mutants 209/212 because the originating (empty) company wrongly counts as a successful source read, the fallback to the current company is skipped and the source bank/comm type are not resolved (placeholder is not Ready, or detection exits); fails on 213/214/217/220 because the source bank is never inserted into the target company (TargetBank.Get fails, account not linked); passes on the original which falls back to the current company and copies the bank.",
+      "confidence": "low"
+    },
+    {
+      "fixId": "F022",
+      "mutantIds": [
+        215,
+        216,
+        229,
+        230
+      ],
+      "verdict": "new-test",
+      "target": {
+        "codeunitId": 95155,
+        "codeunitName": "CTS-CB Test Auth Share Detect",
+        "file": "Authentication/TestAuthShareDetect.Codeunit.al",
+        "procedure": "MutB_DetectInCompany_ExactMatchWithReadOnlyPermissions_DoesNotCopyBankOrLinkAccount",
+        "isNewProcedure": true
+      },
+      "change": "new-test",
+      "anchor": null,
+      "alCode": "    [Test]\n    procedure MutB_DetectInCompany_ExactMatchWithReadOnlyPermissions_DoesNotCopyBankOrLinkAccount()\n    var\n        TempAuthShareTarget: Record \"CTS-CB Auth Share Target\" temporary;\n        TempResolvedBank: Record \"CTS-CB Bank\" temporary;\n        AuthenticationEntry: Record \"CTS-CB Authentication Entry\";\n        BankSystemMapping2: Record \"CTS-CB Bank System Mapping2\";\n        Company: Record Company;\n        CSCSubscription: Record \"CSC Subscription\";\n        TargetCSCSubscription: Record \"CSC Subscription\";\n        TargetBank: Record \"CTS-CB Bank\";\n        TargetBankAccount: Record \"Bank Account\";\n        AuthShareDetection: Codeunit \"CTS-CB Auth Share Detection\";\n        AuthShareHttpFixture: Codeunit \"CTS-CB Auth Share Http Fixture\";\n        IHttpFactory: Codeunit \"CTS-CB Http Factory\";\n        FakeHTTPClient: Codeunit \"CTS-CB Fake HTTP Client\";\n        FakeIHttpResponse: Codeunit \"CTS-CB FakeIHttpResponse\";\n        LibraryPermissions: Codeunit \"CTS-CB Library Permissions\";\n        LibraryLowerPermissions: Codeunit \"Library - Lower Permissions\";\n        CoreMgt: Codeunit \"CTS-CB Core Mgt.\";\n        SourceEntryNo: Integer;\n        MutBTargetCompanyTok: Label 'MUTB-NOWRITE', Locked = true;\n        DetectPocSourceBankCodeTok: Label 'DETECT-SRC', Locked = true;\n        DetectPocSourceSystemTok: Label 'DETECT-SYS', Locked = true;\n        DetectPocBankAccountNoTok: Label 'BA-DETECT-POC', Locked = true;\n        DetectPocIbanTok: Label 'DK1234567890123456', Locked = true;\n    begin\n        // [Scenario] The session has only read permission on CTS-CB Bank and Bank Account. Detection must\n        // skip the bank copy and the account link silently (WritePermission guards) instead of raising a\n        // permission error.\n        LibraryPermissions.SetSuperPermissions();\n        CleanupDetectionTables();\n\n        // [Given] a second company with Continia Banking activated and one unbound Bank Account, exactly as in the copy/link scenario.\n        if not Company.Get(MutBTargetCompanyTok) then begin\n            Company.Init();\n            Company.Name := MutBTargetCompanyTok;\n            Company.\"Display Name\" := MutBTargetCompanyTok;\n            Company.Insert(true);\n        end;\n        AuthShareHttpFixture.Setup(IHttpFactory, FakeHTTPClient, FakeIHttpResponse, '{\"name\":\"DetectPocBank\",\"country-code\":\"DK\"}');\n        CSCSubscription.SetRange(\"App Code\", CoreMgt.ProductCode());\n        CSCSubscription.FindFirst();\n        TargetCSCSubscription.ChangeCompany(MutBTargetCompanyTok);\n        TargetCSCSubscription := CSCSubscription;\n        if TargetCSCSubscription.Insert() then;\n        TargetBankAccount.ChangeCompany(MutBTargetCompanyTok);\n        TargetBankAccount.Init();\n        TargetBankAccount.\"No.\" := DetectPocBankAccountNoTok;\n        TargetBankAccount.IBAN := DetectPocIbanTok;\n        TargetBankAccount.\"Country/Region Code\" := 'DK';\n        TargetBankAccount.Insert();\n\n        SourceEntryNo := SeedDetectionPocFixture();\n        AuthenticationEntry.Get(SourceEntryNo);\n        AuthenticationEntry.\"Originating Company\" := MutBTargetCompanyTok;\n        AuthenticationEntry.Modify();\n\n        TempResolvedBank.Validate(Name, 'DetectPocBank');\n        BankSystemMapping2.Init();\n        BankSystemMapping2.\"Bank Code\" := TempResolvedBank.Code;\n        BankSystemMapping2.\"Bank System Code\" := DetectPocSourceSystemTok;\n        BankSystemMapping2.\"Supported Communication\" := Enum::\"CTS-CB Communication Type\"::Webservice;\n        BankSystemMapping2.\"Import/Export Comm Type\" := \"CTS-CB Import/Export Comm Type\"::Direct;\n        BankSystemMapping2.Insert(false);\n        InitPlaceholderInCurrentCompany(TempAuthShareTarget, MutBTargetCompanyTok);\n\n        // [When] detection runs with read-only permissions (an exact match is found).\n        LibraryLowerPermissions.SetRead();\n        LibraryLowerPermissions.AddPermissionSet('CTS CB Base Read');\n        AuthShareDetection.DetectInCompany(SourceEntryNo, MutBTargetCompanyTok, TempAuthShareTarget, IHttpFactory);\n        LibraryPermissions.SetSuperPermissions();\n\n        // [Then] no error occurred (reaching this line), no bank was copied and the account was not linked.\n        TargetBank.ChangeCompany(MutBTargetCompanyTok);\n        Assert.IsFalse(TargetBank.Get(DetectPocSourceBankCodeTok), 'The source bank must not be copied without write permission.');\n        TargetBankAccount.Get(DetectPocBankAccountNoTok);\n        Assert.AreEqual('', TargetBankAccount.\"CTS-CB Bank Code\", 'The Bank Account must not be linked without write permission.');\n\n        // Cleanup of the second company.\n        if Company.Get(MutBTargetCompanyTok) then\n            Company.Delete(true);\n    end;",
+      "rationale": "Mutants 215/216 (EnsureTargetBankFromSource) and 229/230 (LinkBankAccountsToBank) remove or neutralise the WritePermission() guard. The earlier 'equivalent' verdict assumed every test session runs as SUPER. That premise is wrong: DemoPortal test sessions run in restricted permission mode, and the test app has a permission-lowering library (codeunit 95001 CTS-CB Library Permissions wraps 'Library - Lower Permissions'; that library has SetRead/AddPermissionSet). So the guards are testable by lowering permissions to read-only on CTS-CB Bank / Bank Account, running an exact-match detection against a target company that lacks the bank, and asserting no bank copy, no account link and no error. Caveat (hence low confidence): AuthShareDetection declares Permissions = tabledata \"CTS-CB Bank\" = RIM, \"Bank Account\" = RM, and effective permissions are the union, so WritePermission() may still be true. APPLIER: run F020 first; its outcome shows whether WritePermission() is true in these sessions. If it is true here even with lowered user permissions, this test fails on the original too, and 215/216/229/230 are equivalent in practice: drop this test and revert F022 to equivalent.",
+      "expectedEffect": "Fails on mutants 215/216 because the guard no longer exits, so the source bank is inserted into the target company and TargetBank.Get succeeds; fails on mutants 229/230 because the guard no longer exits, so the Bank Account is modified and linked to the bank (or a permission error is raised); passes on the original, where WritePermission() is false for the read-only session, both procedures exit early, no bank is copied and the account stays unlinked.",
+      "confidence": "low"
+    },
+    {
+      "fixId": "F023",
+      "mutantIds": [
+        221
+      ],
+      "verdict": "equivalent",
+      "target": null,
+      "change": null,
+      "anchor": null,
+      "alCode": "",
+      "rationale": "ToBank.Insert(true) vs Insert(false) only differs by running the table's OnInsert trigger and OnBeforeInsert/OnAfterInsert event subscribers. Table CTS-CB Bank has no OnInsert trigger, no table extension and no subscriber in the app, so the RunTrigger flag has no observable effect.",
+      "expectedEffect": "No test can observe the difference: both calls insert the same row and run no code.",
+      "confidence": "medium"
+    },
+    {
+      "fixId": "F024",
+      "mutantIds": [
+        222,
+        223,
+        226
+      ],
+      "verdict": "new-test",
+      "target": {
+        "codeunitId": 95155,
+        "codeunitName": "CTS-CB Test Auth Share Detect",
+        "file": "Authentication/TestAuthShareDetect.Codeunit.al",
+        "procedure": "MutB_DetectInCompany_AppNotActivated_AnnotatesPlaceholderAsNotActivated",
+        "isNewProcedure": true
+      },
+      "change": "new-test",
+      "anchor": null,
+      "alCode": "    [Test]\n    procedure MutB_DetectInCompany_AppNotActivated_AnnotatesPlaceholderAsNotActivated()\n    var\n        TempAuthShareTarget: Record \"CTS-CB Auth Share Target\" temporary;\n        AuthShareDetection: Codeunit \"CTS-CB Auth Share Detection\";\n        IHttpFactory: Codeunit \"CTS-CB Http Factory\";\n        LibraryActivationMgt: Codeunit \"CTS-CB Library Activation Mgt.\";\n        LibraryPermissions: Codeunit \"CTS-CB Library Permissions\";\n        CurrentCo: Text[30];\n    begin\n        LibraryPermissions.SetSuperPermissions();\n        CurrentCo := CopyStr(CompanyName(), 1, 30);\n\n        // [Given] Continia Banking is not active in the target company (the current company, deactivated) and a placeholder row addresses it.\n        LibraryActivationMgt.DeactivateCompany();\n        InitPlaceholderInCurrentCompany(TempAuthShareTarget, CurrentCo);\n\n        // [When] DetectInCompany runs; the entry no. is irrelevant because detection stops at the activation check.\n        AuthShareDetection.DetectInCompany(1, CurrentCo, TempAuthShareTarget, IHttpFactory);\n\n        // [Then] the placeholder row is annotated NotActivated and carries the explanatory message.\n        Assert.AreEqual(1, CountRows(TempAuthShareTarget), 'Expected exactly one row');\n        AssertRow(TempAuthShareTarget, '', Enum::\"CTS-CB Share Target Annotation\"::NotActivated, 0, '');\n        Assert.IsTrue(StrPos(TempAuthShareTarget.\"Outcome Message\", CurrentCo) > 0, 'Outcome Message must name the company where the app is not active.');\n\n        LibraryActivationMgt.ActivateCompany();\n    end;",
+      "rationale": "AnnotatePlaceholderAsNotActivated (lines 319, 327) runs only when CoreMgt.IsAppActiveInCompany is false. No existing test deactivates the company (the fixture always activates it), so the NotActivated annotation, its FindFirst guard and the Modify are never executed.",
+      "expectedEffect": "Fails on mutants 222/223 because the procedure exits before annotating, leaving the row NeedsDetection; fails on 226 because without Modify the re-read row (AssertRow does Reset + FindFirst) is still NeedsDetection with an empty Outcome Message; passes on the original which persists NotActivated.",
+      "confidence": "medium"
+    },
+    {
+      "fixId": "F025",
+      "mutantIds": [
+        224,
+        225
+      ],
+      "verdict": "new-test",
+      "target": {
+        "codeunitId": 95155,
+        "codeunitName": "CTS-CB Test Auth Share Detect",
+        "file": "Authentication/TestAuthShareDetect.Codeunit.al",
+        "procedure": "MutB_DetectInCompany_AppNotActivated_NoPlaceholder_LeavesBufferEmpty",
+        "isNewProcedure": true
+      },
+      "change": "new-test",
+      "anchor": null,
+      "alCode": "    [Test]\n    procedure MutB_DetectInCompany_AppNotActivated_NoPlaceholder_LeavesBufferEmpty()\n    var\n        TempAuthShareTarget: Record \"CTS-CB Auth Share Target\" temporary;\n        AuthShareDetection: Codeunit \"CTS-CB Auth Share Detection\";\n        IHttpFactory: Codeunit \"CTS-CB Http Factory\";\n        LibraryActivationMgt: Codeunit \"CTS-CB Library Activation Mgt.\";\n        LibraryPermissions: Codeunit \"CTS-CB Library Permissions\";\n        CurrentCo: Text[30];\n    begin\n        LibraryPermissions.SetSuperPermissions();\n        CurrentCo := CopyStr(CompanyName(), 1, 30);\n\n        // [Given] Continia Banking is not active in the target company and the buffer has no placeholder row (defensive case).\n        LibraryActivationMgt.DeactivateCompany();\n\n        // [When]\n        AuthShareDetection.DetectInCompany(1, CurrentCo, TempAuthShareTarget, IHttpFactory);\n\n        // [Then] detection exits cleanly and does not try to modify a row that does not exist.\n        Assert.AreEqual(0, CountRows(TempAuthShareTarget), 'Expected zero rows - there is no placeholder to annotate');\n\n        LibraryActivationMgt.ActivateCompany();\n    end;",
+      "rationale": "Lines 319-321: when the placeholder FindFirst fails, the procedure resets and exits. No test runs the not-activated path at all, so the not-found branch is untested; without the guard or its exit the code falls through to Modify on a non-existent row.",
+      "expectedEffect": "Fails on mutants 224/225 because execution continues past the missing placeholder into TempAuthShareTarget.Modify() on a row that does not exist, which raises a runtime error; passes on the original which exits cleanly with an empty buffer.",
+      "confidence": "medium"
+    },
+    {
+      "fixId": "F027",
+      "mutantIds": [
+        232,
+        233,
+        253,
+        287,
+        288,
+        291,
+        293,
+        294
+      ],
+      "verdict": "new-test",
+      "target": {
+        "codeunitId": 95155,
+        "codeunitName": "CTS-CB Test Auth Share Detect",
+        "file": "Authentication/TestAuthShareDetect.Codeunit.al",
+        "procedure": "MutB_UpdatePlaceholderRows_StaleRowForSourceBank_IsRemoved",
+        "isNewProcedure": true
+      },
+      "change": "new-test",
+      "anchor": null,
+      "alCode": "    [Test]\n    procedure MutB_UpdatePlaceholderRows_StaleRowForSourceBank_IsRemoved()\n    var\n        TempAuthShareTarget: Record \"CTS-CB Auth Share Target\" temporary;\n        SourceBank: Record \"CTS-CB Bank\";\n        AuthShareDetection: Codeunit \"CTS-CB Auth Share Detection\";\n        ResolvedOtherAccountsByBank: Dictionary of [Code[30], List of [Code[20]]];\n        UnidentifiedAccounts: List of [Code[20]];\n    begin\n        // [Given] A placeholder (line 10) plus a stale row for the source bank left by an earlier discovery (line 20).\n        InitPlaceholder(TempAuthShareTarget);\n        TempAuthShareTarget.Init();\n        TempAuthShareTarget.\"Line No.\" := 20;\n        TempAuthShareTarget.\"Target Company\" := TargetCompanyTok;\n        TempAuthShareTarget.\"Target Bank Code\" := SourceBankCodeTok;\n        TempAuthShareTarget.Annotation := Enum::\"CTS-CB Share Target Annotation\"::Ready;\n        TempAuthShareTarget.Insert();\n        CreateBank(SourceBankCodeTok, 'Source Bank', \"CTS-CB Import/Export Comm Type\"::Direct);\n        SourceBank.Get(SourceBankCodeTok);\n\n        // Position the caller's record on the placeholder (line 10) so it differs from the last row (line 20).\n        TempAuthShareTarget.Get(10);\n\n        // [When] Three accounts matched the source bank exactly.\n        AuthShareDetection.UpdatePlaceholderRows(TempAuthShareTarget, TargetCompanyTok, SourceBank, SourceBankSystemTok, \"CTS-CB Import/Export Comm Type\"::Direct, 3, 0, ResolvedOtherAccountsByBank, UnidentifiedAccounts, 0, 0);\n\n        // [Then] The placeholder became Ready and the stale pre-existing row for the same bank is gone.\n        Assert.AreEqual(1, CountRows(TempAuthShareTarget), 'The stale row for the source bank must be deleted');\n        AssertRow(TempAuthShareTarget, SourceBankCodeTok, Enum::\"CTS-CB Share Target Annotation\"::Ready, 3, '');\n    end;",
+      "rationale": "Lines 382/383, 424-425 and 618-625: the closing stale-row cleanup only has an effect when the buffer already holds a regular row for the same (company, bank) before detection. Every existing UpdatePlaceholderRows test starts with just the placeholder, so DeleteStaleRegularRowForSameBank never has anything to delete and its guards, IsEmpty check, DeleteAll and the PreEmissionMaxLineNo snapshot are unobservable. Mutant 232 (COND -> true on the FindLast() at line 382) compiles to a constant, so FindLast() is not executed and PreEmissionMaxLineNo takes the Line No. the caller's record variable already holds. InitPlaceholder/Insert leave that variable on the last row inserted (line 20), which equals the real maximum, so 232 survives. Positioning the variable on the placeholder with Get(10) before the call makes the mutant snapshot 10, so the filter '<>10 & <=10' matches nothing and the stale row 20 survives.",
+      "expectedEffect": "Fails on mutants 233 (snapshot 0 -> filter Line No. <= 0 matches nothing), 253 (cleanup never called for the source bank), 287/288 (bank code guard exits for a real code), 291/293 (IsEmpty branch inverted or never taken) and 294 (DeleteAll removed) because the stale row 20 survives and CountRows is 2; passes on the original which deletes it and leaves one row. Also fails on mutant 232 because, with the record variable positioned on line 10 by Get(10), PreEmissionMaxLineNo becomes 10 instead of 20, DeleteStaleRegularRowForSameBank finds no stale row and CountRows is 2; on the original FindLast() yields 20 and the stale row is deleted.",
+      "confidence": "high"
+    },
+    {
+      "fixId": "F028",
+      "mutantIds": [
+        251,
+        252
+      ],
+      "verdict": "new-test",
+      "target": {
+        "codeunitId": 95155,
+        "codeunitName": "CTS-CB Test Auth Share Detect",
+        "file": "Authentication/TestAuthShareDetect.Codeunit.al",
+        "procedure": "MutB_UpdatePlaceholderRows_NoMatchedAccounts_KeepsRowForSourceBank",
+        "isNewProcedure": true
+      },
+      "change": "new-test",
+      "anchor": null,
+      "alCode": "    [Test]\n    procedure MutB_UpdatePlaceholderRows_NoMatchedAccounts_KeepsRowForSourceBank()\n    var\n        TempAuthShareTarget: Record \"CTS-CB Auth Share Target\" temporary;\n        SourceBank: Record \"CTS-CB Bank\";\n        AuthShareDetection: Codeunit \"CTS-CB Auth Share Detection\";\n        ResolvedOtherAccountsByBank: Dictionary of [Code[30], List of [Code[20]]];\n        UnidentifiedAccounts: List of [Code[20]];\n        AccountsForOtherA: List of [Code[20]];\n    begin\n        // [Given] A placeholder, an existing row for the source bank (line 20) and accounts resolved only to another bank.\n        InitPlaceholder(TempAuthShareTarget);\n        TempAuthShareTarget.Init();\n        TempAuthShareTarget.\"Line No.\" := 20;\n        TempAuthShareTarget.\"Target Company\" := TargetCompanyTok;\n        TempAuthShareTarget.\"Target Bank Code\" := SourceBankCodeTok;\n        TempAuthShareTarget.Annotation := Enum::\"CTS-CB Share Target Annotation\"::Ready;\n        TempAuthShareTarget.Insert();\n        CreateBank(SourceBankCodeTok, 'Source Bank', \"CTS-CB Import/Export Comm Type\"::Direct);\n        SourceBank.Get(SourceBankCodeTok);\n        CreateBank(OtherBankATok, 'Other Bank A', \"CTS-CB Import/Export Comm Type\"::Direct);\n        AccountsForOtherA.Add('BA-001');\n        ResolvedOtherAccountsByBank.Add(OtherBankATok, AccountsForOtherA);\n\n        // [When] No account matched the source bank (ExactMatchCount = MismatchCount = 0).\n        AuthShareDetection.UpdatePlaceholderRows(TempAuthShareTarget, TargetCompanyTok, SourceBank, SourceBankSystemTok, \"CTS-CB Import/Export Comm Type\"::Direct, 0, 0, ResolvedOtherAccountsByBank, UnidentifiedAccounts, 0, 0);\n\n        // [Then] The placeholder became SystemNotMapped and the unrelated row for the source bank is left alone.\n        Assert.AreEqual(2, CountRows(TempAuthShareTarget), 'Expected two rows - SystemNotMapped plus the untouched source-bank row');\n        AssertSpecificRow(TempAuthShareTarget, OtherBankATok, Enum::\"CTS-CB Share Target Annotation\"::SystemNotMapped, 1, 'BA-001');\n        AssertSpecificRow(TempAuthShareTarget, SourceBankCodeTok, Enum::\"CTS-CB Share Target Annotation\"::Ready, 0, '');\n    end;",
+      "rationale": "Line 424: `if TotalMatched > 0` guards the source-bank cleanup. All tests with TotalMatched = 0 start with a placeholder only, so running the cleanup for the source bank anyway deletes nothing and is invisible.",
+      "expectedEffect": "Fails on mutants 251 (>= 0) and 252 (true) because DeleteStaleRegularRowForSameBank runs for SRCBANK with TotalMatched = 0 and deletes the pre-existing row 20, leaving one row instead of two; passes on the original which skips the cleanup.",
+      "confidence": "high"
+    },
+    {
+      "fixId": "F029",
+      "mutantIds": [
+        289,
+        290
+      ],
+      "verdict": "new-test",
+      "target": {
+        "codeunitId": 95155,
+        "codeunitName": "CTS-CB Test Auth Share Detect",
+        "file": "Authentication/TestAuthShareDetect.Codeunit.al",
+        "procedure": "MutB_UpdatePlaceholderRows_EmptySourceBankCode_KeepsOtherRowsWithoutBank",
+        "isNewProcedure": true
+      },
+      "change": "new-test",
+      "anchor": null,
+      "alCode": "    [Test]\n    procedure MutB_UpdatePlaceholderRows_EmptySourceBankCode_KeepsOtherRowsWithoutBank()\n    var\n        TempAuthShareTarget: Record \"CTS-CB Auth Share Target\" temporary;\n        SourceBank: Record \"CTS-CB Bank\";\n        AuthShareDetection: Codeunit \"CTS-CB Auth Share Detection\";\n        ResolvedOtherAccountsByBank: Dictionary of [Code[30], List of [Code[20]]];\n        UnidentifiedAccounts: List of [Code[20]];\n    begin\n        // [Given] A placeholder (line 10), an unrelated row without a bank code (line 20) and a source bank record that has no code.\n        InitPlaceholder(TempAuthShareTarget);\n        TempAuthShareTarget.Init();\n        TempAuthShareTarget.\"Line No.\" := 20;\n        TempAuthShareTarget.\"Target Company\" := TargetCompanyTok;\n        TempAuthShareTarget.\"Target Bank Code\" := '';\n        TempAuthShareTarget.Annotation := Enum::\"CTS-CB Share Target Annotation\"::DetectionFailed;\n        TempAuthShareTarget.Insert();\n\n        // [When] Two accounts matched; the cleanup is asked to run for an empty bank code.\n        AuthShareDetection.UpdatePlaceholderRows(TempAuthShareTarget, TargetCompanyTok, SourceBank, SourceBankSystemTok, \"CTS-CB Import/Export Comm Type\"::Direct, 2, 0, ResolvedOtherAccountsByBank, UnidentifiedAccounts, 0, 0);\n\n        // [Then] An empty bank code never triggers a cleanup: the unrelated row survives.\n        Assert.AreEqual(2, CountRows(TempAuthShareTarget), 'Expected two rows - the row without a bank code must not be deleted');\n        Assert.IsTrue(TempAuthShareTarget.Get(20), 'The unrelated row without a bank code must survive');\n    end;",
+      "rationale": "Lines 618-619: the `BankCode = ''` guard in DeleteStaleRegularRowForSameBank is never exercised with an empty code because every test passes a real source bank, and no other rows without a bank code exist in the buffer to be wrongly deleted.",
+      "expectedEffect": "Fails on mutants 289 (condition false) and 290 (exit removed) because the cleanup then deletes every other row with an empty Target Bank Code and Line No. <= the snapshot, so row 20 disappears and CountRows is 1; passes on the original which returns immediately for an empty code.",
+      "confidence": "medium"
+    },
+    {
+      "fixId": "F030",
+      "mutantIds": [
+        249,
+        250,
+        264,
+        265,
+        277,
+        278
+      ],
+      "verdict": "equivalent",
+      "target": null,
+      "change": null,
+      "anchor": null,
+      "alCode": "",
+      "rationale": "Each pair guards `if not TempAuthShareTarget.Get(PlaceholderLineNo) then (Reset;) exit` inside a `not PlaceholderConsumed` branch (lines 416-418, 480-481, 547-548). PlaceholderLineNo was read from a row found by FindFirst at lines 388-392 and nothing between there and these branches deletes or renames it (rows are only inserted, or the placeholder itself is modified, which sets PlaceholderConsumed), so Get always succeeds. The `then` branch is unreachable and removing the condition or the exit changes nothing.",
+      "expectedEffect": "No test can make Get(PlaceholderLineNo) fail while PlaceholderConsumed is false, so original and mutants behave identically.",
+      "confidence": "medium"
+    },
+    {
+      "fixId": "F031",
+      "mutantIds": [
+        256,
+        257
+      ],
+      "verdict": "equivalent",
+      "target": null,
+      "change": null,
+      "anchor": null,
+      "alCode": "",
+      "rationale": "Line 474 `TotalAttempted > 0`: EmitDetectionFailedRow is only called from UpdatePlaceholderRows when TotalFailed > 0, and TotalAttempted = TotalMatched + OtherBankCount + TotalFailed >= TotalFailed, so TotalAttempted is always > 0 there. `>= 0` and `true` are therefore indistinguishable from the original.",
+      "expectedEffect": "No observable difference: the condition is true for every reachable input.",
+      "confidence": "high"
+    },
+    {
+      "fixId": "F032",
+      "mutantIds": [
+        258
+      ],
+      "verdict": "fix",
+      "target": {
+        "codeunitId": 95155,
+        "codeunitName": "CTS-CB Test Auth Share Detect",
+        "file": "Authentication/TestAuthShareDetect.Codeunit.al",
+        "procedure": "UpdatePlaceholderRows_UnidentifiedOnly_BecomesDetectionFailed",
+        "isNewProcedure": false
+      },
+      "change": "add-assert",
+      "anchor": {
+        "afterLine": 179
+      },
+      "alCode": "        Assert.AreEqual('Bank detection failed for 4 of 4 bank accounts in this company. 2 accounts had lookup or connection errors, and 2 accounts had missing IBAN or branch information.', TempAuthShareTarget.\"Outcome Message\", 'Outcome Message mismatch');",
+      "rationale": "Line 474 selects the detailed failure message when TotalAttempted > 0. UpdatePlaceholderRows_UnidentifiedOnly_BecomesDetectionFailed reaches the line with 4 failed accounts but AssertRow never checks Outcome Message, so forcing the generic DetectionFailedMsg branch goes unnoticed.",
+      "expectedEffect": "Fails on mutant 258 because the Outcome Message would be the generic 'Bank detection did not return a valid result for any bank account in this company.'; passes on the original which emits the detailed message with 4 of 4 failed (2 HTTP, 2 missing info).",
+      "confidence": "medium"
+    },
+    {
+      "fixId": "F033",
+      "mutantIds": [
+        271
+      ],
+      "verdict": "fix",
+      "target": {
+        "codeunitId": 95155,
+        "codeunitName": "CTS-CB Test Auth Share Detect",
+        "file": "Authentication/TestAuthShareDetect.Codeunit.al",
+        "procedure": "UpdatePlaceholderRows_SingleOtherBank_BecomesSystemNotMapped",
+        "isNewProcedure": false
+      },
+      "change": "add-assert",
+      "anchor": {
+        "afterLine": 113
+      },
+      "alCode": "        Assert.AreEqual('Other Bank A', TempAuthShareTarget.\"Target Bank Name\", 'Target Bank Name must be the resolved bank name');",
+      "rationale": "Line 538: `SourceLocalBank.Get(ResolvedBankCode)` chooses the bank Name over the code as the row caption. UpdatePlaceholderRows_SingleOtherBank_BecomesSystemNotMapped creates OTHERBANKA 'Other Bank A' so the true branch runs, but AssertRow never checks Target Bank Name, so always falling back to the bank code is not noticed.",
+      "expectedEffect": "Fails on mutant 271 because Target Bank Name would be 'OTHERBANKA' (the code) instead of 'Other Bank A'; passes on the original.",
+      "confidence": "high"
+    },
+    {
+      "fixId": "F034",
+      "mutantIds": [
+        270
+      ],
+      "verdict": "new-test",
+      "target": {
+        "codeunitId": 95155,
+        "codeunitName": "CTS-CB Test Auth Share Detect",
+        "file": "Authentication/TestAuthShareDetect.Codeunit.al",
+        "procedure": "MutB_UpdatePlaceholderRows_UnknownResolvedBank_UsesBankCodeAsName",
+        "isNewProcedure": true
+      },
+      "change": "new-test",
+      "anchor": null,
+      "alCode": "    [Test]\n    procedure MutB_UpdatePlaceholderRows_UnknownResolvedBank_UsesBankCodeAsName()\n    var\n        TempAuthShareTarget: Record \"CTS-CB Auth Share Target\" temporary;\n        SourceBank: Record \"CTS-CB Bank\";\n        AuthShareDetection: Codeunit \"CTS-CB Auth Share Detection\";\n        ResolvedOtherAccountsByBank: Dictionary of [Code[30], List of [Code[20]]];\n        UnidentifiedAccounts: List of [Code[20]];\n        AccountsForGhost: List of [Code[20]];\n        GhostBankTok: Label 'GHOSTBANK', Locked = true;\n    begin\n        // [Given] An account resolved to a bank that has no CTS-CB Bank record in this company.\n        InitPlaceholder(TempAuthShareTarget);\n        CreateBank(SourceBankCodeTok, 'Source Bank', \"CTS-CB Import/Export Comm Type\"::Direct);\n        SourceBank.Get(SourceBankCodeTok);\n        AccountsForGhost.Add('BA-001');\n        ResolvedOtherAccountsByBank.Add(GhostBankTok, AccountsForGhost);\n\n        // [When]\n        AuthShareDetection.UpdatePlaceholderRows(TempAuthShareTarget, TargetCompanyTok, SourceBank, SourceBankSystemTok, \"CTS-CB Import/Export Comm Type\"::Direct, 0, 0, ResolvedOtherAccountsByBank, UnidentifiedAccounts, 0, 0);\n\n        // [Then] The SystemNotMapped row falls back to the bank code as its caption.\n        Assert.AreEqual(1, CountRows(TempAuthShareTarget), 'Expected exactly one row');\n        AssertRow(TempAuthShareTarget, GhostBankTok, Enum::\"CTS-CB Share Target Annotation\"::SystemNotMapped, 1, 'BA-001');\n        Assert.AreEqual('GHOSTBANK', TempAuthShareTarget.\"Target Bank Name\", 'Target Bank Name must fall back to the bank code when no Bank record exists');\n    end;",
+      "rationale": "Line 538: the else branch (`BankName := ResolvedBankCode`) runs only when the resolved bank has no local CTS-CB Bank record. All existing tests create every resolved bank first, so the Get always succeeds and the fallback is never exercised.",
+      "expectedEffect": "Fails on mutant 270 because Get is forced true and BankName becomes the never-loaded SourceLocalBank.Name (empty) instead of 'GHOSTBANK'; passes on the original which uses the code.",
+      "confidence": "high"
+    },
+    {
+      "fixId": "F035",
+      "mutantIds": [
+        282
+      ],
+      "verdict": "new-test",
+      "target": {
+        "codeunitId": 95155,
+        "codeunitName": "CTS-CB Test Auth Share Detect",
+        "file": "Authentication/TestAuthShareDetect.Codeunit.al",
+        "procedure": "MutB_NextLineNo_SecondEmittedRow_UsesMaxLineNoPlusTen",
+        "isNewProcedure": true
+      },
+      "change": "new-test",
+      "anchor": null,
+      "alCode": "    [Test]\n    procedure MutB_NextLineNo_SecondEmittedRow_UsesMaxLineNoPlusTen()\n    var\n        TempAuthShareTarget: Record \"CTS-CB Auth Share Target\" temporary;\n        SourceBank: Record \"CTS-CB Bank\";\n        AuthShareDetection: Codeunit \"CTS-CB Auth Share Detection\";\n        ResolvedOtherAccountsByBank: Dictionary of [Code[30], List of [Code[20]]];\n        UnidentifiedAccounts: List of [Code[20]];\n        AccountsForOtherA: List of [Code[20]];\n        UnrelatedBankTok: Label 'UNRELATED', Locked = true;\n    begin\n        // [Given] A placeholder (line 10) and an unrelated row for another bank (line 20).\n        InitPlaceholder(TempAuthShareTarget);\n        TempAuthShareTarget.Init();\n        TempAuthShareTarget.\"Line No.\" := 20;\n        TempAuthShareTarget.\"Target Company\" := TargetCompanyTok;\n        TempAuthShareTarget.\"Target Bank Code\" := UnrelatedBankTok;\n        TempAuthShareTarget.Annotation := Enum::\"CTS-CB Share Target Annotation\"::Ready;\n        TempAuthShareTarget.Insert();\n        CreateBank(SourceBankCodeTok, 'Source Bank', \"CTS-CB Import/Export Comm Type\"::Direct);\n        SourceBank.Get(SourceBankCodeTok);\n        CreateBank(OtherBankATok, 'Other Bank A', \"CTS-CB Import/Export Comm Type\"::Direct);\n        AccountsForOtherA.Add('BA-001');\n        ResolvedOtherAccountsByBank.Add(OtherBankATok, AccountsForOtherA);\n\n        // [When] One account matched the source bank exactly (consumes the placeholder) and one resolved to another bank (needs a new row).\n        AuthShareDetection.UpdatePlaceholderRows(TempAuthShareTarget, TargetCompanyTok, SourceBank, SourceBankSystemTok, \"CTS-CB Import/Export Comm Type\"::Direct, 1, 0, ResolvedOtherAccountsByBank, UnidentifiedAccounts, 0, 0);\n\n        // [Then] The new row is appended after the highest existing line (20), i.e. at line 30.\n        Assert.AreEqual(3, CountRows(TempAuthShareTarget), 'Expected placeholder, unrelated row and one new row');\n        Assert.IsTrue(TempAuthShareTarget.Get(30), 'The new SystemNotMapped row must be inserted at max line + 10');\n        Assert.AreEqual(OtherBankATok, TempAuthShareTarget.\"Target Bank Code\", 'Line 30 must be the row for the other bank');\n        Assert.AreEqual(Enum::\"CTS-CB Share Target Annotation\"::SystemNotMapped, TempAuthShareTarget.Annotation, 'Annotation mismatch');\n    end;",
+      "rationale": "NextLineNo (line 583, mutant 282 forces the FindLast() condition true) runs in EmitSystemNotMappedRow after Reset() and Init(). Init() keeps the primary key, so the record variable still holds the Line No. it was positioned on. With the condition forced to a constant FindLast() is not executed and LastLineNo is that current Line No., not the buffer maximum. In every existing test the current line equals the maximum or only one row exists, so 282 survives. Here the placeholder (line 10) is consumed by an exact match and an unrelated row sits at line 20, so the original returns 20 + 10 = 30 while the mutant returns 10 + 10 = 20. The earlier 'buffer is never empty so FindLast always succeeds' reasoning overlooked that the constant also skips the positioning.",
+      "expectedEffect": "Fails on mutant 282 because NextLineNo returns 20 (current Line No. 10 + 10) and Insert() raises a duplicate-key error on the existing row at line 20; passes on the original where FindLast() returns 20, the new row gets line 30 and the buffer holds exactly 3 rows.",
+      "confidence": "medium"
+    },
+    {
+      "fixId": "F036",
+      "mutantIds": [
+        285
+      ],
+      "verdict": "new-test",
+      "target": {
+        "codeunitId": 95155,
+        "codeunitName": "CTS-CB Test Auth Share Detect",
+        "file": "Authentication/TestAuthShareDetect.Codeunit.al",
+        "procedure": "MutB_UpdatePlaceholderRows_OtherBankAndUnidentified_FailureMessageCountsOtherBankAccounts",
+        "isNewProcedure": true
+      },
+      "change": "new-test",
+      "anchor": null,
+      "alCode": "    [Test]\n    procedure MutB_UpdatePlaceholderRows_OtherBankAndUnidentified_FailureMessageCountsOtherBankAccounts()\n    var\n        TempAuthShareTarget: Record \"CTS-CB Auth Share Target\" temporary;\n        SourceBank: Record \"CTS-CB Bank\";\n        AuthShareDetection: Codeunit \"CTS-CB Auth Share Detection\";\n        ResolvedOtherAccountsByBank: Dictionary of [Code[30], List of [Code[20]]];\n        UnidentifiedAccounts: List of [Code[20]];\n        AccountsForOtherA: List of [Code[20]];\n    begin\n        // [Given] Two accounts resolved to another bank and one account could not be resolved (HTTP failure).\n        InitPlaceholder(TempAuthShareTarget);\n        CreateBank(SourceBankCodeTok, 'Source Bank', \"CTS-CB Import/Export Comm Type\"::Direct);\n        SourceBank.Get(SourceBankCodeTok);\n        CreateBank(OtherBankATok, 'Other Bank A', \"CTS-CB Import/Export Comm Type\"::Direct);\n        AccountsForOtherA.Add('BA-001');\n        AccountsForOtherA.Add('BA-002');\n        ResolvedOtherAccountsByBank.Add(OtherBankATok, AccountsForOtherA);\n        UnidentifiedAccounts.Add('BA-X1');\n\n        // [When]\n        AuthShareDetection.UpdatePlaceholderRows(TempAuthShareTarget, TargetCompanyTok, SourceBank, SourceBankSystemTok, \"CTS-CB Import/Export Comm Type\"::Direct, 0, 0, ResolvedOtherAccountsByBank, UnidentifiedAccounts, 1, 0);\n\n        // [Then] Two rows; the DetectionFailed message reports 1 failed out of 3 attempted accounts.\n        Assert.AreEqual(2, CountRows(TempAuthShareTarget), 'Expected two rows - SystemNotMapped + DetectionFailed');\n        TempAuthShareTarget.SetRange(Annotation, Enum::\"CTS-CB Share Target Annotation\"::DetectionFailed);\n        Assert.IsTrue(TempAuthShareTarget.FindFirst(), 'Expected a DetectionFailed row');\n        Assert.AreEqual('Bank detection failed for 1 of 3 bank accounts in this company. 1 accounts had lookup or connection errors, and 0 accounts had missing IBAN or branch information.', TempAuthShareTarget.\"Outcome Message\", 'Outcome Message must count the other-bank accounts as attempted');\n        TempAuthShareTarget.Reset();\n    end;",
+      "rationale": "Line 598: CountAccountsInDict's return value feeds OtherBankCount and hence TotalAttempted, which is only visible in the DetectionFailed message text. No test combines resolved-other-bank accounts with failures and checks the message, so returning 0 goes unnoticed.",
+      "expectedEffect": "Fails on mutant 285 because CountAccountsInDict returns 0, TotalAttempted becomes 1 and the message reads '1 of 1' instead of '1 of 3'; passes on the original.",
+      "confidence": "medium"
+    },
+    {
+      "fixId": "F037",
+      "mutantIds": [
+        292
+      ],
+      "verdict": "equivalent",
+      "target": null,
+      "change": null,
+      "anchor": null,
+      "alCode": "",
+      "rationale": "Line 624 `if not IsEmpty() then DeleteAll()` is a pure optimisation: forcing the condition true always calls DeleteAll(), which on an empty filtered set deletes nothing, so the resulting buffer is identical.",
+      "expectedEffect": "No observable difference: DeleteAll() on an empty filtered set is a no-op.",
+      "confidence": "high"
+    },
+    {
+      "fixId": "F038",
+      "mutantIds": [
+        1873,
+        1874
+      ],
+      "verdict": "new-test",
+      "target": {
+        "codeunitId": 95110,
+        "codeunitName": "CTS-CB Bank Sys Pmt Map Tests",
+        "file": "Bank Account/BankSysPmtMapTests.Codeunit.al",
+        "procedure": "TestCopyPaymentMethodsFromBankSystem_NonBankSystemType_CreatesNoMappings",
+        "isNewProcedure": true
+      },
+      "change": "new-test",
+      "anchor": null,
+      "alCode": "    [Test]\n    procedure TestCopyPaymentMethodsFromBankSystem_NonBankSystemType_CreatesNoMappings()\n    var\n        BankAccount: Record \"Bank Account\";\n        BankAccComSetup: Record \"CTS-CB Bank Acc. Com. Setup\";\n        BankSysPmtMthMap: Record \"CTS-CB Bank Sys. Pmt. Mth. Map\";\n        BankSystem: Record \"CTS-CB Bank System\";\n        BankSystemPmtMth: Record \"CTS-CB Bank System Pmt. Mth.\";\n        PaymentMethod: Record \"Payment Method\";\n        PaymentMethodMapper: Codeunit \"CTS-CB Payment Method Mapper\";\n    begin\n        DeleteTables();\n        // [SCENARIO] Payment methods are only copied for setups whose System Type is BankSystem\n\n        // [GIVEN] A bank system with a payment method, and a CSV Port setup that uses the same code\n        CreateBankAccount(BankAccount);\n        CreateBankSystem(BankSystem);\n        CreatePaymentMethod(PaymentMethod);\n        CreateBankSystemPaymentMethod(BankSystemPmtMth, BankSystem.Code, PaymentMethod.Code);\n        BankAccComSetup.Init();\n        BankAccComSetup.Code := BankAccount.\"No.\";\n        BankAccComSetup.\"System Type\" := BankAccComSetup.\"System Type\"::\"CSV Port\";\n        BankAccComSetup.\"System Type Code\" := BankSystem.Code;\n        BankAccComSetup.\"Transaction Type\" := BankAccComSetup.\"Transaction Type\"::Payment;\n        BankAccComSetup.\"File Type\" := BankAccComSetup.\"File Type\"::BankFormat;\n\n        // [WHEN] Copying payment methods from bank system\n        PaymentMethodMapper.CopyPaymentMethodsFromBankSystem(BankAccComSetup);\n\n        // [THEN] No mapping is created because the setup is not a BankSystem setup\n        BankSysPmtMthMap.SetRange(\"Bank Account No.\", BankAccount.\"No.\");\n        Assert.IsTrue(BankSysPmtMthMap.IsEmpty(), 'No mappings should be created for a setup whose System Type is not BankSystem');\n\n        // Cleanup\n        CleanupTestData(BankAccount, BankSystem, PaymentMethod);\n    end;",
+      "rationale": "Line 19 (`System Type <> BankSystem`, then `exit` on line 20) is never true in 95110: every test copies for a BankSystem setup, so forcing the condition false or deleting the exit changes nothing the tests can see.",
+      "expectedEffect": "Fails on mutants 1873/1874 because the early exit is skipped for the CSV Port setup, the bank system's payment method is found and a mapping row is inserted for the bank account, so the IsEmpty assertion fails; passes on the original because the procedure exits at line 20 and no mapping is created.",
+      "confidence": "high"
+    },
+    {
+      "fixId": "F039",
+      "mutantIds": [
+        1877,
+        1878
+      ],
+      "verdict": "new-test",
+      "target": {
+        "codeunitId": 95110,
+        "codeunitName": "CTS-CB Bank Sys Pmt Map Tests",
+        "file": "Bank Account/BankSysPmtMapTests.Codeunit.al",
+        "procedure": "TestCopyPaymentMethodsFromBankSystem_NonPaymentTransactionType_CreatesNoMappings",
+        "isNewProcedure": true
+      },
+      "change": "new-test",
+      "anchor": null,
+      "alCode": "    [Test]\n    procedure TestCopyPaymentMethodsFromBankSystem_NonPaymentTransactionType_CreatesNoMappings()\n    var\n        BankAccount: Record \"Bank Account\";\n        BankAccComSetup: Record \"CTS-CB Bank Acc. Com. Setup\";\n        BankSysPmtMthMap: Record \"CTS-CB Bank Sys. Pmt. Mth. Map\";\n        BankSystem: Record \"CTS-CB Bank System\";\n        BankSystemPmtMth: Record \"CTS-CB Bank System Pmt. Mth.\";\n        PaymentMethod: Record \"Payment Method\";\n        PaymentMethodMapper: Codeunit \"CTS-CB Payment Method Mapper\";\n    begin\n        DeleteTables();\n        // [SCENARIO] Payment methods are only copied for Payment and Direct Debit transaction types\n\n        // [GIVEN] A bank system payment method that has no CTS-CB Payment Method, and an Account Statement setup\n        CreateBankAccount(BankAccount);\n        CreateBankSystem(BankSystem);\n        CreatePaymentMethod(PaymentMethod);\n        CreateBankSystemPaymentMethod(BankSystemPmtMth, BankSystem.Code, PaymentMethod.Code);\n        BankAccComSetup.Init();\n        BankAccComSetup.Code := BankAccount.\"No.\";\n        BankAccComSetup.\"System Type\" := BankAccComSetup.\"System Type\"::BankSystem;\n        BankAccComSetup.\"System Type Code\" := BankSystem.Code;\n        BankAccComSetup.\"Transaction Type\" := BankAccComSetup.\"Transaction Type\"::\"Account Statement\";\n        BankAccComSetup.\"File Type\" := BankAccComSetup.\"File Type\"::BankFormat;\n\n        // [WHEN] Copying payment methods from bank system\n        PaymentMethodMapper.CopyPaymentMethodsFromBankSystem(BankAccComSetup);\n\n        // [THEN] No mapping is created because Account Statement does not use payment method mappings\n        BankSysPmtMthMap.SetRange(\"Bank Account No.\", BankAccount.\"No.\");\n        Assert.IsTrue(BankSysPmtMthMap.IsEmpty(), 'No mappings should be created for an Account Statement setup');\n\n        // Cleanup\n        CleanupTestData(BankAccount, BankSystem, PaymentMethod);\n    end;",
+      "rationale": "Line 22 (`not ShouldUsePaymentMethodMappings(...)`, then `exit` on line 23) is never true in 95110: every Copy call uses a Payment or Direct Debit setup. The payment method here has no CTS-CB record, so without the guard the loop falls back to the setup's transaction type and would create a mapping.",
+      "expectedEffect": "Fails on mutants 1877/1878 because without the guard the unknown payment method takes the setup's Account Statement type, passes the line 36 check and a mapping is inserted; passes on the original because the procedure exits at line 23 before touching the payment methods.",
+      "confidence": "high"
+    },
+    {
+      "fixId": "F040",
+      "mutantIds": [
+        1879
+      ],
+      "verdict": "new-test",
+      "target": {
+        "codeunitId": 95110,
+        "codeunitName": "CTS-CB Bank Sys Pmt Map Tests",
+        "file": "Bank Account/BankSysPmtMapTests.Codeunit.al",
+        "procedure": "TestCopyPaymentMethodsFromBankSystem_NoBankSystemPaymentMethods_CreatesNoMappings",
+        "isNewProcedure": true
+      },
+      "change": "new-test",
+      "anchor": null,
+      "alCode": "    [Test]\n    procedure TestCopyPaymentMethodsFromBankSystem_NoBankSystemPaymentMethods_CreatesNoMappings()\n    var\n        BankAccount: Record \"Bank Account\";\n        BankAccComSetup: Record \"CTS-CB Bank Acc. Com. Setup\";\n        BankSysPmtMthMap: Record \"CTS-CB Bank Sys. Pmt. Mth. Map\";\n        BankSystem: Record \"CTS-CB Bank System\";\n        PaymentMethod: Record \"Payment Method\";\n        PaymentMethodMapper: Codeunit \"CTS-CB Payment Method Mapper\";\n    begin\n        DeleteTables();\n        // [SCENARIO] Nothing is mapped when the bank system has no payment methods\n\n        // [GIVEN] A bank system without any payment methods and a Payment setup for it\n        CreateBankAccount(BankAccount);\n        CreateBankSystem(BankSystem);\n        BankAccComSetup.Init();\n        BankAccComSetup.Code := BankAccount.\"No.\";\n        BankAccComSetup.\"System Type\" := BankAccComSetup.\"System Type\"::BankSystem;\n        BankAccComSetup.\"System Type Code\" := BankSystem.Code;\n        BankAccComSetup.\"Transaction Type\" := BankAccComSetup.\"Transaction Type\"::Payment;\n        BankAccComSetup.\"File Type\" := BankAccComSetup.\"File Type\"::BankFormat;\n\n        // [WHEN] Copying payment methods from bank system\n        PaymentMethodMapper.CopyPaymentMethodsFromBankSystem(BankAccComSetup);\n\n        // [THEN] No mapping is created\n        BankSysPmtMthMap.SetRange(\"Bank Account No.\", BankAccount.\"No.\");\n        Assert.IsTrue(BankSysPmtMthMap.IsEmpty(), 'No mappings should be created when the bank system has no payment methods');\n\n        // Cleanup\n        CleanupTestData(BankAccount, BankSystem, PaymentMethod);\n    end;",
+      "rationale": "Line 29 (`BankSystemPmtMth.FindSet()`) is always true in 95110 because every Copy test gives the bank system at least one payment method; the empty case is never exercised.",
+      "expectedEffect": "Fails on mutant 1879 because the loop body runs once on a blank record and inserts a mapping row with a blank Payment Method Code for the bank account; passes on the original because FindSet returns false and nothing is inserted. CleanupTestData is called with the never-inserted PaymentMethod variable, which is harmless (Get fails).",
+      "confidence": "medium"
+    },
+    {
+      "fixId": "F041",
+      "mutantIds": [
+        1883
+      ],
+      "verdict": "new-test",
+      "target": {
+        "codeunitId": 95110,
+        "codeunitName": "CTS-CB Bank Sys Pmt Map Tests",
+        "file": "Bank Account/BankSysPmtMapTests.Codeunit.al",
+        "procedure": "TestCopyPaymentMethodsFromBankSystem_UnknownPaymentMethod_UsesSetupTransactionType",
+        "isNewProcedure": true
+      },
+      "change": "new-test",
+      "anchor": null,
+      "alCode": "    [Test]\n    procedure TestCopyPaymentMethodsFromBankSystem_UnknownPaymentMethod_UsesSetupTransactionType()\n    var\n        BankAccount: Record \"Bank Account\";\n        BankAccComSetup: Record \"CTS-CB Bank Acc. Com. Setup\";\n        BankSysPmtMthMap: Record \"CTS-CB Bank Sys. Pmt. Mth. Map\";\n        BankSystem: Record \"CTS-CB Bank System\";\n        BankSystemPmtMth: Record \"CTS-CB Bank System Pmt. Mth.\";\n        PaymentMethod: Record \"Payment Method\";\n        PaymentMethodMapper: Codeunit \"CTS-CB Payment Method Mapper\";\n    begin\n        DeleteTables();\n        // [SCENARIO] A bank system payment method without a CTS-CB Payment Method is mapped with the setup's transaction type\n\n        // [GIVEN] A bank system payment method that is not a CTS-CB Payment Method, and a Payment setup\n        CreateBankAccount(BankAccount);\n        CreateBankSystem(BankSystem);\n        CreatePaymentMethod(PaymentMethod);\n        CreateBankSystemPaymentMethod(BankSystemPmtMth, BankSystem.Code, PaymentMethod.Code);\n        BankAccComSetup.Init();\n        BankAccComSetup.Code := BankAccount.\"No.\";\n        BankAccComSetup.\"System Type\" := BankAccComSetup.\"System Type\"::BankSystem;\n        BankAccComSetup.\"System Type Code\" := BankSystem.Code;\n        BankAccComSetup.\"Transaction Type\" := BankAccComSetup.\"Transaction Type\"::Payment;\n        BankAccComSetup.\"File Type\" := BankAccComSetup.\"File Type\"::BankFormat;\n\n        // [WHEN] Copying payment methods from bank system\n        PaymentMethodMapper.CopyPaymentMethodsFromBankSystem(BankAccComSetup);\n\n        // [THEN] One mapping with the setup's transaction type is created\n        BankSysPmtMthMap.SetRange(\"Bank Account No.\", BankAccount.\"No.\");\n        BankSysPmtMthMap.SetRange(\"Payment Method Code\", PaymentMethod.Code);\n        BankSysPmtMthMap.SetRange(\"Transaction Type\", BankSysPmtMthMap.\"Transaction Type\"::Payment);\n        Assert.AreEqual(1, BankSysPmtMthMap.Count, 'An unknown payment method should be mapped with the setup transaction type');\n\n        // Cleanup\n        CleanupTestData(BankAccount, BankSystem, PaymentMethod);\n    end;",
+      "rationale": "Line 33 (`TransactionType = \" \"`) is true in TestDuplicatePaymentMethodValidation (payment method without a CTS-CB record), but that test only compares the mapping count before and after a second copy, so 0 = 0 passes on the mutant. No test asserts that a mapping exists for such a payment method.",
+      "expectedEffect": "Fails on mutant 1883 because the transaction type stays blank, line 36 compares blank with Payment and no mapping is created (count 0 instead of 1); passes on the original because the blank type is replaced by Payment and one mapping is inserted.",
+      "confidence": "high"
+    },
+    {
+      "fixId": "F042",
+      "mutantIds": [
+        1885
+      ],
+      "verdict": "new-test",
+      "target": {
+        "codeunitId": 95110,
+        "codeunitName": "CTS-CB Bank Sys Pmt Map Tests",
+        "file": "Bank Account/BankSysPmtMapTests.Codeunit.al",
+        "procedure": "TestCopyPaymentMethodsFromBankSystem_MismatchedTransactionType_IsSkipped",
+        "isNewProcedure": true
+      },
+      "change": "new-test",
+      "anchor": null,
+      "alCode": "    [Test]\n    procedure TestCopyPaymentMethodsFromBankSystem_MismatchedTransactionType_IsSkipped()\n    var\n        BankAccount: Record \"Bank Account\";\n        BankAccComSetup: Record \"CTS-CB Bank Acc. Com. Setup\";\n        BankSysPmtMthMap: Record \"CTS-CB Bank Sys. Pmt. Mth. Map\";\n        BankSystem: Record \"CTS-CB Bank System\";\n        BankSystemPmtMth: Record \"CTS-CB Bank System Pmt. Mth.\";\n        CTSCBPaymentMethod: Record \"CTS-CB Payment Method\";\n        PaymentMethod: Record \"Payment Method\";\n        PaymentMethodMapper: Codeunit \"CTS-CB Payment Method Mapper\";\n    begin\n        DeleteTables();\n        // [SCENARIO] A Direct Debit payment method is not mapped for a Payment setup\n\n        // [GIVEN] A payment method with Credit Transaction = true (Direct Debit) and a Payment setup\n        CreateBankAccount(BankAccount);\n        CreateBankSystem(BankSystem);\n        CreatePaymentMethodWithCreditTransaction(PaymentMethod, CTSCBPaymentMethod, true);\n        CreateBankSystemPaymentMethod(BankSystemPmtMth, BankSystem.Code, CTSCBPaymentMethod.\"Payment Method Code\");\n        BankAccComSetup.Init();\n        BankAccComSetup.Code := BankAccount.\"No.\";\n        BankAccComSetup.\"System Type\" := BankAccComSetup.\"System Type\"::BankSystem;\n        BankAccComSetup.\"System Type Code\" := BankSystem.Code;\n        BankAccComSetup.\"Transaction Type\" := BankAccComSetup.\"Transaction Type\"::Payment;\n        BankAccComSetup.\"File Type\" := BankAccComSetup.\"File Type\"::BankFormat;\n\n        // [WHEN] Copying payment methods from bank system\n        PaymentMethodMapper.CopyPaymentMethodsFromBankSystem(BankAccComSetup);\n\n        // [THEN] No mapping is created, because the payment method belongs to Direct Debit\n        BankSysPmtMthMap.SetRange(\"Bank Account No.\", BankAccount.\"No.\");\n        Assert.IsTrue(BankSysPmtMthMap.IsEmpty(), 'A Direct Debit payment method should not be mapped for a Payment setup');\n\n        // Cleanup\n        CleanupTestDataWithCTSCB(BankAccount, BankSystem, PaymentMethod, CTSCBPaymentMethod);\n    end;",
+      "rationale": "Line 36 (`TransactionType = BankAccComSetup.\"Transaction Type\"`) is forced true by the mutant. TestMixedPaymentMethodMapping copies a Payment setup first, but afterwards only looks up each payment method with FindFirst and the later Direct Debit copy creates the same Direct Debit mapping, so the wrong mapping added during the Payment copy is hidden.",
+      "expectedEffect": "Fails on mutant 1885 because the Direct Debit payment method is mapped from the Payment setup, so a row appears for the bank account; passes on the original because the type mismatch skips the payment method and the mapping table stays empty.",
+      "confidence": "high"
+    },
+    {
+      "fixId": "F043",
+      "mutantIds": [
+        1889,
+        1890
+      ],
+      "verdict": "new-test",
+      "target": {
+        "codeunitId": 95110,
+        "codeunitName": "CTS-CB Bank Sys Pmt Map Tests",
+        "file": "Bank Account/BankSysPmtMapTests.Codeunit.al",
+        "procedure": "TestPropagatePaymentMethodToMappings_BlankCTSCBCode_CreatesNoMappings",
+        "isNewProcedure": true
+      },
+      "change": "new-test",
+      "anchor": null,
+      "alCode": "    [Test]\n    procedure TestPropagatePaymentMethodToMappings_BlankCTSCBCode_CreatesNoMappings()\n    var\n        BankAccount: Record \"Bank Account\";\n        BankSysPmtMthMap: Record \"CTS-CB Bank Sys. Pmt. Mth. Map\";\n        BankSystem: Record \"CTS-CB Bank System\";\n        BankSystemPmtMth: Record \"CTS-CB Bank System Pmt. Mth.\";\n        BlankCodeCTSCBPaymentMethod: Record \"CTS-CB Payment Method\";\n        PaymentMethod: Record \"Payment Method\";\n        PaymentMethodMapper: Codeunit \"CTS-CB Payment Method Mapper\";\n        MappingCount: Integer;\n    begin\n        DeleteTables();\n        // [SCENARIO] Propagation stops at once when the target PM has a blank CTS-CB Payment Method Code, even if a CTS-CB PM with a blank Code exists\n\n        // [GIVEN] A CTS-CB Payment Method with a blank Code and an existing mapping on its Payment Method Code\n        CreateBankAccount(BankAccount);\n        CreateBankSystem(BankSystem);\n        BlankCodeCTSCBPaymentMethod.Init();\n        BlankCodeCTSCBPaymentMethod.Code := '';\n        BlankCodeCTSCBPaymentMethod.\"Sender Country\" := '00';\n        BlankCodeCTSCBPaymentMethod.\"Recipient Country\" := '00';\n        BlankCodeCTSCBPaymentMethod.\"Payment Method Code\" := 'BLANKCODEPM';\n        BlankCodeCTSCBPaymentMethod.Insert();\n        CreateBankSystemPaymentMethod(BankSystemPmtMth, BankSystem.Code, 'BLANKCODEPM');\n        BankSysPmtMthMap.Init();\n        BankSysPmtMthMap.\"Bank Account No.\" := BankAccount.\"No.\";\n        BankSysPmtMthMap.\"System Type\" := BankSysPmtMthMap.\"System Type\"::BankSystem;\n        BankSysPmtMthMap.\"System Type Code\" := BankSystem.Code;\n        BankSysPmtMthMap.\"Transaction Type\" := BankSysPmtMthMap.\"Transaction Type\"::Payment;\n        BankSysPmtMthMap.\"Payment Method Code\" := 'BLANKCODEPM';\n        BankSysPmtMthMap.\"Short Payment Method Code\" := 'OTHER';\n        BankSysPmtMthMap.Insert(true);\n\n        // [GIVEN] A BC Payment Method without CTS-CB Payment Method Code\n        CreatePaymentMethod(PaymentMethod);\n\n        // [WHEN] Propagating the payment method\n        PaymentMethodMapper.PropagatePaymentMethodToMappings(PaymentMethod);\n\n        // [THEN] No new mapping is created\n        BankSysPmtMthMap.Reset();\n        BankSysPmtMthMap.SetRange(\"Bank Account No.\", BankAccount.\"No.\");\n        MappingCount := BankSysPmtMthMap.Count;\n\n        // Cleanup\n        BlankCodeCTSCBPaymentMethod.Delete();\n        CleanupTestData(BankAccount, BankSystem, PaymentMethod);\n\n        Assert.AreEqual(1, MappingCount, 'No mapping should be propagated for a PM without CTS-CB Payment Method Code');\n    end;",
+      "rationale": "Line 51 (`CTS-CB Payment Method Code = ''`, exit on line 52): TestPropagateSkipsWhenNoCTSCBCode reaches it, but without the guard the code filters CTS-CB Payment Method on Code = '', finds nothing and exits one step later at line 57, so the visible outcome is the same. Only a CTS-CB Payment Method row with a blank Code makes the guard observable.",
+      "expectedEffect": "Fails on mutants 1889/1890 because the filter Code = '' finds the blank-Code CTS-CB PM, its Payment Method Code finds the existing mapping and a second mapping is inserted for the new PM (count 2); passes on the original because the blank CTS-CB code exits at line 52 (count stays 1). Relies on a CTS-CB Payment Method row with a blank Code being insertable without triggers.",
+      "confidence": "low"
+    },
+    {
+      "fixId": "F044",
+      "mutantIds": [
+        1894
+      ],
+      "verdict": "new-test",
+      "target": {
+        "codeunitId": 95110,
+        "codeunitName": "CTS-CB Bank Sys Pmt Map Tests",
+        "file": "Bank Account/BankSysPmtMapTests.Codeunit.al",
+        "procedure": "TestPropagatePaymentMethodToMappings_UnknownCTSCBCode_CreatesNoMappings",
+        "isNewProcedure": true
+      },
+      "change": "new-test",
+      "anchor": null,
+      "alCode": "    [Test]\n    procedure TestPropagatePaymentMethodToMappings_UnknownCTSCBCode_CreatesNoMappings()\n    var\n        BankAccount: Record \"Bank Account\";\n        BankSysPmtMthMap: Record \"CTS-CB Bank Sys. Pmt. Mth. Map\";\n        BankSystem: Record \"CTS-CB Bank System\";\n        PaymentMethod: Record \"Payment Method\";\n        PaymentMethodMapper: Codeunit \"CTS-CB Payment Method Mapper\";\n        MappingCount: Integer;\n    begin\n        DeleteTables();\n        // [SCENARIO] Propagation does nothing when the target PM points to a CTS-CB Payment Method that does not exist\n\n        // [GIVEN] An existing mapping with a blank Payment Method Code\n        CreateBankAccount(BankAccount);\n        CreateBankSystem(BankSystem);\n        BankSysPmtMthMap.Init();\n        BankSysPmtMthMap.\"Bank Account No.\" := BankAccount.\"No.\";\n        BankSysPmtMthMap.\"System Type\" := BankSysPmtMthMap.\"System Type\"::BankSystem;\n        BankSysPmtMthMap.\"System Type Code\" := BankSystem.Code;\n        BankSysPmtMthMap.\"Transaction Type\" := BankSysPmtMthMap.\"Transaction Type\"::Payment;\n        BankSysPmtMthMap.\"Payment Method Code\" := '';\n        BankSysPmtMthMap.\"Short Payment Method Code\" := 'OTHER';\n        BankSysPmtMthMap.Insert(true);\n\n        // [GIVEN] A BC Payment Method whose CTS-CB Payment Method Code does not exist\n        CreatePaymentMethod(PaymentMethod);\n        PaymentMethod.\"CTS-CB Payment Method Code\" := 'NOSUCH';\n        PaymentMethod.Modify(true);\n\n        // [WHEN] Propagating the payment method\n        PaymentMethodMapper.PropagatePaymentMethodToMappings(PaymentMethod);\n\n        // [THEN] No new mapping is created\n        BankSysPmtMthMap.Reset();\n        BankSysPmtMthMap.SetRange(\"Bank Account No.\", BankAccount.\"No.\");\n        MappingCount := BankSysPmtMthMap.Count;\n\n        // Cleanup\n        CleanupTestData(BankAccount, BankSystem, PaymentMethod);\n\n        Assert.AreEqual(1, MappingCount, 'No mapping should be propagated when the CTS-CB Payment Method does not exist');\n    end;",
+      "rationale": "Line 57 (`exit` when the CTS-CB Payment Method is not found): no test in 95110 propagates a PM whose CTS-CB code has no CTS-CB record. Without the exit the code carries on with a blank Payment Method Code, which only has an effect if a mapping with a blank Payment Method Code exists, so the test creates one.",
+      "expectedEffect": "Fails on mutant 1894 because the missing CTS-CB record leaves Payment Method Code blank, the blank-code mapping is found and a second mapping is inserted for the PM (count 2); passes on the original because the procedure exits at line 57 (count stays 1).",
+      "confidence": "medium"
+    },
+    {
+      "fixId": "F045",
+      "mutantIds": [
+        1897,
+        1898
+      ],
+      "verdict": "new-test",
+      "target": {
+        "codeunitId": 95110,
+        "codeunitName": "CTS-CB Bank Sys Pmt Map Tests",
+        "file": "Bank Account/BankSysPmtMapTests.Codeunit.al",
+        "procedure": "TestPropagatePaymentMethodToMappings_NoExistingMappings_CreatesNoMappings",
+        "isNewProcedure": true
+      },
+      "change": "new-test",
+      "anchor": null,
+      "alCode": "    [Test]\n    procedure TestPropagatePaymentMethodToMappings_NoExistingMappings_CreatesNoMappings()\n    var\n        BankSysPmtMthMap: Record \"CTS-CB Bank Sys. Pmt. Mth. Map\";\n        CTSCBPaymentMethod: Record \"CTS-CB Payment Method\";\n        PaymentMethod: Record \"Payment Method\";\n        PaymentMethodMapper: Codeunit \"CTS-CB Payment Method Mapper\";\n        MappingCount: Integer;\n    begin\n        DeleteTables();\n        // [SCENARIO] Propagation does nothing when no mapping uses the CTS-CB Payment Method\n\n        // [GIVEN] A CTS-CB Payment Method with a linked BC Payment Method but no mappings\n        CreateCTSCBPaymentMethod(CTSCBPaymentMethod, false);\n        CreateBCPaymentMethodWithCTSCB(PaymentMethod, CTSCBPaymentMethod.Code);\n\n        // [WHEN] Propagating the payment method\n        PaymentMethodMapper.PropagatePaymentMethodToMappings(PaymentMethod);\n\n        // [THEN] No mapping is created\n        MappingCount := BankSysPmtMthMap.Count;\n\n        // Cleanup\n        BankSysPmtMthMap.DeleteAll();\n        if PaymentMethod.Get(PaymentMethod.Code) then\n            PaymentMethod.Delete(true);\n        if CTSCBPaymentMethod.Get(CTSCBPaymentMethod.Code, CTSCBPaymentMethod.\"Sender Country\", CTSCBPaymentMethod.\"Recipient Country\") then\n            CTSCBPaymentMethod.Delete(true);\n\n        Assert.AreEqual(0, MappingCount, 'No mapping should be created when there are no existing mappings to propagate to');\n    end;",
+      "rationale": "Lines 61/62 (`not ExistingBankSysPmtMthMap.FindSet()`, then `exit`) are only reached in TestPropagateNewBCPMToExistingMappings with an existing mapping present, so the no-mapping branch is never taken.",
+      "expectedEffect": "Fails on mutants 1897/1898 because the loop body runs on an empty record and inserts a junk mapping row (blank bank account, Short Payment Method Code = the new PM), so the count is 1 instead of 0; passes on the original because the procedure exits at line 62 and the table stays empty.",
+      "confidence": "high"
+    },
+    {
+      "fixId": "F046",
+      "mutantIds": [
+        1899,
+        1900,
+        1903,
+        1904,
+        1905,
+        1906
+      ],
+      "verdict": "new-test",
+      "target": {
+        "codeunitId": 95110,
+        "codeunitName": "CTS-CB Bank Sys Pmt Map Tests",
+        "file": "Bank Account/BankSysPmtMapTests.Codeunit.al",
+        "procedure": "TestPopulatePaymentMethodsWithConflictCheck_ConflictAndSkipFlag_ControlPopulation",
+        "isNewProcedure": true
+      },
+      "change": "new-test",
+      "anchor": null,
+      "alCode": "    [Test]\n    procedure TestPopulatePaymentMethodsWithConflictCheck_ConflictAndSkipFlag_ControlPopulation()\n    var\n        BankAccount: Record \"Bank Account\";\n        BankAccComSetupExisting: Record \"CTS-CB Bank Acc. Com. Setup\";\n        BankAccComSetupNew: Record \"CTS-CB Bank Acc. Com. Setup\";\n        BankSysPmtMthMap: Record \"CTS-CB Bank Sys. Pmt. Mth. Map\";\n        BankSystemExisting: Record \"CTS-CB Bank System\";\n        BankSystemNew: Record \"CTS-CB Bank System\";\n        BankSystemPmtMth: Record \"CTS-CB Bank System Pmt. Mth.\";\n        CTSCBPaymentMethod: Record \"CTS-CB Payment Method\";\n        PaymentMethod: Record \"Payment Method\";\n        PaymentMethodMapper: Codeunit \"CTS-CB Payment Method Mapper\";\n    begin\n        DeleteTables();\n        // [SCENARIO] A payment method conflict stops population unless the conflict check is skipped\n\n        // [GIVEN] Two bank systems that support the same Payment payment method\n        CreateBankAccount(BankAccount);\n        CreateBankSystem(BankSystemExisting);\n        CreateBankSystem(BankSystemNew);\n        CreatePaymentMethodWithCreditTransaction(PaymentMethod, CTSCBPaymentMethod, false);\n        CreateBankSystemPaymentMethod(BankSystemPmtMth, BankSystemExisting.Code, CTSCBPaymentMethod.\"Payment Method Code\");\n        CreateBankSystemPaymentMethod(BankSystemPmtMth, BankSystemNew.Code, CTSCBPaymentMethod.\"Payment Method Code\");\n\n        // [GIVEN] An enabled setup for the first system that already owns a mapping for the payment method\n        BankAccComSetupExisting.Init();\n        BankAccComSetupExisting.Code := BankAccount.\"No.\";\n        BankAccComSetupExisting.\"System Type\" := BankAccComSetupExisting.\"System Type\"::BankSystem;\n        BankAccComSetupExisting.\"System Type Code\" := BankSystemExisting.Code;\n        BankAccComSetupExisting.\"Transaction Type\" := BankAccComSetupExisting.\"Transaction Type\"::Payment;\n        BankAccComSetupExisting.\"File Type\" := BankAccComSetupExisting.\"File Type\"::BankFormat;\n        BankAccComSetupExisting.Enabled := true;\n        BankAccComSetupExisting.\"Auto Populate Pmt Methods\" := false;\n        BankAccComSetupExisting.Insert(true);\n\n        BankSysPmtMthMap.Init();\n        BankSysPmtMthMap.\"Bank Account No.\" := BankAccount.\"No.\";\n        BankSysPmtMthMap.\"System Type\" := BankSysPmtMthMap.\"System Type\"::BankSystem;\n        BankSysPmtMthMap.\"System Type Code\" := BankSystemExisting.Code;\n        BankSysPmtMthMap.\"Transaction Type\" := BankSysPmtMthMap.\"Transaction Type\"::Payment;\n        BankSysPmtMthMap.\"Payment Method Code\" := CTSCBPaymentMethod.\"Payment Method Code\";\n        BankSysPmtMthMap.\"Short Payment Method Code\" := 'OTHER';\n        BankSysPmtMthMap.Insert(true);\n\n        // [GIVEN] A not yet saved setup for the second system\n        BankAccComSetupNew.Init();\n        BankAccComSetupNew.Code := BankAccount.\"No.\";\n        BankAccComSetupNew.\"System Type\" := BankAccComSetupNew.\"System Type\"::BankSystem;\n        BankAccComSetupNew.\"System Type Code\" := BankSystemNew.Code;\n        BankAccComSetupNew.\"Transaction Type\" := BankAccComSetupNew.\"Transaction Type\"::Payment;\n        BankAccComSetupNew.\"File Type\" := BankAccComSetupNew.\"File Type\"::BankFormat;\n\n        // [WHEN] Populating with the conflict check enabled\n        PaymentMethodMapper.PopulatePaymentMethodsWithConflictCheck(BankAccComSetupNew, false);\n\n        // [THEN] The conflict stops the population\n        BankSysPmtMthMap.Reset();\n        BankSysPmtMthMap.SetRange(\"Bank Account No.\", BankAccount.\"No.\");\n        BankSysPmtMthMap.SetRange(\"System Type Code\", BankSystemNew.Code);\n        Assert.IsTrue(BankSysPmtMthMap.IsEmpty(), 'A detected conflict should stop the population of payment methods');\n\n        // [WHEN] Populating with the conflict check skipped\n        PaymentMethodMapper.PopulatePaymentMethodsWithConflictCheck(BankAccComSetupNew, true);\n\n        // [THEN] The payment method is mapped for the second system\n        Assert.IsFalse(BankSysPmtMthMap.IsEmpty(), 'Skipping the conflict check should populate the payment methods');\n\n        // Cleanup\n        CleanupTestDataWithCTSCB(BankAccount, BankSystemExisting, PaymentMethod, CTSCBPaymentMethod);\n        if BankSystemNew.Get(BankSystemNew.Code) then\n            BankSystemNew.Delete(true);\n    end;",
+      "rationale": "PopulatePaymentMethodsWithConflictCheck (lines 84-88) is not called by any test in 95110; the setup wizard page is its only caller and it always passes SkipConflictCheck = true. So neither the Payment/Direct Debit guard nor the conflict check with its early exit is exercised with a distinguishing input.",
+      "expectedEffect": "Fails on mutants 1899/1900 (the guard exits for Payment, so the second call maps nothing), 1904 (the conflict check runs although it is skipped, so the second call exits) and 1903/1905/1906 (the conflict is ignored or not acted on, so the first call already maps the payment method); passes on the original because the first call stops on the conflict and the second call, with the check skipped, inserts the mapping for the second system.",
+      "confidence": "medium"
+    },
+    {
+      "fixId": "F047",
+      "mutantIds": [
+        1911,
+        1913,
+        1914
+      ],
+      "verdict": "new-test",
+      "target": {
+        "codeunitId": 95110,
+        "codeunitName": "CTS-CB Bank Sys Pmt Map Tests",
+        "file": "Bank Account/BankSysPmtMapTests.Codeunit.al",
+        "procedure": "TestCleanupExceptSystem_RemovesOnlyOtherSystemMappings",
+        "isNewProcedure": true
+      },
+      "change": "new-test",
+      "anchor": null,
+      "alCode": "    [Test]\n    procedure TestCleanupExceptSystem_RemovesOnlyOtherSystemMappings()\n    var\n        BankAccount: Record \"Bank Account\";\n        BankSysPmtMthMap: Record \"CTS-CB Bank Sys. Pmt. Mth. Map\";\n        BankSystemKeep: Record \"CTS-CB Bank System\";\n        BankSystemOther: Record \"CTS-CB Bank System\";\n        BankSystemPmtMth: Record \"CTS-CB Bank System Pmt. Mth.\";\n        PaymentMethod: Record \"Payment Method\";\n        PaymentMethodMapper: Codeunit \"CTS-CB Payment Method Mapper\";\n    begin\n        DeleteTables();\n        // [SCENARIO] Cleaning up an incomplete setup removes the mappings of all systems except the one to keep\n\n        // [GIVEN] Payment method mappings for two bank systems on the same bank account\n        CreateBankAccount(BankAccount);\n        CreateBankSystem(BankSystemKeep);\n        CreateBankSystem(BankSystemOther);\n        CreatePaymentMethod(PaymentMethod);\n        CreateBankSystemPaymentMethod(BankSystemPmtMth, BankSystemKeep.Code, PaymentMethod.Code);\n        CreateBankSystemPaymentMethod(BankSystemPmtMth, BankSystemOther.Code, PaymentMethod.Code);\n\n        BankSysPmtMthMap.Init();\n        BankSysPmtMthMap.\"Bank Account No.\" := BankAccount.\"No.\";\n        BankSysPmtMthMap.\"System Type\" := BankSysPmtMthMap.\"System Type\"::BankSystem;\n        BankSysPmtMthMap.\"System Type Code\" := BankSystemKeep.Code;\n        BankSysPmtMthMap.\"Transaction Type\" := BankSysPmtMthMap.\"Transaction Type\"::Payment;\n        BankSysPmtMthMap.\"Payment Method Code\" := PaymentMethod.Code;\n        BankSysPmtMthMap.Insert(true);\n\n        BankSysPmtMthMap.\"Entry No.\" := 0;\n        BankSysPmtMthMap.Init();\n        BankSysPmtMthMap.\"Bank Account No.\" := BankAccount.\"No.\";\n        BankSysPmtMthMap.\"System Type\" := BankSysPmtMthMap.\"System Type\"::BankSystem;\n        BankSysPmtMthMap.\"System Type Code\" := BankSystemOther.Code;\n        BankSysPmtMthMap.\"Transaction Type\" := BankSysPmtMthMap.\"Transaction Type\"::Payment;\n        BankSysPmtMthMap.\"Payment Method Code\" := PaymentMethod.Code;\n        BankSysPmtMthMap.Insert(true);\n\n        // [WHEN] Cleaning up except the first system\n        PaymentMethodMapper.CleanupExceptSystem(BankAccount.\"No.\", \"CTS-CB Transaction Type\"::Payment, BankSystemKeep.Code);\n\n        // [THEN] The mappings of the other system are deleted\n        BankSysPmtMthMap.Reset();\n        BankSysPmtMthMap.SetRange(\"Bank Account No.\", BankAccount.\"No.\");\n        BankSysPmtMthMap.SetRange(\"System Type Code\", BankSystemOther.Code);\n        Assert.IsTrue(BankSysPmtMthMap.IsEmpty(), 'Mappings of the other system should be deleted');\n\n        // [THEN] The mappings of the kept system are preserved\n        BankSysPmtMthMap.SetRange(\"System Type Code\", BankSystemKeep.Code);\n        Assert.IsFalse(BankSysPmtMthMap.IsEmpty(), 'Mappings of the kept system should be preserved');\n\n        // Cleanup\n        BankSystemPmtMth.SetRange(\"Bank System Code\", BankSystemOther.Code);\n        BankSystemPmtMth.DeleteAll(true);\n        CleanupTestData(BankAccount, BankSystemKeep, PaymentMethod);\n        if BankSystemOther.Get(BankSystemOther.Code) then\n            BankSystemOther.Delete(true);\n    end;",
+      "rationale": "CleanupExceptSystem (lines 117-118) is not called by any test in 95110; its only caller is the setup wizard page. Neither the IsEmpty guard nor the DeleteAll is exercised with existing mappings. Test bug fixed: 'Entry No.' is AutoIncrement and Init() keeps primary-key fields, so the second Insert(true) on the same record variable would reuse the first Entry No. and raise a duplicate-key error (failing the original too). The Entry No. is reset to 0 before the second Init(), the same idiom the AUT uses in InsertMappingIfNotExists.",
+      "expectedEffect": "Fails on mutants 1911 (delete only when empty), 1913 (never delete) and 1914 (DeleteAll removed) because the other system's mapping is still there, so the first assertion fails; passes on the original because the other system's mapping is deleted and the kept system's mapping survives.",
+      "confidence": "high"
+    },
+    {
+      "fixId": "F048",
+      "mutantIds": [
+        1921
+      ],
+      "verdict": "new-test",
+      "target": {
+        "codeunitId": 95110,
+        "codeunitName": "CTS-CB Bank Sys Pmt Map Tests",
+        "file": "Bank Account/BankSysPmtMapTests.Codeunit.al",
+        "procedure": "TestCopyPaymentMethodsFromBankSystem_ExistingMappingWithShortCode_IsNotDuplicated",
+        "isNewProcedure": true
+      },
+      "change": "new-test",
+      "anchor": null,
+      "alCode": "    [Test]\n    procedure TestCopyPaymentMethodsFromBankSystem_ExistingMappingWithShortCode_IsNotDuplicated()\n    var\n        BankAccount: Record \"Bank Account\";\n        BankAccComSetup: Record \"CTS-CB Bank Acc. Com. Setup\";\n        BankSysPmtMthMap: Record \"CTS-CB Bank Sys. Pmt. Mth. Map\";\n        BankSystem: Record \"CTS-CB Bank System\";\n        BankSystemPmtMth: Record \"CTS-CB Bank System Pmt. Mth.\";\n        PaymentMethod: Record \"Payment Method\";\n        PaymentMethodMapper: Codeunit \"CTS-CB Payment Method Mapper\";\n    begin\n        DeleteTables();\n        // [SCENARIO] A mapping without Short PM Code is not added when a mapping for the same payment method already exists with a Short PM Code\n\n        // [GIVEN] An existing mapping with a Short Payment Method Code for a bank system payment method without CTS-CB Payment Method\n        CreateBankAccount(BankAccount);\n        CreateBankSystem(BankSystem);\n        CreatePaymentMethod(PaymentMethod);\n        CreateBankSystemPaymentMethod(BankSystemPmtMth, BankSystem.Code, PaymentMethod.Code);\n        BankSysPmtMthMap.Init();\n        BankSysPmtMthMap.\"Bank Account No.\" := BankAccount.\"No.\";\n        BankSysPmtMthMap.\"System Type\" := BankSysPmtMthMap.\"System Type\"::BankSystem;\n        BankSysPmtMthMap.\"System Type Code\" := BankSystem.Code;\n        BankSysPmtMthMap.\"Transaction Type\" := BankSysPmtMthMap.\"Transaction Type\"::Payment;\n        BankSysPmtMthMap.\"Payment Method Code\" := PaymentMethod.Code;\n        BankSysPmtMthMap.\"Short Payment Method Code\" := 'OTHER';\n        BankSysPmtMthMap.Insert(true);\n        BankAccComSetup.Init();\n        BankAccComSetup.Code := BankAccount.\"No.\";\n        BankAccComSetup.\"System Type\" := BankAccComSetup.\"System Type\"::BankSystem;\n        BankAccComSetup.\"System Type Code\" := BankSystem.Code;\n        BankAccComSetup.\"Transaction Type\" := BankAccComSetup.\"Transaction Type\"::Payment;\n        BankAccComSetup.\"File Type\" := BankAccComSetup.\"File Type\"::BankFormat;\n\n        // [WHEN] Copying payment methods from bank system (the fallback path inserts with a blank Short PM Code)\n        PaymentMethodMapper.CopyPaymentMethodsFromBankSystem(BankAccComSetup);\n\n        // [THEN] No second mapping is created for the payment method\n        BankSysPmtMthMap.Reset();\n        BankSysPmtMthMap.SetRange(\"Bank Account No.\", BankAccount.\"No.\");\n        BankSysPmtMthMap.SetRange(\"Payment Method Code\", PaymentMethod.Code);\n        Assert.AreEqual(1, BankSysPmtMthMap.Count, 'An existing mapping should prevent a duplicate when the Short PM Code is blank');\n\n        // Cleanup\n        CleanupTestData(BankAccount, BankSystem, PaymentMethod);\n    end;",
+      "rationale": "Line 174 (`ShortPaymentMethodCode <> ''`) is forced true. With a blank Short PM Code the original does not filter on Short PM Code, whereas the mutant filters on a blank one. TestDuplicatePaymentMethodValidation cannot tell the difference because the mapping it creates also has a blank Short PM Code.",
+      "expectedEffect": "Fails on mutant 1921 because the duplicate check only looks for a mapping with a blank Short PM Code, misses the existing 'OTHER' mapping and inserts a second one (count 2); passes on the original because the check ignores the Short PM Code, finds the existing mapping and skips the insert (count 1).",
+      "confidence": "high"
+    },
+    {
+      "fixId": "F049",
+      "mutantIds": [
+        1928
+      ],
+      "verdict": "new-test",
+      "target": {
+        "codeunitId": 95110,
+        "codeunitName": "CTS-CB Bank Sys Pmt Map Tests",
+        "file": "Bank Account/BankSysPmtMapTests.Codeunit.al",
+        "procedure": "TestPropagatePaymentMethodToMappings_UnsupportedExistingMapping_RaisesInsertValidation",
+        "isNewProcedure": true
+      },
+      "change": "new-test",
+      "anchor": null,
+      "alCode": "    [Test]\n    procedure TestPropagatePaymentMethodToMappings_UnsupportedExistingMapping_RaisesInsertValidation()\n    var\n        BankAccount: Record \"Bank Account\";\n        BankSysPmtMthMap: Record \"CTS-CB Bank Sys. Pmt. Mth. Map\";\n        BankSystem: Record \"CTS-CB Bank System\";\n        BankSystemPmtMth: Record \"CTS-CB Bank System Pmt. Mth.\";\n        CTSCBPaymentMethod: Record \"CTS-CB Payment Method\";\n        ExistingPaymentMethod: Record \"Payment Method\";\n        NewPaymentMethod: Record \"Payment Method\";\n        PaymentMethodMapper: Codeunit \"CTS-CB Payment Method Mapper\";\n    begin\n        DeleteTables();\n        // [SCENARIO] Mappings are inserted with their insert trigger, so a payment method the bank system no longer supports is rejected\n\n        // [GIVEN] An existing mapping whose bank system payment method has since been removed\n        CreateBankAccount(BankAccount);\n        CreateBankSystem(BankSystem);\n        CreateCTSCBPaymentMethod(CTSCBPaymentMethod, false);\n        CreateBCPaymentMethodWithCTSCB(ExistingPaymentMethod, CTSCBPaymentMethod.Code);\n        CreateBankSystemPaymentMethod(BankSystemPmtMth, BankSystem.Code, CTSCBPaymentMethod.\"Payment Method Code\");\n        BankSysPmtMthMap.Init();\n        BankSysPmtMthMap.\"Bank Account No.\" := BankAccount.\"No.\";\n        BankSysPmtMthMap.\"System Type\" := BankSysPmtMthMap.\"System Type\"::BankSystem;\n        BankSysPmtMthMap.\"System Type Code\" := BankSystem.Code;\n        BankSysPmtMthMap.\"Transaction Type\" := BankSysPmtMthMap.\"Transaction Type\"::Payment;\n        BankSysPmtMthMap.\"Payment Method Code\" := CTSCBPaymentMethod.\"Payment Method Code\";\n        BankSysPmtMthMap.\"Short Payment Method Code\" := ExistingPaymentMethod.Code;\n        BankSysPmtMthMap.Insert(true);\n        BankSystemPmtMth.Delete();\n\n        // [GIVEN] A new BC Payment Method with the same CTS-CB Payment Method Code\n        CreateBCPaymentMethodWithCTSCB(NewPaymentMethod, CTSCBPaymentMethod.Code);\n\n        // [WHEN] Propagating the new BC Payment Method to the existing mappings\n        asserterror PaymentMethodMapper.PropagatePaymentMethodToMappings(NewPaymentMethod);\n\n        // [THEN] The insert validation rejects the unsupported payment method\n        Assert.ExpectedError('not supported');\n\n        // Cleanup\n        CleanupMultipleBCPMTestData(BankAccount, BankSystem, CTSCBPaymentMethod, ExistingPaymentMethod, NewPaymentMethod);\n    end;",
+      "rationale": "Line 187 (`Insert(true)` becomes `Insert(false)`): every Copy and Propagate call in 95110 inserts mappings whose bank system payment method exists, and the Short PM Code is either preset or derived to the same value as without the trigger, so skipping OnInsert changes nothing. The only observable effect is the trigger's ValidateBankSystemPaymentMethodExists check, which needs an orphaned mapping to fire.",
+      "expectedEffect": "Fails on mutant 1928 because without the insert trigger no validation error is raised, so asserterror reports that no error occurred; passes on the original because Insert(true) runs OnInsert and raises 'Payment method ... is not supported by bank system ...'.",
+      "confidence": "low"
+    },
+    {
+      "fixId": "F050",
+      "mutantIds": [
+        1901,
+        1902
+      ],
+      "verdict": "equivalent",
+      "target": null,
+      "change": null,
+      "anchor": null,
+      "alCode": "",
+      "rationale": "Lines 84/85 in PopulatePaymentMethodsWithConflictCheck: with the guard forced false or its exit removed, a transaction type other than Payment/Direct Debit reaches DetectAllConflicts, which only writes to its local temporary buffer, and then CopyPaymentMethodsFromBankSystem, whose first checks (lines 19-23) repeat the same ShouldUsePaymentMethodMappings guard and exit. No data is written either way.",
+      "expectedEffect": "No test can observe the difference; the original and the mutant leave identical data behind.",
+      "confidence": "high"
+    },
+    {
+      "fixId": "F051",
+      "mutantIds": [
+        1908,
+        1912
+      ],
+      "verdict": "equivalent",
+      "target": null,
+      "change": null,
+      "anchor": null,
+      "alCode": "",
+      "rationale": "Lines 103 (DeleteMappings) and 117 (CleanupExceptSystem): forcing `not IsEmpty()` to true only calls DeleteAll() on an empty filtered set, which deletes nothing and runs no triggers (DeleteAll() without true). The result is identical to the original.",
+      "expectedEffect": "No test can observe the difference; the original and the mutant leave identical data behind.",
+      "confidence": "high"
+    },
+    {
+      "fixId": "F052",
+      "mutantIds": [
+        1917
+      ],
+      "verdict": "equivalent",
+      "target": null,
+      "change": null,
+      "anchor": null,
+      "alCode": "",
+      "rationale": "Line 139: `PaymentMethod.FindSet()` forced true. When no BC Payment Method is linked, the loop body runs once with the cleared PaymentMethod record, so Code is blank and it calls InsertMappingIfNotExists(..., BankSystemPmtMthCode, '') and then exits. That is the same call the fallback on lines 150-152 makes, so the resulting data is identical. Match-case analysis: mutant 1917 only matters when a CTS-CB Payment Method exists but no BC Payment Method links to it. The forced-true FindSet() then runs one blank iteration with the cleared PaymentMethod record, so InsertMappingIfNotExists receives a blank Short PM Code and inserts a blank-short mapping; OnInsert derives the short code (e.g. PM1) for it. Next() on the empty set returns 0, so the loop ends and the exit skips the fallback, which would have made the identical call. Where a mapping already exists the dedupe check exits in both paths. The end state is the same.",
+      "expectedEffect": "No test can observe the difference; the original and the mutant leave identical data behind.",
+      "confidence": "high"
+    },
+    {
+      "fixId": "F053",
+      "mutantIds": [
+        1919
+      ],
+      "verdict": "equivalent",
+      "target": null,
+      "change": null,
+      "anchor": null,
+      "alCode": "",
+      "rationale": "Line 145: removing `exit` after the loop lets the fallback InsertMappingIfNotExists(..., '') run. With a blank Short PM Code the duplicate check ignores Short PM Code and only filters on bank account, transaction type and Payment Method Code, which the loop has just inserted, so the fallback always finds an existing mapping and exits without inserting.",
+      "expectedEffect": "No test can observe the difference; the original and the mutant leave identical data behind.",
+      "confidence": "high"
+    },
+    {
+      "fixId": "F054",
+      "mutantIds": [
+        4508
+      ],
+      "verdict": "fix",
+      "target": {
+        "codeunitId": 95121,
+        "codeunitName": "CTS-CB Int. Batch Disp Tests",
+        "file": "Yapily/IntBatchDispTests.Codeunit.al",
+        "procedure": "TestBuildBatchDisplay_EmptyInput_ReturnsEmpty",
+        "isNewProcedure": false
+      },
+      "change": "add-assert",
+      "anchor": {
+        "afterLine": 166
+      },
+      "alCode": "        TempIntBatchDisplay.Init();\n        TempIntBatchDisplay.ID := 1;\n        TempIntBatchDisplay.\"Entry Type\" := \"CTS-CB Batch Entry Type\"::Header;\n        TempIntBatchDisplay.Insert();",
+      "rationale": "Line 31 (TempIntBatchDisplay.DeleteAll() in BuildBatchDisplay) is executed by every test, but the output table is always empty on entry, so removing the DeleteAll changes nothing. The existing IsEmpty assertion in the empty-input test only becomes meaningful if the output table holds a stale row beforehand.",
+      "expectedEffect": "Fails on mutant 4508 because the stale header row inserted before the call is not cleared, so the existing Assert.IsTrue(TempIntBatchDisplay.IsEmpty()) fails; passes on the original because DeleteAll clears the output table before the empty-input exit.",
+      "confidence": "high"
+    },
+    {
+      "fixId": "F055",
+      "mutantIds": [
+        4510,
+        4511
+      ],
+      "verdict": "new-test",
+      "target": {
+        "codeunitId": 95121,
+        "codeunitName": "CTS-CB Int. Batch Disp Tests",
+        "file": "Yapily/IntBatchDispTests.Codeunit.al",
+        "procedure": "TestBuildBatchDisplay_EmptyInput_StrategyOffersBatch_StaysEmpty",
+        "isNewProcedure": true
+      },
+      "change": "new-test",
+      "anchor": null,
+      "alCode": "    [Test]\n    procedure TestBuildBatchDisplay_EmptyInput_StrategyOffersBatch_StaysEmpty()\n    var\n        Bank: Record \"CTS-CB Bank\";\n        BankAccComSetup: Record \"CTS-CB Bank Acc. Com. Setup\";\n        TempIntBatchDisplay: Record \"CTS-CB Int. Batch Display\" temporary;\n        TempPaymentEntry: Record \"CTS-CB Payment Entry\" temporary;\n        IntBatchDispBldr: Codeunit \"CTS-CB Int. Batch Disp Bldr\";\n        FakeBatchStrategy: Codeunit \"CTS-CB Fake Batch Strategy\";\n    begin\n        // [SCENARIO] BuildBatchDisplay does not consult the strategy when the input is empty,\n        // even if the strategy would return a batch on its first call.\n\n        // [GIVEN] Empty payment entries and a strategy whose first GetNextBatch call returns one entry\n        Initialize();\n        CreateTestBank(Bank);\n        CreateTestBankAccComSetup(BankAccComSetup);\n\n        // [WHEN] BuildBatchDisplay is called with empty entries\n        IntBatchDispBldr.BuildBatchDisplay(TempPaymentEntry, Bank, FakeBatchStrategy, TempIntBatchDisplay, BankAccComSetup);\n\n        // [THEN] Output stays empty: the early exit on empty input must prevent the strategy from being called\n        Assert.IsTrue(TempIntBatchDisplay.IsEmpty(), 'Output should be empty for empty input, even if the strategy offers a batch');\n    end;",
+      "rationale": "Line 33-34: 'if TempPaymentEntry.IsEmpty() then exit;' in BuildBatchDisplay (mutants 4510: condition forced false, 4511: exit removed). IExport Batch Strategy is a public interface, so the 'equivalent' claim that both shipped implementations return an empty batch for empty input does not hold for every implementation: a strategy that returns an entry on its first call even though TempPaymentEntry is empty makes the mutants build a header and a line. No test uses such a strategy. Add a new fake codeunit (NEW OBJECT, not part of alCode) and the test in alCode. Fake codeunit id 95312 was chosen because it is inside the app's idRange 94999-95999 and is free: a recursive search of out/test-app (*.al and *.json) for object declarations and for the literal 95312 found no use (highest used codeunit ids are 95311, then 95900-95903, 95910-95913). Full AL source of the fake, to be saved as e.g. Yapily/Fakes/FakeBatchStrategy.Codeunit.al (re-check the id is still free before applying):\n\ncodeunit 95312 \"CTS-CB Fake Batch Strategy\" implements \"CTS-CB IExport Batch Strategy\"\n{\n    Access = Internal;\n\n    var\n        CallCount: Integer;\n\n    procedure ShouldSplitIntoBatches(var TempPaymentEntry: Record \"CTS-CB Payment Entry\" temporary; Bank: Record \"CTS-CB Bank\"; BankAccComSetup: Record \"CTS-CB Bank Acc. Com. Setup\"): Boolean\n    begin\n        exit(true);\n    end;\n\n    procedure GetNextBatch(var TempPaymentEntry: Record \"CTS-CB Payment Entry\" temporary; var TempBatchPaymentEntry: Record \"CTS-CB Payment Entry\" temporary; Bank: Record \"CTS-CB Bank\"; var BatchNo: Integer; BankAccComSetup: Record \"CTS-CB Bank Acc. Com. Setup\"): Enum \"CTS-CB Int. Token Type\"\n    begin\n        CallCount += 1;\n        if CallCount > 1 then\n            exit(\"CTS-CB Int. Token Type\"::\" \");\n        BatchNo := 1;\n        TempBatchPaymentEntry.Init();\n        TempBatchPaymentEntry.\"Entry No.\" := 1;\n        TempBatchPaymentEntry.Insert();\n        exit(\"CTS-CB Int. Token Type\"::SinglePayment);\n    end;\n\n    procedure RequiresUserInteraction(): Boolean\n    begin\n        exit(false);\n    end;\n}",
+      "expectedEffect": "Fails on mutants 4510 and 4511 because the loop is entered with empty input, the fake returns one entry on its first call and CreateDisplayRecordsForBatch inserts a header and a line, so TempIntBatchDisplay is not empty; passes on the original because IsEmpty() exits before the strategy is called. Medium confidence: it needs the new fake codeunit and the interface signature must match the current IExport Batch Strategy (ShouldSplitIntoBatches, GetNextBatch, RequiresUserInteraction).",
+      "confidence": "medium"
+    },
+    {
+      "fixId": "F056",
+      "mutantIds": [
+        4516
+      ],
+      "verdict": "fix",
+      "target": {
+        "codeunitId": 95121,
+        "codeunitName": "CTS-CB Int. Batch Disp Tests",
+        "file": "Yapily/IntBatchDispTests.Codeunit.al",
+        "procedure": "TestGetPaymentEntriesForBatch_OnlyReturnsForHeader",
+        "isNewProcedure": false
+      },
+      "change": "add-assert",
+      "anchor": {
+        "afterLine": 289
+      },
+      "alCode": "        TempRetrievedPaymentEntry := TempSourcePaymentEntry;\n        TempRetrievedPaymentEntry.Insert();",
+      "rationale": "Line 68 (TempPaymentEntry.DeleteAll() in GetPaymentEntriesForBatch) is reached by both GetPaymentEntriesForBatch tests, but the output buffer is always empty before the call, so a missing DeleteAll is invisible. Pre-filling the output buffer makes the existing IsEmpty assertion detect it. The inserted lines are setup, not a new assertion: they pre-fill the output buffer so that the existing IsEmpty assert becomes meaningful (add-assert is used because it only inserts lines into the existing procedure).",
+      "expectedEffect": "Fails on mutant 4516 because the pre-inserted stale row stays in TempRetrievedPaymentEntry (the line-record exit does not clear it), so Assert.IsTrue(TempRetrievedPaymentEntry.IsEmpty()) fails; passes on the original because DeleteAll empties the output buffer first.",
+      "confidence": "high"
+    },
+    {
+      "fixId": "F057",
+      "mutantIds": [
+        4519,
+        4520
+      ],
+      "verdict": "new-test",
+      "target": {
+        "codeunitId": 95121,
+        "codeunitName": "CTS-CB Int. Batch Disp Tests",
+        "file": "Yapily/IntBatchDispTests.Codeunit.al",
+        "procedure": "TestGetPaymentEntriesForBatch_NonHeaderRecordWithHeaderId_ReturnsEmpty",
+        "isNewProcedure": true
+      },
+      "change": "new-test",
+      "anchor": null,
+      "alCode": "    [Test]\n    procedure TestGetPaymentEntriesForBatch_NonHeaderRecordWithHeaderId_ReturnsEmpty()\n    var\n        Bank: Record \"CTS-CB Bank\";\n        BankAccComSetup: Record \"CTS-CB Bank Acc. Com. Setup\";\n        BulkPaymentRule: Record \"CTS-CB Bulk Payment Rule\";\n        TempIntBatchDisplay: Record \"CTS-CB Int. Batch Display\" temporary;\n        TempNonHeaderIntBatchDisplay: Record \"CTS-CB Int. Batch Display\" temporary;\n        TempPaymentEntry: Record \"CTS-CB Payment Entry\" temporary;\n        TempRetrievedPaymentEntry: Record \"CTS-CB Payment Entry\" temporary;\n        TempSourcePaymentEntry: Record \"CTS-CB Payment Entry\" temporary;\n        IntBatchDispBldr: Codeunit \"CTS-CB Int. Batch Disp Bldr\";\n        IntBatchStrategy: Codeunit \"CTS-CB Int. Batch Strategy\";\n    begin\n        // [SCENARIO] GetPaymentEntriesForBatch returns nothing for a non-header record, even when its ID is the Batch Header ID of existing lines\n\n        // [GIVEN] A built display with one header and one line\n        Initialize();\n        CreateTestBank(Bank);\n        CreateTestBankAccComSetup(BankAccComSetup);\n        CreateBulkPaymentRule(BulkPaymentRule, Bank.Code, 1, 100, 1000000);\n        CreateTempPaymentEntry(TempPaymentEntry, CopyStr(Bank.Code, 1, 20), 100);\n        TempSourcePaymentEntry := TempPaymentEntry;\n        TempSourcePaymentEntry.Insert();\n        IntBatchDispBldr.BuildBatchDisplay(TempPaymentEntry, Bank, IntBatchStrategy, TempIntBatchDisplay, BankAccComSetup);\n\n        // [GIVEN] A non-header record that carries the header's ID (so the line lookup would find the header's lines)\n#pragma warning disable AA0210 // Key not necessary due to table size.\n        TempIntBatchDisplay.SetRange(\"Entry Type\", \"CTS-CB Batch Entry Type\"::Header);\n#pragma warning restore AA0210\n        TempIntBatchDisplay.FindFirst();\n        TempNonHeaderIntBatchDisplay := TempIntBatchDisplay;\n        TempNonHeaderIntBatchDisplay.\"Entry Type\" := \"CTS-CB Batch Entry Type\"::Line;\n        TempIntBatchDisplay.Reset();\n\n        // [WHEN] GetPaymentEntriesForBatch is called with the non-header record\n        IntBatchDispBldr.GetPaymentEntriesForBatch(TempNonHeaderIntBatchDisplay, TempRetrievedPaymentEntry, TempIntBatchDisplay, TempSourcePaymentEntry);\n\n        // [THEN] Nothing is returned\n        Assert.IsTrue(TempRetrievedPaymentEntry.IsEmpty(), 'Should return empty for a non-header record even if lines exist for its ID');\n    end;",
+      "rationale": "Line 72-73 (the Entry Type <> Header guard) is only exercised by OnlyReturnsForHeader, which passes a real line record. A line's ID is never the Batch Header ID of any line, so without the guard the later lookup also finds no lines and the result is empty either way. No existing test passes a non-header record whose ID matches existing lines' Batch Header ID.",
+      "expectedEffect": "Fails on mutants 4519/4520 because without the guard the lookup finds the header's line (Batch Header ID = that ID), reads it from the source table and returns 1 payment entry, so IsEmpty is false; passes on the original because the Entry Type <> Header guard exits before any lookup.",
+      "confidence": "high"
+    },
+    {
+      "fixId": "F058",
+      "mutantIds": [
+        4523,
+        4524
+      ],
+      "verdict": "new-test",
+      "target": {
+        "codeunitId": 95121,
+        "codeunitName": "CTS-CB Int. Batch Disp Tests",
+        "file": "Yapily/IntBatchDispTests.Codeunit.al",
+        "procedure": "TestGetPaymentEntriesForBatch_HeaderWithoutLines_ReturnsEmpty",
+        "isNewProcedure": true
+      },
+      "change": "new-test",
+      "anchor": null,
+      "alCode": "    [Test]\n    procedure TestGetPaymentEntriesForBatch_HeaderWithoutLines_ReturnsEmpty()\n    var\n        Bank: Record \"CTS-CB Bank\";\n        BankAccComSetup: Record \"CTS-CB Bank Acc. Com. Setup\";\n        BulkPaymentRule: Record \"CTS-CB Bulk Payment Rule\";\n        TempHeaderWithoutLines: Record \"CTS-CB Int. Batch Display\" temporary;\n        TempIntBatchDisplay: Record \"CTS-CB Int. Batch Display\" temporary;\n        TempPaymentEntry: Record \"CTS-CB Payment Entry\" temporary;\n        TempRetrievedPaymentEntry: Record \"CTS-CB Payment Entry\" temporary;\n        TempSourcePaymentEntry: Record \"CTS-CB Payment Entry\" temporary;\n        IntBatchDispBldr: Codeunit \"CTS-CB Int. Batch Disp Bldr\";\n        IntBatchStrategy: Codeunit \"CTS-CB Int. Batch Strategy\";\n    begin\n        // [SCENARIO] GetPaymentEntriesForBatch returns nothing for a header that has no lines, even when the display buffer is positioned on a line\n\n        // [GIVEN] A built display with one header and one line, and the display buffer positioned on the line\n        Initialize();\n        CreateTestBank(Bank);\n        CreateTestBankAccComSetup(BankAccComSetup);\n        CreateBulkPaymentRule(BulkPaymentRule, Bank.Code, 1, 100, 1000000);\n        CreateTempPaymentEntry(TempPaymentEntry, CopyStr(Bank.Code, 1, 20), 100);\n        TempSourcePaymentEntry := TempPaymentEntry;\n        TempSourcePaymentEntry.Insert();\n        IntBatchDispBldr.BuildBatchDisplay(TempPaymentEntry, Bank, IntBatchStrategy, TempIntBatchDisplay, BankAccComSetup);\n        TempIntBatchDisplay.Reset();\n        TempIntBatchDisplay.FindLast();\n\n        // [GIVEN] A header record whose ID no line refers to\n        TempHeaderWithoutLines.Init();\n        TempHeaderWithoutLines.ID := 99999;\n        TempHeaderWithoutLines.\"Entry Type\" := \"CTS-CB Batch Entry Type\"::Header;\n\n        // [WHEN] GetPaymentEntriesForBatch is called for the header without lines\n        IntBatchDispBldr.GetPaymentEntriesForBatch(TempHeaderWithoutLines, TempRetrievedPaymentEntry, TempIntBatchDisplay, TempSourcePaymentEntry);\n\n        // [THEN] Nothing is returned\n        Assert.IsTrue(TempRetrievedPaymentEntry.IsEmpty(), 'Should return empty for a header without lines');\n    end;",
+      "rationale": "Line 80-81 (if not TempLineIntBatchDisplay.FindSet() then exit). Existing tests only call it for headers that have lines, or for a line record that exits earlier at line 72, so the 'no lines found' branch is never taken. Without the exit the repeat loop would run on the unchanged record buffer copied from the display table, which only matters if that buffer is positioned on a line whose Source Line Entry No. exists in the source table.",
+      "expectedEffect": "Fails on mutants 4523/4524 because the failed FindSet leaves the copied buffer on the line record (Source Line Entry No. 1), the loop finds source entry 1 and inserts it, so the result is not empty; passes on the original because the empty FindSet exits before the loop.",
+      "confidence": "medium"
+    },
+    {
+      "fixId": "F059",
+      "mutantIds": [
+        4528
+      ],
+      "verdict": "equivalent",
+      "target": null,
+      "change": null,
+      "anchor": null,
+      "alCode": "",
+      "rationale": "Line 111: 'if TempBatchPaymentEntry.FindSet() then' in CreateDisplayRecordsForBatch is forced to true. FindSet only returns false for an empty batch, and CreateDisplayRecordsForBatch is only called from BuildBatchDisplay after the 'TempBatchPaymentEntry.IsEmpty() then exit' check, so the batch is never empty here.",
+      "expectedEffect": "Not applicable: with a non-empty batch FindSet is true anyway; the record is also already positioned on the first row by FindFirst in CreateHeaderRecord (line 136) which runs just before, so repeat/Next visits the same rows in the same order without FindSet.",
+      "confidence": "medium"
+    },
+    {
+      "fixId": "F060",
+      "mutantIds": [
+        4532,
+        4537,
+        4542,
+        4543
+      ],
+      "verdict": "new-test",
+      "target": {
+        "codeunitId": 95121,
+        "codeunitName": "CTS-CB Int. Batch Disp Tests",
+        "file": "Yapily/IntBatchDispTests.Codeunit.al",
+        "procedure": "TestBuildBatchDisplay_SingleLineBatch_HeaderIsSinglePaymentWithCreditorName",
+        "isNewProcedure": true
+      },
+      "change": "new-test",
+      "anchor": null,
+      "alCode": "    [Test]\n    procedure TestBuildBatchDisplay_SingleLineBatch_HeaderIsSinglePaymentWithCreditorName()\n    var\n        Bank: Record \"CTS-CB Bank\";\n        BankAccComSetup: Record \"CTS-CB Bank Acc. Com. Setup\";\n        BulkPaymentRule: Record \"CTS-CB Bulk Payment Rule\";\n        TempIntBatchDisplay: Record \"CTS-CB Int. Batch Display\" temporary;\n        TempPaymentEntry: Record \"CTS-CB Payment Entry\" temporary;\n        IntBatchDispBldr: Codeunit \"CTS-CB Int. Batch Disp Bldr\";\n        IntBatchStrategy: Codeunit \"CTS-CB Int. Batch Strategy\";\n    begin\n        // [SCENARIO] A batch with exactly one line gets a SinglePayment header named after the creditor\n\n        // [GIVEN] One payment entry and a rule with minimum 1 line (the strategy itself reports BulkPayment for it)\n        Initialize();\n        CreateTestBank(Bank);\n        CreateTestBankAccComSetup(BankAccComSetup);\n        CreateBulkPaymentRule(BulkPaymentRule, Bank.Code, 1, 100, 1000000);\n        CreateTempPaymentEntry(TempPaymentEntry, CopyStr(Bank.Code, 1, 20), 100);\n\n        // [WHEN] BuildBatchDisplay is called\n        IntBatchDispBldr.BuildBatchDisplay(TempPaymentEntry, Bank, IntBatchStrategy, TempIntBatchDisplay, BankAccComSetup);\n\n        // [THEN] The header is a SinglePayment named after the creditor\n#pragma warning disable AA0210 // Key not necessary due to table size.\n        TempIntBatchDisplay.SetRange(\"Entry Type\", \"CTS-CB Batch Entry Type\"::Header);\n#pragma warning restore AA0210\n        TempIntBatchDisplay.FindFirst();\n        Assert.AreEqual(\"CTS-CB Int. Token Type\"::SinglePayment, TempIntBatchDisplay.\"Token Type\", 'A one-line batch should have SinglePayment token type');\n        Assert.AreEqual('Test Creditor 1', Format(TempIntBatchDisplay.\"Account Name\"), 'A one-line batch header should show the creditor name');\n    end;",
+      "rationale": "Line 129 (LineCount = 1 selects SinglePayment as header token type) and lines 145-148/180-181 (single-payment description = creditor name). Existing tests use batches of 3 or more lines for token type, and the only single-line tests (OnlyReturnsForHeader) never inspect the header's Token Type or Account Name.",
+      "expectedEffect": "Fails on mutant 4532 because the header keeps the strategy's BulkPayment token type (Min Number of Lines = 1); fails on 4537 because the single-line header is named '1 payments'; fails on 4542/4543 because GetSinglePaymentDescription returns '' instead of the creditor name; passes on the original (SinglePayment, 'Test Creditor 1').",
+      "confidence": "high"
+    },
+    {
+      "fixId": "F061",
+      "mutantIds": [
+        4533,
+        4534,
+        4535,
+        4536,
+        4544
+      ],
+      "verdict": "new-test",
+      "target": {
+        "codeunitId": 95121,
+        "codeunitName": "CTS-CB Int. Batch Disp Tests",
+        "file": "Yapily/IntBatchDispTests.Codeunit.al",
+        "procedure": "TestBuildBatchDisplay_BulkBatch_HeaderUsesFirstEntryAndPaymentCount",
+        "isNewProcedure": true
+      },
+      "change": "new-test",
+      "anchor": null,
+      "alCode": "    [Test]\n    procedure TestBuildBatchDisplay_BulkBatch_HeaderUsesFirstEntryAndPaymentCount()\n    var\n        Bank: Record \"CTS-CB Bank\";\n        BankAccComSetup: Record \"CTS-CB Bank Acc. Com. Setup\";\n        BulkPaymentRule: Record \"CTS-CB Bulk Payment Rule\";\n        TempIntBatchDisplay: Record \"CTS-CB Int. Batch Display\" temporary;\n        TempPaymentEntry: Record \"CTS-CB Payment Entry\" temporary;\n        IntBatchDispBldr: Codeunit \"CTS-CB Int. Batch Disp Bldr\";\n        IntBatchStrategy: Codeunit \"CTS-CB Int. Batch Strategy\";\n    begin\n        // [SCENARIO] The header of a multi-line batch takes common fields from the first entry and is named after the payment count\n\n        // [GIVEN] 3 payment entries in one batch; the first has currency EUR, the others USD\n        Initialize();\n        CreateTestBank(Bank);\n        CreateTestBankAccComSetup(BankAccComSetup);\n        CreateBulkPaymentRule(BulkPaymentRule, Bank.Code, 1, 100, 1000000);\n        CreateTempPaymentEntry(TempPaymentEntry, CopyStr(Bank.Code, 1, 20), 100);\n        CreateTempPaymentEntry(TempPaymentEntry, CopyStr(Bank.Code, 1, 20), 200);\n        CreateTempPaymentEntry(TempPaymentEntry, CopyStr(Bank.Code, 1, 20), 300);\n        TempPaymentEntry.SetFilter(\"Entry No.\", '>1');\n        TempPaymentEntry.ModifyAll(Currency, 'USD');\n        TempPaymentEntry.Reset();\n\n        // [WHEN] BuildBatchDisplay is called\n        IntBatchDispBldr.BuildBatchDisplay(TempPaymentEntry, Bank, IntBatchStrategy, TempIntBatchDisplay, BankAccComSetup);\n\n        // [THEN] The header shows the first entry's common fields and the payment count\n#pragma warning disable AA0210 // Key not necessary due to table size.\n        TempIntBatchDisplay.SetRange(\"Entry Type\", \"CTS-CB Batch Entry Type\"::Header);\n#pragma warning restore AA0210\n        TempIntBatchDisplay.FindFirst();\n        Assert.AreEqual(\"CTS-CB Int. Token Type\"::BulkPayment, TempIntBatchDisplay.\"Token Type\", 'A three-line batch should have BulkPayment token type');\n        Assert.AreEqual('3 payments', Format(TempIntBatchDisplay.\"Account Name\"), 'A multi-line batch header should show the payment count');\n        Assert.AreEqual('EUR', Format(TempIntBatchDisplay.\"Currency Code\"), 'Header currency should come from the first entry');\n        Assert.AreEqual(Format(CopyStr(Bank.Code, 1, 20)), Format(TempIntBatchDisplay.\"Bal. Account No.\"), 'Header bal. account should come from the first entry');\n    end;",
+      "rationale": "Line 136 (FindFirst copies the first entry's Bank Account No./Currency/Posting Date to the header), line 145 (LineCount = 1 chooses the single description), line 188 (bulk description '%1 payments'). Existing multi-line tests check only entry type, token type, amount and linkage, never the header's Account Name, Currency Code or Bal. Account No.; all entries there share one currency so first and last entry cannot be told apart.",
+      "expectedEffect": "Fails on mutant 4534 because the header Currency Code / Bal. Account No. stay blank; fails on 4533 because the header takes the currency of the last-inserted entry (USD) instead of the first (EUR); fails on 4535/4536 because the 3-line header is named after the creditor instead of '3 payments'; fails on 4544 because the bulk description is ''; passes on the original.",
+      "confidence": "medium"
+    },
+    {
+      "fixId": "F062",
+      "mutantIds": [
+        4541
+      ],
+      "verdict": "equivalent",
+      "target": null,
+      "change": null,
+      "anchor": null,
+      "alCode": "",
+      "rationale": "Line 180: 'if TempBatchPaymentEntry.FindFirst() then' in GetSinglePaymentDescription forced to true. The procedure is only called from CreateHeaderRecord when LineCount = 1, i.e. the batch holds exactly one row, and CreateHeaderRecord already ran FindFirst on it at line 136.",
+      "expectedEffect": "Not applicable: with exactly one row FindFirst is true and leaves the buffer on that same row, so exit(Creditor Name) returns the identical value with or without the check.",
+      "confidence": "medium"
+    },
+    {
+      "fixId": "F063",
+      "mutantIds": [
+        16474
+      ],
+      "verdict": "new-test",
+      "target": {
+        "codeunitId": 95058,
+        "codeunitName": "CTS-CB Val. Level Mgt. UT",
+        "file": "Export/Payment Validation/ValLevelMgtUT.Codeunit.al",
+        "procedure": "TestGetBankSystemCodeByLevel_Level3_ReturnsEmpty",
+        "isNewProcedure": true
+      },
+      "change": "new-test",
+      "anchor": null,
+      "alCode": "    [Test]\n    procedure TestGetBankSystemCodeByLevel_Level3_ReturnsEmpty()\n    var\n        TempFieldContent: Record \"CTS-CB Field Content\" temporary;\n        BankSystemCode: Code[30];\n    begin\n        // [GIVEN] Field content with level 3 and a bank system code\n        TempFieldContent.Level := 3;\n        BankSystemCode := CopyStr(LibraryRandom.RandText(10), 1, MaxStrLen(BankSystemCode));\n        TempFieldContent.\"Bank System Code\" := BankSystemCode;\n\n        // [WHEN] Get bank system code by level\n        // [THEN] Should return empty\n        LibraryAssert.AreEqual('', ValidationLevelMgt.GetBankSystemCodeByLevel(TempFieldContent), 'Bank system code should be empty for level 3');\n    end;",
+      "rationale": "Line 29 (Level in [1, 2]) is only tested with Level 1, where the original and a constant-true condition both return the code. There is no test for GetBankSystemCodeByLevel with a level outside [1, 2] (the payment-method counterpart has a Level 2 test).",
+      "expectedEffect": "Fails on mutant 16474 because the condition is always true and the bank system code is returned for level 3; passes on the original because level 3 is outside [1, 2] and the function returns the empty default.",
+      "confidence": "high"
+    },
+    {
+      "fixId": "F064",
+      "mutantIds": [
+        16477
+      ],
+      "verdict": "new-test",
+      "target": {
+        "codeunitId": 95058,
+        "codeunitName": "CTS-CB Val. Level Mgt. UT",
+        "file": "Export/Payment Validation/ValLevelMgtUT.Codeunit.al",
+        "procedure": "TestGetBankSystemCodeByLevel_LevelAndCodeOverload_Level1_ReturnsCode",
+        "isNewProcedure": true
+      },
+      "change": "new-test",
+      "anchor": null,
+      "alCode": "    [Test]\n    procedure TestGetBankSystemCodeByLevel_LevelAndCodeOverload_Level1_ReturnsCode()\n    var\n        BankSystemCode: Code[30];\n    begin\n        // [GIVEN] A bank system code\n        BankSystemCode := CopyStr(LibraryRandom.RandText(10), 1, MaxStrLen(BankSystemCode));\n\n        // [WHEN] Get bank system code by level using the (Level, BankSystemCode) overload\n        // [THEN] Should return the code for level 1\n        LibraryAssert.AreEqual(BankSystemCode, ValidationLevelMgt.GetBankSystemCodeByLevel(1, BankSystemCode), 'Bank system code should be returned for level 1');\n    end;",
+      "rationale": "Line 39 (exit(GetBankSystemCodeByLevel(TempFieldContent)) in the (Level, BankSystemCode) overload). The test codeunit only calls the record-based overload, so this overload is never executed.",
+      "expectedEffect": "Fails on mutant 16477 because the overload no longer returns the delegated result and yields the empty default; passes on the original, which returns the bank system code for level 1.",
+      "confidence": "high"
+    },
+    {
+      "fixId": "F065",
+      "mutantIds": [
+        16481
+      ],
+      "verdict": "new-test",
+      "target": {
+        "codeunitId": 95058,
+        "codeunitName": "CTS-CB Val. Level Mgt. UT",
+        "file": "Export/Payment Validation/ValLevelMgtUT.Codeunit.al",
+        "procedure": "TestGetPaymentMethodCodeByLevel_LevelAndCodeOverload_Level1_ReturnsCode",
+        "isNewProcedure": true
+      },
+      "change": "new-test",
+      "anchor": null,
+      "alCode": "    [Test]\n    procedure TestGetPaymentMethodCodeByLevel_LevelAndCodeOverload_Level1_ReturnsCode()\n    var\n        PaymentMethodCode: Code[20];\n    begin\n        // [GIVEN] A payment method code\n        PaymentMethodCode := CopyStr(LibraryRandom.RandText(10), 1, MaxStrLen(PaymentMethodCode));\n\n        // [WHEN] Get payment method code by level using the (Level, PaymentMethod) overload\n        // [THEN] Should return the code for level 1\n        LibraryAssert.AreEqual(PaymentMethodCode, ValidationLevelMgt.GetPaymentMethodCodeByLevel(1, PaymentMethodCode), 'Payment method code should be returned for level 1');\n    end;",
+      "rationale": "Line 54 (exit(GetPaymentMethodCodeByLevel(TempFieldContent)) in the (Level, PaymentMethod) overload). The test codeunit only calls the record-based overload, so this overload is never executed.",
+      "expectedEffect": "Fails on mutant 16481 because the overload no longer returns the delegated result and yields the empty default; passes on the original, which returns the payment method code for level 1.",
+      "confidence": "high"
+    },
+    {
+      "fixId": "F066",
+      "mutantIds": [
+        204
+      ],
+      "verdict": "equivalent",
+      "target": null,
+      "change": null,
+      "anchor": null,
+      "alCode": "",
+      "rationale": "ResolveAccessibleSourceCompany line 276: `(CurrentCompany <> PreferredCompany) and TryGetSourceBank(...)` mutated to `or`. AL does not short-circuit `and`/`or`: both operands always run (the survival of mutant 201 proves TryGetSourceBank executes as the right operand). Let A = (CurrentCompany <> PreferredCompany) and B = TryGetSourceBank. The two operators differ only when A and B differ. A false and B true needs the same company and a second successful read after the first one failed, which cannot happen. A true and B false is the remaining case: the original falls through to exit(PreferredCompany), the mutant exits with CurrentCompany. In that case SourceBank.Code is blank and the caller exits before using the returned company, unless a failed Get keeps the key in the record (open question, see F019).",
+      "expectedEffect": "No observable difference unless a failed SourceBank.Get leaves the key in SourceBank.Code; if it does, the returned company reaches GetActiveCommType and the mutant would read the active map from the wrong company. Low confidence until that is confirmed.",
+      "confidence": "low"
+    }
+  ]
+}
