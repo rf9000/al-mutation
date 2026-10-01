@@ -735,7 +735,7 @@ and have been removed from this list. What remains genuinely open:
   enumerable environment users (all already SUPER) changed nothing, so the identity that runs DemoPortal
   test sessions is none of them. The IsolatedStorage channel routes around it and works, but the underlying
   mechanism was never established, and §6.1.5b still states a rationale this project disproved.
-- **The pipeline cannot survive an upstream interface-surface change.** Twice now (run 5, `AL0185`; run 7,
+- **The pipeline cannot survive an upstream interface-surface change** *(fixed 2026-10-01 after a third occurrence in run 14: `Publish-MutBaseline` now unpublishes the stale test app and retries the AUT once; not yet exercised by a live run)*. Twice now (run 5, `AL0185`; run 7,
   `AL0582`) a run has aborted at `Publish-MutBaseline` because the *installed* test suite predates a change
   to the AUT's public surface, and BC's dependent recompile of it fails. Both times a human had to unpublish
   the test app before a run would start. `Publish-MutBaseline` should detect this and unpublish-then-retry.

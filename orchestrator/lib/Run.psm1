@@ -456,6 +456,33 @@ function Publish-MutBaseline {
     $autPublishParams = @{ Env = $Env; Path = $autPath; AllowDowngrade = $true }
     if ($rulesetFile) { $autPublishParams['Ruleset'] = $rulesetFile }
     $autResult = Publish-MutApp @autPublishParams
+
+    # FIX (runs 5, 7, 14): a stale INSTALLED test suite. BC recompiles installed dependents when the
+    # AUT is published, and the installed test app may predate a change to the AUT's public surface
+    # (run 14: HEAD added `CTS-CB IErrorHandlingFactory.DecodeResponseContent`, and the installed
+    # suite's `CTS-CB FakeErrHandlingFactory` failed with AL0582). That arrives as a SERVER-side
+    # publish failure naming an extension compilation failure -- distinct from the AUT's own local
+    # compile failing (Code 'compile-failed'). The test app is republished from source right below
+    # anyway, so remove the stale copy and retry the AUT once. Each previous time this needed a
+    # human to unpublish the test app by hand.
+    $isDependentRecompileFailure = (-not $autResult.Success) -and ($autResult.Code -eq 'publish-failed') -and
+        ([string]$autResult.ErrorMessage -match 'Extension compilation failed')
+    if ($isDependentRecompileFailure) {
+        $firstFailure = $autResult.ErrorMessage
+        Write-Warning "Publish-MutBaseline: publishing aut-original failed while BC recompiled an installed dependent extension (most likely a stale installed test app; the test app is republished from source next). Unpublishing test app $($Config.testApp.appId) and retrying once. First failure: $firstFailure"
+        try {
+            Unpublish-MutApp -Env $Env -AppId $Config.testApp.appId | Out-Null
+        }
+        catch {
+            # The failed publish may already have uninstalled it; the retry decides.
+            Write-Warning "Publish-MutBaseline: unpublishing the test app failed ($($_.Exception.Message)); retrying the AUT publish anyway."
+        }
+        $autResult = Publish-MutApp @autPublishParams
+        if (-not $autResult.Success) {
+            throw "Publish-MutBaseline: publishing aut-original failed, and failed again after unpublishing the installed test app. First failure: $firstFailure. Retry -- Code: $($autResult.Code); Message: $($autResult.ErrorMessage); Diagnostics: $(($autResult.Diagnostics | ConvertTo-Json -Depth 10 -Compress))"
+        }
+    }
+
     if (-not $autResult.Success) {
         throw "Publish-MutBaseline: publishing aut-original failed. Code: $($autResult.Code); Message: $($autResult.ErrorMessage); Diagnostics: $(($autResult.Diagnostics | ConvertTo-Json -Depth 10 -Compress))"
     }

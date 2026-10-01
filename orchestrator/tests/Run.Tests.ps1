@@ -701,3 +701,100 @@ Describe 'Publish-MutBaseline: Mutation Core test app (coreAppTest)' {
             Should -Throw '*coreAppTest.path*core test app rejected*'
     }
 }
+
+Describe 'Publish-MutBaseline: stale installed test suite (runs 5, 7 and 14)' {
+    <#
+        .SYNOPSIS
+        Three times now (run 5: AL0185; run 7 and run 14: AL0582) publishing aut-original failed
+        because BC recompiles the INSTALLED test app against the new AUT, and that installed copy
+        predates a change to the AUT's public surface -- in run 14, HEAD added interface member
+        `CTS-CB IErrorHandlingFactory.DecodeResponseContent` and the installed test suite's
+        `CTS-CB FakeErrHandlingFactory` did not implement it. Each time a human unpublished the
+        test app before the run would start. The pipeline republishes the test app from source
+        right after the AUT anyway, so removing the stale copy and retrying the AUT once is safe.
+    #>
+    BeforeEach {
+        $script:WorkDir = "$TestDrive/work-$([guid]::NewGuid().ToString('N'))"
+        $script:RunDir = Join-Path $script:WorkDir 'runs/1'
+        New-Item -ItemType Directory -Path $script:RunDir -Force | Out-Null
+        $script:Config = New-MutRunTestConfig -WorkDir $script:WorkDir
+        $script:AutPublishCalls = 0
+        $script:StaleMessage = "Publishing failed due to 'Extension compilation failed`nCommunication/Fakes/FakeErrHandlingFactory.Codeunit.al(1,59): error AL0582: 'CTS-CB FakeErrHandlingFactory' does not implement the interface member 'CTS-CB IErrorHandlingFactory.DecodeResponseContent'.'."
+
+        Mock -ModuleName Run Install-MutDependencies { }
+        Mock -ModuleName Run Grant-MutPermissionSet { }
+        Mock -ModuleName Run Unpublish-MutApp { [pscustomobject]@{ Success = $true } }
+        # Stop right after the publishes, so these tests stay about publishing.
+        Mock -ModuleName Run Invoke-MutTests { throw 'stop-after-publishes' }
+    }
+
+    It 'unpublishes the installed test app and retries the AUT once when the AUT publish fails on a dependent extension''s recompile' {
+        Mock -ModuleName Run Publish-MutApp {
+            if ($Path -like '*aut-original') {
+                $script:AutPublishCalls++
+                if ($script:AutPublishCalls -eq 1) {
+                    return [pscustomobject]@{ Success = $false; Code = 'publish-failed'; Diagnostics = @(); DurationSec = 0.1; ErrorMessage = $script:StaleMessage }
+                }
+            }
+            [pscustomobject]@{ Success = $true; Code = $null; Diagnostics = @(); DurationSec = 0.1 }
+        }
+
+        { Publish-MutBaseline -Config $script:Config -Env $script:EnvHandle -RunDir $script:RunDir -WarningAction SilentlyContinue } |
+            Should -Throw '*stop-after-publishes*'
+
+        $script:AutPublishCalls | Should -Be 2
+        Should -Invoke -ModuleName Run Unpublish-MutApp -ParameterFilter { $AppId -eq 'test-app-id' } -Times 1 -Exactly
+    }
+
+    It 'does not unpublish anything when the AUT publish fails for another reason, and throws as before' {
+        Mock -ModuleName Run Publish-MutApp {
+            if ($Path -like '*aut-original') {
+                $script:AutPublishCalls++
+                return [pscustomobject]@{ Success = $false; Code = 'compile-failed'; Diagnostics = @(); DurationSec = 0.1; ErrorMessage = "error AS0013: The field identifier '72282525' is not valid." }
+            }
+            [pscustomobject]@{ Success = $true; Code = $null; Diagnostics = @(); DurationSec = 0.1 }
+        }
+
+        { Publish-MutBaseline -Config $script:Config -Env $script:EnvHandle -RunDir $script:RunDir -WarningAction SilentlyContinue } |
+            Should -Throw '*publishing aut-original failed*AS0013*'
+
+        $script:AutPublishCalls | Should -Be 1
+        Should -Invoke -ModuleName Run Unpublish-MutApp -Times 0 -Exactly
+    }
+
+    It 'throws, naming both the original and the retry failure, when the retry after unpublishing also fails' {
+        Mock -ModuleName Run Publish-MutApp {
+            if ($Path -like '*aut-original') {
+                $script:AutPublishCalls++
+                if ($script:AutPublishCalls -eq 1) {
+                    return [pscustomobject]@{ Success = $false; Code = 'publish-failed'; Diagnostics = @(); DurationSec = 0.1; ErrorMessage = $script:StaleMessage }
+                }
+                return [pscustomobject]@{ Success = $false; Code = 'publish-failed'; Diagnostics = @(); DurationSec = 0.1; ErrorMessage = 'second failure: schema sync refused' }
+            }
+            [pscustomobject]@{ Success = $true; Code = $null; Diagnostics = @(); DurationSec = 0.1 }
+        }
+
+        { Publish-MutBaseline -Config $script:Config -Env $script:EnvHandle -RunDir $script:RunDir -WarningAction SilentlyContinue } |
+            Should -Throw '*AL0582*second failure: schema sync refused*'
+
+        $script:AutPublishCalls | Should -Be 2
+    }
+
+    It 'still retries when the unpublish itself throws (the stale app may already be gone)' {
+        Mock -ModuleName Run Unpublish-MutApp { throw 'continia exited with code 1: unpublish ... app not found' }
+        Mock -ModuleName Run Publish-MutApp {
+            if ($Path -like '*aut-original') {
+                $script:AutPublishCalls++
+                if ($script:AutPublishCalls -eq 1) {
+                    return [pscustomobject]@{ Success = $false; Code = 'publish-failed'; Diagnostics = @(); DurationSec = 0.1; ErrorMessage = $script:StaleMessage }
+                }
+            }
+            [pscustomobject]@{ Success = $true; Code = $null; Diagnostics = @(); DurationSec = 0.1 }
+        }
+
+        { Publish-MutBaseline -Config $script:Config -Env $script:EnvHandle -RunDir $script:RunDir -WarningAction SilentlyContinue } |
+            Should -Throw '*stop-after-publishes*'
+
+        $script:AutPublishCalls | Should -Be 2
+    }
+}
