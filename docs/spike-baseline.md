@@ -654,8 +654,16 @@ each took the fallback environment reset, and each reset succeeded. **The `env s
 first reset ("still Stopped 90 s after env start; issuing env start again (call 2)") and recovered, where run 11
 had died. Each reset logged "recovery 1 of 3", confirming a successful reset does not spend the cap.
 
-What remains unproven: the fast path (stopping the runaway session instead of a reset) end to end in a run;
-it is verified by the stop-session spike and the unit tests only.
+### Run 13: the session-stop fast path, live (2026-10-01)
+
+Same scope and pin, orchestrator at `dabb444` (current-server-instance session targeting, `d29b50e`). **Identical
+to run 12 mutant for mutant** — all 265 stable keys, 0 status differences, score 0.4491, 0 `Error`, 0 `Pending`
+— in **62.4 min instead of 92.7**. Each non-terminating mutant was detected as a Timeout and its runaway session
+stopped through the sessions API ("stopped the runaway test session(s) 3110 / 3138 / 3157 left by the timed-out
+job"), with no environment reset, no outage wait and no `env start` retry anywhere in the run. The ~30 min saved
+is the three full stop/starts run 12 needed.
+
+Two complete, clean runs (12 and 13) now agree exactly. 72918635's 0.3949 has been reproduced eight times.
 
 **The readiness fix did its job, and could not have fixed this on its own.** Silent `no tests discovered` dropped from 46
 to 8; the remaining losses now carry an actionable reason instead of looking like empty codeunits.
