@@ -14,7 +14,7 @@ function Invoke-MutRobocopyMirror {
     <#
         .SYNOPSIS
         Mirrors $Source into $Destination via `robocopy <src> <dst> /MIR /XD .alpackages
-        .snapshots .git /XF *.app /NFL /NDL /NJH /NJS` (§6.5.2). $Source is never written to:
+        .snapshots .git /XF *.app .git /NFL /NDL /NJH /NJS` (§6.5.2). $Source is never written to:
         robocopy's source side of a /MIR is read-only for this call.
 
         .NOTES
@@ -37,7 +37,7 @@ function Invoke-MutRobocopyMirror {
         New-Item -ItemType Directory -Path $Destination -Force | Out-Null
     }
 
-    & robocopy $Source $Destination /MIR /XD .alpackages .snapshots .git /XF *.app /NFL /NDL /NJH /NJS | Out-Null
+    & robocopy $Source $Destination /MIR /XD .alpackages .snapshots .git /XF *.app .git /NFL /NDL /NJH /NJS | Out-Null
     $code = $LASTEXITCODE
 
     if ($code -ge 8) {

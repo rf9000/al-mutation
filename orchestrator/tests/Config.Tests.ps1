@@ -79,6 +79,18 @@ Describe 'Get-MutConfig' {
         [System.IO.Path]::IsPathRooted($cfg.demoPortal.cliPath) | Should -Be $true
     }
 
+    It 'loads a config file whose path contains wildcard characters (-LiteralPath)' {
+        $src = New-MutTestConfigFile
+        $dir = Join-Path $TestDrive 'cfg[1]'
+        New-Item -ItemType Directory -Path $dir -Force | Out-Null
+        $path = Join-Path $dir 'mutation[x].config.json'
+        Copy-Item -LiteralPath $src -Destination $path
+
+        $cfg = Get-MutConfig -Path $path
+
+        $cfg.backend | Should -Be 'DemoPortal'
+    }
+
     It 'leaves already-absolute paths untouched' {
         $overrides = @{ aut = @{ sourcePath = 'C:/GeneralDev/AL/somewhere'; appId = '8b3f4e5c-ad6a-4f7b-9c8d-9e0f1a2b3c4d'; version = '1.0.0.0' } }
         $path = New-MutTestConfigFile -Overrides $overrides

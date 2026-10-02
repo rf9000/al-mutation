@@ -423,7 +423,7 @@ Describe 'Invoke-MutFixVerify' {
     It 'verifies entries whose test passes on the original and is killed under every mutant' {
         $r = Invoke-MutFixVerify -Config $script:Cfg -RunNo 15 -RepoRoot $script:Repo
         $r.runNo | Should -Be 15
-        $r.verifyRunNo | Should -Be 9015
+        $r.verifyRunNo | Should -Be -15
         $r.environmentName | Should -Be 'mut-test-01'
         @($r.entries).Count | Should -Be 3
         @($r.entries | ForEach-Object { $_.fixId }) | Should -Be @('F001', 'F002', 'F003')
@@ -449,7 +449,7 @@ Describe 'Invoke-MutFixVerify' {
         Test-Path $path | Should -BeTrue
         $disk = Get-Content -Raw -Path $path | ConvertFrom-Json
         $disk.runNo | Should -Be 15
-        $disk.verifyRunNo | Should -Be 9015
+        $disk.verifyRunNo | Should -Be -15
         @($disk.entries).Count | Should -Be 3
         (Get-Content -Raw -Path $path) | Should -Match '"mutants":\s*\[\s*\]'
     }
@@ -748,7 +748,7 @@ Describe 'Invoke-MutFixVerify' {
 
     It 'with -FixIds verifies only those entries and merges into an existing verified.json' {
         $existing = [ordered]@{
-            runNo = 15; verifyRunNo = 9015; updatedUtc = '2026-10-01T10:00:00Z'; environmentName = 'mut-test-01'
+            runNo = 15; verifyRunNo = -15; updatedUtc = '2026-10-01T10:00:00Z'; environmentName = 'mut-test-01'
             entries = @(
                 [ordered]@{ fixId = 'F001'; revision = 0; verdict = 'compile-failed'; verifiedUtc = '2026-10-01T09:00:00Z'; compile = [ordered]@{ ok = $false; diagnostics = @('old') }; original = $null; mutants = @() },
                 [ordered]@{ fixId = 'F009'; revision = 2; verdict = 'verified'; verifiedUtc = '2026-10-01T09:30:00Z'; compile = [ordered]@{ ok = $true; diagnostics = @() }
@@ -787,7 +787,7 @@ Describe 'Invoke-MutFixVerify' {
         ($r.entries | Where-Object fixId -eq 'F002').revision | Should -Be 0
     }
 
-    It 'activates mutants with currentRunNo 9000 + RunNo' {
+    It 'activates mutants with currentRunNo = -RunNo' {
         $script:Bodies = @()
         Mock -ModuleName FixVerify Invoke-MutApi {
             if ($Method -eq 'GET') { return [pscustomobject]@{ activeMutantId = $global:FvActive } }
@@ -796,8 +796,8 @@ Describe 'Invoke-MutFixVerify' {
             return $null
         }
         Invoke-MutFixVerify -Config $script:Cfg -RunNo 15 -RepoRoot $script:Repo | Out-Null
-        $global:FvLog | Should -Contain 'ACT:10:9015'
-        $global:FvLog | Should -Contain 'ACT:20:9015'
+        $global:FvLog | Should -Contain 'ACT:10:-15'
+        $global:FvLog | Should -Contain 'ACT:20:-15'
     }
 }
 
@@ -820,7 +820,7 @@ Describe 'Export-MutFixDelivery' {
 
         $ok = [ordered]@{ ok = $true; diagnostics = @() }
         $verified = [ordered]@{
-            runNo = 7; verifyRunNo = 9007; updatedUtc = '2026-10-02T10:00:00Z'; environmentName = 'mut-x'
+            runNo = 7; verifyRunNo = -7; updatedUtc = '2026-10-02T10:00:00Z'; environmentName = 'mut-x'
             entries = @(
                 [ordered]@{ fixId = 'F001'; revision = 1; verdict = 'verified'; verifiedUtc = '2026-10-02T09:58:00Z'; compile = $ok
                     original = [ordered]@{ result = 'Pass'; error = $null; durationMs = 1 }
@@ -837,6 +837,14 @@ Describe 'Export-MutFixDelivery' {
             unmappedDiagnostics = @()
         }
         $verified | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath (Join-Path $script:Repo 'results\7-verified.json') -Encoding UTF8
+    }
+
+    It 'loads -Config given as a path through Get-MutConfig' {
+        $loaded = [pscustomobject]@{ workDir = $script:Work }
+        Mock -ModuleName FixVerify Get-MutConfig { $loaded } -ParameterFilter { $Path -eq 'X:\ext\cfg.json' }
+        Export-MutFixDelivery -RunNo 7 -RepoRoot $script:Repo -Config 'X:\ext\cfg.json' | Out-Null
+        Should -Invoke -ModuleName FixVerify Get-MutConfig -Times 1 -Exactly
+        Test-Path -LiteralPath (Join-Path $script:Repo 'results/7-tests.patch') | Should -Be $true
     }
 
     It 'applies only verified entries and writes the patch' {

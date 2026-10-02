@@ -47,6 +47,7 @@ if (-not (Test-Path -Path $backendModulePath)) {
 }
 Import-Module $backendModulePath -Force
 Import-Module (Join-Path $libDir 'FixVerify.psm1') -Force
+Import-Module (Join-Path $libDir 'EnvLock.psm1') -Force
 
 $ids = @()
 if ($FixIds) {
@@ -55,6 +56,7 @@ if ($FixIds) {
 
 $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
 try {
+    Enter-MutEnvLock -WorkDir $config.workDir -RunNo $RunNo -Owner 'Invoke-MutFixVerify.ps1'
     $params = @{ Config = $config; RunNo = $RunNo; RepoRoot = $repoRoot }
     if ($ids.Count -gt 0) { $params['FixIds'] = $ids }
     $result = Invoke-MutFixVerify @params
@@ -62,6 +64,9 @@ try {
 catch {
     Write-Output ("Invoke-MutFixVerify failed: {0}" -f $_.Exception.Message)
     exit 1
+}
+finally {
+    Exit-MutEnvLock -WorkDir $config.workDir
 }
 
 foreach ($entry in @($result.entries)) {

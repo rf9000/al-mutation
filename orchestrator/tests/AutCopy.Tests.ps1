@@ -72,6 +72,19 @@ Describe 'Sync-MutAutCopy' {
         Test-Path (Join-Path $result.TestAppPath '.alpackages') | Should -Be $false
     }
 
+    It 'excludes a .git FILE (git worktree) as well as a .git folder' {
+        $wtSource = "$TestDrive/src/aut-worktree"
+        New-Item -ItemType Directory -Path $wtSource -Force | Out-Null
+        Set-Content -Path (Join-Path $wtSource 'Foo.Codeunit.al') -Value 'codeunit 1 "Foo" { }'
+        Set-Content -Path (Join-Path $wtSource '.git') -Value 'gitdir: C:/repo/.git/worktrees/wt1'
+        $config = New-MutTestConfig -WorkDir $script:workDir -AutSource $wtSource -TestAppSource $script:testAppSource
+
+        $result = Sync-MutAutCopy -Config $config
+
+        Test-Path -LiteralPath (Join-Path $result.AutPath '.git') | Should -Be $false
+        Test-Path -LiteralPath (Join-Path $result.AutPath 'Foo.Codeunit.al') | Should -Be $true
+    }
+
     It 'is idempotent: a second run re-mirrors cleanly and reflects source changes made between runs' {
         $config = New-MutTestConfig -WorkDir $script:workDir -AutSource $script:autSource -TestAppSource $script:testAppSource
 

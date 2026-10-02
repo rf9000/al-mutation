@@ -449,11 +449,11 @@ function Get-MutConfig {
         [string]$Path
     )
 
-    if (-not (Test-Path -Path $Path)) {
+    if (-not (Test-Path -LiteralPath $Path)) {
         throw "Get-MutConfig: config file not found: '$Path'."
     }
 
-    $raw = Get-Content -Path $Path -Raw
+    $raw = Get-Content -LiteralPath $Path -Raw
     $config = $raw | ConvertFrom-Json
 
     Assert-MutConfigShape $config

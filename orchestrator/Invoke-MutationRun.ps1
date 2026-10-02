@@ -61,6 +61,7 @@ if (-not (Test-Path -Path $backendModulePath)) {
     throw "Invoke-MutationRun: no backend module found for backend '$($config.backend)' at '$backendModulePath'."
 }
 Import-Module $backendModulePath -Force
+Import-Module (Join-Path $libDir 'EnvLock.psm1') -Force
 
 $pipelineParams = @{
     Config          = $config
@@ -71,7 +72,13 @@ if ($RunNo -gt 0) {
     $pipelineParams['RunNo'] = $RunNo
 }
 
-$result = Invoke-MutRunPipeline @pipelineParams
+Enter-MutEnvLock -WorkDir $config.workDir -RunNo $RunNo -Owner 'Invoke-MutationRun.ps1'
+try {
+    $result = Invoke-MutRunPipeline @pipelineParams
+}
+finally {
+    Exit-MutEnvLock -WorkDir $config.workDir
+}
 
 Write-Output "Results:  $($result.ResultsPath)"
 Write-Output "Summary:  $($result.SummaryPath)"

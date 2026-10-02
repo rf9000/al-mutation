@@ -6,6 +6,7 @@ $ErrorActionPreference = 'Stop'
 # (New-MutTestPatch). Pure file work: no environment, never writes the source folder.
 
 Import-Module (Join-Path $PSScriptRoot 'References.psm1') -Force
+Import-Module (Join-Path $PSScriptRoot 'Config.psm1')
 
 function Get-MutFixText {
     <#
@@ -326,7 +327,7 @@ function Set-MutFixActive {
         [int]$RunNo = 0
     )
     $body = @{ activeMutantId = $MutantId }
-    if ($RunNo -gt 0) { $body['currentRunNo'] = $RunNo }
+    if ($RunNo -ne 0) { $body['currentRunNo'] = $RunNo }
     Invoke-MutApi -Env $Ctx.Env -Method 'PATCH' -Path 'mutationSetup(0)' -Body $body | Out-Null
 }
 
@@ -454,7 +455,7 @@ function Invoke-MutFixJob {
         try {
             try {
                 if ($MutantId -gt 0) {
-                    Set-MutFixActive -Ctx $Ctx -MutantId $MutantId -RunNo (9000 + $Ctx.RunNo)
+                    Set-MutFixActive -Ctx $Ctx -MutantId $MutantId -RunNo (-$Ctx.RunNo)
                 }
                 $result = Invoke-MutTests -Env $Ctx.Env -Targets @($Target) -TimeoutSec $script:FixJobTimeoutSec
             }
@@ -835,7 +836,7 @@ function Invoke-MutFixVerify {
 
     $doc = [pscustomobject][ordered]@{
         runNo               = $RunNo
-        verifyRunNo         = (9000 + $RunNo)
+        verifyRunNo         = (-$RunNo)
         updatedUtc          = (& $now)
         environmentName     = [string]$Config.environmentName
         entries             = $entries
@@ -853,7 +854,7 @@ function Invoke-MutFixVerify {
 function Export-MutFixDelivery {
     <#
         .SYNOPSIS
-        §6.8.3 step 4. Applies only the `verified` entries of results/<N>-fixes.json to
+        §6.8.3 step 4. (-Config: a config object, or a path loaded through Get-MutConfig.) Applies only the `verified` entries of results/<N>-fixes.json to
         <workDir>/fix-verify/<N>/delivery/test-app, writes results/<N>-tests.patch against
         <workDir>/test-app (New-MutTestPatch) and results/<N>-verified.md. Pure file work.
     #>
@@ -865,6 +866,10 @@ function Export-MutFixDelivery {
 
     if ([string]::IsNullOrEmpty($RepoRoot)) {
         $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
+    }
+    if ($Config -is [string]) {
+        # A config path: load it like the run does (%VAR% and relative paths resolved, §6.9.2).
+        $Config = Get-MutConfig -Path $Config
     }
     if ($null -eq $Config) {
         $cfgPath = Join-Path $RepoRoot 'mutation.config.json'
