@@ -841,5 +841,58 @@
     "acceptance": ["results/15-tests.patch applies with git apply -p1 --check on a copy of out/test-app.", "Every non-equivalent entry of run 15 has a verdict.", "Environment restored."],
     "commit": "feat(skill): mutation-fix-verify and verified test patch for run 15",
     "guardrails": ["Never write the test-app repo.", "One test job at a time."]
+  },
+  {
+    "id": "T38",
+    "title": "Headless hardening: verify run-number namespace, environment lock, worktree and external-config robustness",
+    "wave": 15,
+    "dependsOn": ["T37"],
+    "model": "sonnet",
+    "specSections": ["§6.9.2", "§6.9.3", "§6.9.5", "§6.8.2", "§7.9"],
+    "files": {
+      "create": ["orchestrator/lib/EnvLock.psm1", "orchestrator/tests/EnvLock.Tests.ps1"],
+      "modify": ["orchestrator/lib/FixVerify.psm1", "orchestrator/tests/FixVerify.Tests.ps1", "orchestrator/lib/AutCopy.psm1", "orchestrator/tests/AutCopy.Tests.ps1", "orchestrator/lib/Config.psm1", "orchestrator/tests/Config.Tests.ps1", "orchestrator/Invoke-MutationRun.ps1", "orchestrator/Invoke-MutFixVerify.ps1"],
+      "readOnly": ["docs/SPEC.md", "core-app/src"]
+    },
+    "interfaces": {
+      "consumes": ["Get-MutConfig", "Invoke-MutFixVerify", "Export-MutFixDelivery"],
+      "produces": ["Enter-MutEnvLock -WorkDir -RunNo -Owner", "Exit-MutEnvLock -WorkDir", "verifyRunNo = -N"]
+    },
+    "steps": [
+      { "n": 1, "do": "TDD: verify uses currentRunNo = -N (FixVerify.psm1 Set-MutFixActive call and verifyRunNo); Set-MutFixActive sends currentRunNo when RunNo -ne 0." },
+      { "n": 2, "do": "TDD: AutCopy robocopy excludes .git as a file (/XF .git) as well as a folder; test with a worktree-style .git file." },
+      { "n": 3, "do": "TDD: Get-MutConfig uses -LiteralPath; Export-MutFixDelivery accepts -Config as a path string (loaded through Get-MutConfig) or object; no-config fallback unchanged." },
+      { "n": 4, "do": "TDD EnvLock.psm1 per §6.9.5 (atomic CreateNew, live pid throws, dead pid or unparsable file replaced with a warning, Exit removes only own pid). Wire into Invoke-MutationRun.ps1 and Invoke-MutFixVerify.ps1 with finally." },
+      { "n": 5, "do": "Run all Pester tests.", "run": "powershell -NoProfile -Command \"Import-Module Pester -MinimumVersion 5.0 -MaximumVersion 5.99; Invoke-Pester orchestrator/tests -Output Detailed\"" },
+      { "n": 6, "do": "Commit.", "run": "git add orchestrator; git commit -m \"feat(orchestrator): headless hardening (verify run-number namespace, environment lock)\"" }
+    ],
+    "acceptance": ["All orchestrator Pester tests pass.", "No 9000 offset left in orchestrator/.", "A held lock with a live pid makes both scripts exit 1 with the holder in the message."],
+    "commit": "feat(orchestrator): headless hardening (verify run-number namespace, environment lock)",
+    "guardrails": ["No environment calls.", "No AL changes.", "Never write the AUT or test-app repo."]
+  },
+  {
+    "id": "T39",
+    "title": "Headless skill runs and README exit codes",
+    "wave": 15,
+    "dependsOn": ["T38"],
+    "model": "sonnet",
+    "specSections": ["§6.9.1", "§6.9.4", "§6.9.6", "§6.9.7"],
+    "files": {
+      "create": [],
+      "modify": [".claude/skills/mutation-fix-suggest/SKILL.md", ".claude/skills/mutation-fix-verify/SKILL.md", "README.md"],
+      "readOnly": ["docs/SPEC.md"]
+    },
+    "interfaces": {
+      "consumes": ["Enter-MutEnvLock", "Export-MutFixDelivery -Config <path>"],
+      "produces": ["HEADLESS RUN prompt contract"]
+    },
+    "steps": [
+      { "n": 1, "do": "Add a 'Headless runs' section to both skills per §6.9.6; verify skill passes the config path to Export-MutFixDelivery -Config." },
+      { "n": 2, "do": "Add 'Headless use' and 'Exit codes' sections to README per §6.9.4." },
+      { "n": 3, "do": "Commit.", "run": "git add .claude/skills README.md; git commit -m \"docs(skill): headless runs and exit codes\"" }
+    ],
+    "acceptance": ["Both skills state the HEADLESS RUN rules without weakening any hard rule.", "README lists exit codes for all four scripts."],
+    "commit": "docs(skill): headless runs and exit codes",
+    "guardrails": ["Docs only."]
   }
 ]

@@ -942,7 +942,8 @@ written to `results/<N>-verified.json`. `orchestrator/Invoke-MutFixVerify.ps1 -C
 4. **Original.** With `activeMutantId = 0`, run each remaining entry's target test function (`Invoke-MutTests`, one
    target = codeunit + function, timeout 120 s). Fail → `fails-on-original`, with the error text.
 5. **Mutants.** For each mutant id of each entry that passed step 4:
-   - PATCH `{ activeMutantId = <id>, currentRunNo = 9000 + N }`;
+   - PATCH `{ activeMutantId = <id>, currentRunNo = -N }`. Verification records its `Killed` rows under the negative
+     run number, so they can never be read as rows of a real run (real run numbers are always positive, §6.9.3);
    - run that entry's target function, timeout 120 s;
    - PATCH `activeMutantId = 0` in a `finally`.
 
@@ -986,6 +987,70 @@ Invoked as `/mutation-fix-verify <RunNo>`. Procedure the skill MUST prescribe:
    - how to apply: `git apply -p1 <patch>` in the test-app root, and the reminder that line numbers came from the
      `out/test-app` snapshot (§6.7.5).
 5. The skill never commits to, or writes into, the test-app repository.
+
+### 6.9 Headless use (external callers)
+
+**Goal.** Let a program call al-mutation with no human in the loop. The first caller is mutant-fixer
+(`C:\GeneralDev\DevOpsPullers\mutant-fixer`), which runs one targeted mutation run per matching draft pull request.
+
+#### 6.9.1 Call sequence
+Every call runs with the repository root as working directory. `<cfg>` is an absolute path, usually outside the
+repository. `<N>` is chosen by the caller.
+
+1. `powershell -NoProfile -File orchestrator/Invoke-MutationRun.ps1 -ConfigPath <cfg> -RunNo <N>`
+2. `powershell -NoProfile -File orchestrator/Export-MutFixBriefs.ps1 -ConfigPath <cfg> -RunNo <N>`
+3. An agent session runs `/mutation-fix-suggest <N>` with a headless prompt (§6.9.6).
+4. `powershell -NoProfile -File orchestrator/Test-MutFixReport.ps1 -RunNo <N>` prints `ok`.
+5. An agent session runs `/mutation-fix-verify <N>` with a headless prompt and a list of fix ids.
+6. The caller reads `results/<N>-fixes.json`, `results/<N>-fixes.md`, `results/<N>-verified.json` and
+   `results/<N>-tests.patch`.
+
+#### 6.9.2 External config and sources
+- The config file may live anywhere. Relative paths inside it still resolve against the repository root (§6.5.1), so
+  an external config should use absolute paths.
+- `aut.sourcePath`, `testApp.sourcePath` and `rulesets.sourcePath` may point into a `git worktree`. In a worktree,
+  `.git` is a file, not a folder. The AUT copy (§6.5.2) excludes `.git` both as a folder and as a file.
+- `Export-MutFixDelivery` loads a config given as a path through `Get-MutConfig`, so `%VAR%` references and relative
+  paths resolve exactly as they do for the run.
+
+#### 6.9.3 Run numbers
+- Run numbers are positive integers with no upper bound and no padding. Every file and folder name uses the plain
+  decimal number.
+- Fix verification (§6.8.2) uses `-N` as `currentRunNo`, so it cannot collide with any real run.
+- A caller that picks its own numbers must not reuse a number that already has `results/<N>.json`.
+
+#### 6.9.4 Exit codes
+| Script | 0 | 1 |
+|---|---|---|
+| `Invoke-MutationRun.ps1` | Run completed, survivors or not | Config, environment or pipeline error; aborted run (`aborted: true` is still written); environment lock held |
+| `Export-MutFixBriefs.ps1` | Briefs written | Any error |
+| `Test-MutFixReport.ps1` | Prints `ok` | Validation errors (one per line) or any other error |
+| `Invoke-MutFixVerify.ps1` | Verify completed, whatever the per-fix verdicts | Config or environment error, restore failure, environment lock held |
+
+#### 6.9.5 Environment lock (`orchestrator/lib/EnvLock.psm1`)
+`Invoke-MutationRun.ps1` and `Invoke-MutFixVerify.ps1` hold `<workDir>/.environment.lock` while they run.
+- `Enter-MutEnvLock -WorkDir <string> -RunNo <int> -Owner <string>` creates the file atomically (`FileMode.CreateNew`)
+  with `{ pid, runNo, owner, startedUtc }`.
+- When the file exists and its `pid` is a live process, it throws
+  `environment locked by <owner> run <runNo> (pid <pid>) since <startedUtc>: <path>`.
+- When the `pid` is not alive, or the file cannot be parsed, the lock is stale: it is replaced and a warning names
+  the old holder.
+- `Exit-MutEnvLock -WorkDir <string>` deletes the file only when its `pid` is the current process. Both scripts call it
+  in a `finally`.
+
+#### 6.9.6 Headless skill runs
+A prompt that contains `HEADLESS RUN` makes both skills run unattended:
+- never ask the user anything; decide and continue;
+- take the config path from the prompt (`Config file: <cfg>`) and use it for every `-ConfigPath` and `-Config`;
+- `mutation-fix-suggest` finishes only when `Test-MutFixReport.ps1` prints `ok`;
+- `mutation-fix-verify` runs step 1 of §6.8.3 with `-FixIds <the given ids>` and repairs only those ids;
+- an environment-lock error stops the skill with a report; it does not wait or retry;
+- every hard rule of §6.7.3 and §6.8 still applies.
+
+#### 6.9.7 Stable outputs
+External callers depend on the file names and fields of §7.8 and §7.9 (`results/<N>-fixes.json`,
+`results/<N>-fixes.md`, `results/<N>-verified.json`). Renaming a file or a field is a breaking change: tell the callers
+first. Optional fields may be added.
 
 ---
 
@@ -1074,7 +1139,7 @@ Validation rules are in §6.7.4.
 
 ### 7.9 `results/<RunNo>-verified.json`
 ```json
-{ "runNo": 15, "verifyRunNo": 9015, "updatedUtc": "2026-10-02T10:00:00Z", "environmentName": "mut-spike-02",
+{ "runNo": 15, "verifyRunNo": -15, "updatedUtc": "2026-10-02T10:00:00Z", "environmentName": "mut-spike-02",
   "entries": [{
     "fixId": "F033", "revision": 0, "verdict": "verified", "verifiedUtc": "2026-10-02T09:58:00Z",
     "compile": { "ok": true, "diagnostics": [] },
