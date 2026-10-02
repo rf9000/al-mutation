@@ -168,7 +168,7 @@ name and the date.
 /fixtures/coverage        sample.csv from U9                         (§6.5.5)
 /generator                TypeScript generator                       (§6.4)
 /orchestrator             PowerShell orchestrator                    (§6.5)
-   Invoke-MutationRun.ps1, Export-MutFixBriefs.ps1, Test-MutFixReport.ps1   (§6.7)
+   Invoke-MutationRun.ps1, Export-MutFixBriefs.ps1, Test-MutFixReport.ps1   (§6.7), Invoke-MutFixVerify.ps1 (§6.8)
    /lib/*.psm1
    /backends/DemoPortal.psm1, Docker.psm1
    /tests/*.Tests.ps1
@@ -178,6 +178,7 @@ name and the date.
 /out                      ignored: AUT copies, schemata, build output
 /.tools, /.continia       ignored
 /.claude/skills/mutation-fix-suggest   skill for stage 2 of §6.7
+/.claude/skills/mutation-fix-verify    skill for §6.8.3
 mutation.config.json      Tier B config                              (§6.5.1)
 mutation.fixture.config.json  Tier A config                          (§6.5.1)
 ```
@@ -879,6 +880,113 @@ of the brief and may have moved on: locate the target procedure by **name**, tre
 several `add-assert` entries in one file bottom-up. It then compiles, runs the covering test codeunit on the original
 AUT (must pass) and, when a mutation run is available, re-runs the mutant (must be `Killed`).
 
+### 6.8 Fix verification (apply, verify, repair)
+
+**Goal.** Close the loop that §6.7 opens. Apply the suggested fixes of `results/<N>-fixes.json` to a copy of the test
+app, prove each one on the environment, let an agent repair the failures, and hand the owning team a patch that holds
+only verified fixes. A fix is **verified** when three things hold:
+- the patched test app compiles;
+- the changed test passes on the unmutated AUT;
+- every mutant the entry names is killed by that test.
+
+The pilot `spikes/fix-pilot/` (2026-10-01) showed the mechanics on 8 entries of run 15: 7 verified (23 of 23 mutants
+killed), and 1 failed on the original AUT. About 10 s per test job, about 80 s per test-app publish.
+
+Rules, in addition to §4:
+- Never write the real test-app repository (`testApp.sourcePath`). All edits go to `out/fix-verify/<N>/`.
+- Strictly one test job at a time (F7).
+- `activeMutantId` is reset to `0` in a `finally` after every mutant, and confirmed `0` at the end.
+- The step always ends by republishing the unpatched `<workDir>/test-app`, so the environment is left as the mutation
+  run left it.
+- `equivalent` entries are never applied. Their verdict is `skipped-equivalent`.
+
+#### 6.8.1 Apply (`orchestrator/lib/FixVerify.psm1`, pure, no environment)
+`Invoke-MutFixApply -SourcePath <string> -DestinationPath <string> -Fixes <object[]>` → `[pscustomobject[]]`, one per
+applied entry: `{ fixId; file; insertedStartLine; insertedEndLine }` (lines in the **patched** file).
+
+1. Mirror `-SourcePath` to `-DestinationPath`, deleting anything already there, then apply in place.
+2. Group entries by `target.file`. Locate procedures by **name** with `Get-MutTestProcedureIndex` on the unpatched copy.
+   A target procedure that is not found throws `Fix <fixId>: procedure '<name>' not found in <file>`.
+3. Per file, apply all `add-assert` and `modify-test` edits **bottom-up** by their position:
+   - `add-assert` inserts the `alCode` lines after `anchor.afterLine`.
+   - `modify-test` replaces lines `StartLine..EndLine` of the target procedure.
+
+   Then append each `new-test` procedure before the codeunit's final closing `}`, preceded by one blank line, in fixId
+   order.
+4. Two `add-assert` entries with the same anchor go in fixId order. A `modify-test` and any other edit in the same
+   procedure throws `Fix <a> and <b> both change procedure '<name>'`. The caller resolves the clash, see §6.8.3.
+5. Keep each file's line ending (LF or CRLF, decided by its first line break) and its BOM presence. `alCode` is split
+   on `\n` and has any `\r` removed before insertion.
+
+`New-MutTestPatch -OriginalPath <string> -PatchedPath <string> -OutPath <string>` writes a unified diff with
+`git diff --no-index --no-color` between the two folders. Paths in the diff are relative to the test-app root:
+`a/<file>` and `b/<file>`, with no `out/...` prefix. The diff applies with `git apply -p1` in the test-app root. Exit
+code 1 from `git diff` means "differences found" and is not an error. An empty diff writes an empty file.
+
+#### 6.8.2 Verify (`Invoke-MutFixVerify`, live)
+`Invoke-MutFixVerify -Config <object> -RunNo <int> [-FixIds <string[]>] [-RepoRoot <string>]` → the §7.9 object, also
+written to `results/<N>-verified.json`. `orchestrator/Invoke-MutFixVerify.ps1 -ConfigPath <file> -RunNo <int>
+[-FixIds <csv>]` wraps it. **Use the config the mutation run used**, so the environment and the settle probe match.
+
+1. Select the entries: all entries of `fixes.json`, or only `-FixIds`. `equivalent` entries become
+   `skipped-equivalent` and drop out of the set.
+2. `Get-MutEnvironment` / `Start-MutEnvironment` as the mutant loop does. Then GET `mutationSetup(0)` and PATCH
+   `activeMutantId = 0` if it is not.
+3. **Compile and publish.** `Invoke-MutFixApply` into `out/fix-verify/<N>/test-app`, then `Publish-MutApp` with the
+   ruleset and `-AllowDowngrade`, exactly as `Publish-MutBaseline` publishes the test app.
+   - On failure, map each diagnostic (file + line) to the entry whose inserted range contains it.
+   - Mark those entries `compile-failed`, keep the diagnostic text, drop them, and apply again from scratch.
+   - At most 3 publish rounds.
+   - A diagnostic that maps to no entry is recorded under `unmappedDiagnostics`. If a round's failure maps to no entry
+     at all, every remaining entry becomes `compile-failed` with that text, and the step goes on to restore.
+4. **Original.** With `activeMutantId = 0`, run each remaining entry's target test function (`Invoke-MutTests`, one
+   target = codeunit + function, timeout 120 s). Fail → `fails-on-original`, with the error text.
+5. **Mutants.** For each mutant id of each entry that passed step 4:
+   - PATCH `{ activeMutantId = <id>, currentRunNo = 9000 + N }`;
+   - run that entry's target function, timeout 120 s;
+   - PATCH `activeMutantId = 0` in a `finally`.
+
+   The test failing = `killed` (its error is the evidence). Passing = `survived`. A client timeout = `timeout`, which
+   counts as killed, as in §7.3. The verdict comes from the test result, never from `mutantResults` rows.
+
+   Entry verdict:
+   - every mutant killed or timeout → `verified`;
+   - otherwise `not-killed`, with the per-mutant list.
+6. **Environment errors.** A 503 or an empty result during step 4 or 5: wait and retry the same job, as
+   `Wait-MutOutageRecovery` does (up to 2 retries). Still failing → `env-error` for that entry, and go on.
+7. **Restore.** Republish the unpatched `<workDir>/test-app`, then confirm `activeMutantId = 0`. A restore failure is
+   reported as a thrown error **after** `verified.json` is written.
+8. **Merge.** When `results/<N>-verified.json` already exists, entries in this run replace the same fixIds there.
+   Others stay unchanged. Each entry carries the `revision` of the fix it verified (absent = 0).
+
+#### 6.8.3 Repair and deliver (skill `mutation-fix-verify`, `.claude/skills/mutation-fix-verify/SKILL.md`)
+Invoked as `/mutation-fix-verify <RunNo>`. Procedure the skill MUST prescribe:
+
+1. Run `Invoke-MutFixVerify.ps1` on all entries.
+2. **Repair rounds (at most 2).** For each entry with verdict `compile-failed`, `fails-on-original` or `not-killed`, an
+   agent gets:
+   - the entry;
+   - its brief;
+   - the exact evidence (compile diagnostics, the test error, or the surviving mutant ids);
+   - the "Mutation runtime facts" of `mutation-fix-suggest`.
+
+   The agent rewrites the entry in `fixes.json`. It keeps the `fixId`, increments `revision`, and adds the evidence it
+   answered to the `rationale`. It may also give up: it sets the verdict to `equivalent` (with proof, as §6.7.3 asks),
+   or leaves the entry and says why. Then run `Test-MutFixReport.ps1` until `ok`, and `Invoke-MutFixVerify.ps1
+   -FixIds <the repaired ids>`. `env-error` entries are simply re-run, not rewritten.
+3. **Combined check.** Run `Invoke-MutFixVerify.ps1 -FixIds <all verified ids>` once more on the whole verified set.
+   This catches clashes between entries that were verified apart. An entry that fails here goes back into the repair
+   loop if rounds are left; otherwise it is marked by this run's verdict.
+4. **Deliver.** `Export-MutFixDelivery -RunNo <N>` applies only the `verified` entries to
+   `out/fix-verify/<N>/delivery/test-app`, writes `results/<N>-tests.patch` with `New-MutTestPatch` against `out/test-app`,
+   and writes `results/<N>-verified.md`. The markdown has:
+   - counts per verdict;
+   - one line per entry: fixId, mutants killed out of total, revision;
+   - every failure with its evidence;
+   - how to apply: `git apply -p1 <patch>` in the test-app root, and the reminder that line numbers came from the
+     `out/test-app` snapshot (§6.7.5).
+5. The skill never commits to, or writes into, the test-app repository.
+
 ---
 
 ## 7. Data schemas
@@ -963,6 +1071,27 @@ Field rules are in §6.7.2. `survivors` is sorted by `mutantId`. `context` is `n
 | `confidence` | `high` \| `medium` \| `low` |
 
 Validation rules are in §6.7.4.
+
+### 7.9 `results/<RunNo>-verified.json`
+```json
+{ "runNo": 15, "verifyRunNo": 9015, "updatedUtc": "2026-10-02T10:00:00Z", "environmentName": "mut-spike-02",
+  "entries": [{
+    "fixId": "F033", "revision": 0, "verdict": "verified", "verifiedUtc": "2026-10-02T09:58:00Z",
+    "compile": { "ok": true, "diagnostics": [] },
+    "original": { "result": "Pass", "error": null, "durationMs": 9800 },
+    "mutants": [{ "mutantId": 271, "outcome": "killed", "error": "Assert.AreEqual failed. Expected:<Other Bank A> Actual:<OTHERBANKA>", "durationMs": 10100 }] }],
+  "unmappedDiagnostics": [] }
+```
+| Field | Values |
+|---|---|
+| `verdict` | `verified` \| `compile-failed` \| `fails-on-original` \| `not-killed` \| `env-error` \| `skipped-equivalent` |
+| `original.result` | `Pass` \| `Fail` \| `null` (not reached) |
+| `mutants[].outcome` | `killed` \| `survived` \| `timeout` \| `not-run` |
+
+`entries` is sorted by `fixId`. Fields of a stage that was not reached are `null` (`original`) or `[]` (`mutants`).
+
+`results/<RunNo>-fixes.json` (§7.8) gains one optional field: `revision` (integer, default 0). Only §6.8.3 increments
+it. `Test-MutFixReport` ignores it.
 
 ---
 

@@ -742,5 +742,104 @@
     "acceptance": ["Validator prints ok for run 15.", "All 146 survivors are mapped.", "No file outside results/ and .claude/skills/mutation-fix-suggest/ is changed."],
     "commit": "feat(skill): mutation-fix-suggest and first fix report for run 15",
     "guardrails": ["Never edit the AUT or test-app sources, including out/ copies.", "No environment calls."]
+  },
+  {
+    "id": "T34",
+    "title": "Spec: fix verification (§6.8) and config probe alignment",
+    "wave": 12,
+    "dependsOn": ["T33"],
+    "model": "controller",
+    "specSections": ["§6.8", "§7.9"],
+    "files": { "create": [], "modify": ["docs/SPEC.md", "docs/tasks.json", "docs/issues.md", "mutation.config.json"], "readOnly": [] },
+    "interfaces": { "consumes": [], "produces": ["§6.8, §7.9, tasks T35–T37", "mutation.config.json settleProbe on 95155 (as mutation.u2.config.json)"] },
+    "steps": [
+      { "n": 1, "do": "Write §6.8 and §7.9; add T35–T37; point mutation.config.json demoPortal.settleProbe at 95155 / UpdatePlaceholderRows_EmptyInputs_BecomesNoMatchingAccounts (codeunit 50400 is not installed on mut-spike-02; the pilot's cold start failed its probe); log the F022 permission finding in docs/issues.md.", "run": "git add docs mutation.config.json; git commit -m \"docs(spec): add fix verification (§6.8)\"" }
+    ],
+    "acceptance": ["tasks.json parses.", "§6.8 names every function, file and verdict the later tasks build."],
+    "commit": "docs(spec): add fix verification (§6.8)",
+    "guardrails": []
+  },
+  {
+    "id": "T35",
+    "title": "Orchestrator: apply fixes to a test-app copy and build the patch (pure)",
+    "wave": 12,
+    "dependsOn": ["T34"],
+    "model": "sonnet",
+    "specSections": ["§6.8 intro", "§6.8.1", "§7.8", "§9.3"],
+    "files": {
+      "create": ["orchestrator/lib/FixVerify.psm1", "orchestrator/tests/FixVerify.Tests.ps1"],
+      "modify": [],
+      "readOnly": ["spikes/fix-pilot/Invoke-FixPilot.ps1", "orchestrator/lib/References.psm1", "out/"]
+    },
+    "interfaces": {
+      "consumes": ["Get-MutTestProcedureIndex (References.psm1)"],
+      "produces": [
+        "Invoke-MutFixApply -SourcePath -DestinationPath -Fixes -> [{fixId; file; insertedStartLine; insertedEndLine}]",
+        "New-MutTestPatch -OriginalPath -PatchedPath -OutPath"
+      ]
+    },
+    "steps": [
+      { "n": 1, "do": "Read the pilot's Invoke-ApplyEntries (spikes/fix-pilot/Invoke-FixPilot.ps1 ~157) for what worked live; port its behaviour, not its code shape." },
+      { "n": 2, "do": "Failing Pester tests in $TestDrive with small .al files: add-assert after an anchor; modify-test replacing a procedure incl. its attribute lines; two new-tests appended before the final } in fixId order with a blank line each; mixed add-assert + new-test in one file applied bottom-up (expected file text written by hand); two add-asserts on the same anchor in fixId order; modify-test + add-assert in the same procedure throws; unknown procedure throws; CRLF file stays CRLF, LF stays LF, BOM kept / not added; alCode with \\r\\n is normalised; inserted ranges returned are correct in the patched file; destination is wiped before copying." },
+      { "n": 3, "do": "Implement Invoke-MutFixApply; green.", "run": "powershell -NoProfile -Command \"Invoke-Pester orchestrator/tests/FixVerify.Tests.ps1 -Output Detailed\"", "expect": "0 failed" },
+      { "n": 4, "do": "Failing test then implementation for New-MutTestPatch: paths in the diff are a/<file> b/<file> relative to the test-app root, the patch applies with `git apply -p1 --check` inside a copy of the original folder, empty diff writes an empty file, exit code 1 of git diff is not an error." },
+      { "n": 5, "do": "Smoke on real data, read-only: apply F033 and F041 from results/15-fixes.json from out/test-app into $env:TEMP, build the patch, print it. Do not write under out/ or the test-app repo." },
+      { "n": 6, "do": "Full suite and commit.", "run": "powershell -NoProfile -Command \"Invoke-Pester orchestrator/tests -Output Detailed\"; git add orchestrator/lib/FixVerify.psm1 orchestrator/tests/FixVerify.Tests.ps1; git commit -m \"feat(orchestrator): apply suggested fixes to a test-app copy and build a patch\"", "expect": "0 failed" }
+    ],
+    "acceptance": ["Every §6.8.1 rule has a test.", "The smoke patch applies cleanly with git apply --check."],
+    "commit": "feat(orchestrator): apply suggested fixes to a test-app copy and build a patch",
+    "guardrails": ["No environment calls.", "Never write under out/test-app or the test-app repo."]
+  },
+  {
+    "id": "T36",
+    "title": "Orchestrator: live fix verification (Invoke-MutFixVerify)",
+    "wave": 13,
+    "dependsOn": ["T35"],
+    "model": "sonnet",
+    "specSections": ["§6.8 intro", "§6.8.2", "§7.9", "§6.5.6", "§9.1", "§9.3"],
+    "files": {
+      "create": ["orchestrator/Invoke-MutFixVerify.ps1"],
+      "modify": ["orchestrator/lib/FixVerify.psm1", "orchestrator/tests/FixVerify.Tests.ps1"],
+      "readOnly": ["spikes/fix-pilot/Invoke-FixPilot.ps1", "orchestrator/backends/DemoPortal.psm1", "orchestrator/lib/MutantLoop.psm1", "orchestrator/lib/Run.psm1"]
+    },
+    "interfaces": {
+      "consumes": ["Invoke-MutFixApply", "Get-MutEnvironment, Start-MutEnvironment, Publish-MutApp, Invoke-MutTests, Invoke-MutApi (backend)", "Publish-MutBaseline's test-app publish arguments (Run.psm1)"],
+      "produces": ["Invoke-MutFixVerify -Config -RunNo [-FixIds] [-RepoRoot] -> §7.9 object + results/<N>-verified.json", "orchestrator/Invoke-MutFixVerify.ps1 -ConfigPath -RunNo [-FixIds]"]
+    },
+    "steps": [
+      { "n": 1, "do": "Failing Pester tests with the backend mocked (Mock -ModuleName FixVerify on Publish-MutApp, Invoke-MutTests, Invoke-MutApi, Get-MutEnvironment, Start-MutEnvironment): equivalent -> skipped-equivalent and never applied; compile failure mapped to one entry -> that entry compile-failed, the others republished and verified; unmapped compile failure -> all remaining compile-failed; fail on original -> fails-on-original and its mutants not run; mixed kill/survive -> not-killed with per-mutant outcomes; timeout counts as killed; PATCH activeMutantId 0 happens after every mutant even when Invoke-MutTests throws; restore republishes <workDir>/test-app last; -FixIds merges into an existing verified.json and keeps other entries; revision copied from the fix." },
+      { "n": 2, "do": "Implement Invoke-MutFixVerify (port the pilot's live behaviour: environment start, outage retry, sequential jobs) and the .ps1 wrapper; green; full suite green." },
+      { "n": 3, "do": "Live check on mut-spike-02 with the config run 15 used (mutation.u2.config.json): three entries, one that should verify and two known cases.", "run": "powershell -NoProfile -File orchestrator/Invoke-MutFixVerify.ps1 -ConfigPath mutation.u2.config.json -RunNo 15 -FixIds F033,F022,F041", "expect": "F033 and F041 verified, F022 fails-on-original with the CTS-CB Bank Information permission error; environment restored, activeMutantId 0" },
+      { "n": 4, "do": "Commit (not out/; results/15-verified.json may be committed).", "run": "git add orchestrator results/15-verified.json; git commit -m \"feat(orchestrator): verify suggested fixes on the environment\"" }
+    ],
+    "acceptance": ["All Pester tests pass.", "Live check matches the expectation.", "Environment left with the unpatched test app and activeMutantId 0."],
+    "commit": "feat(orchestrator): verify suggested fixes on the environment",
+    "guardrails": ["Only the environment named in the config; one test job at a time.", "Never write the test-app repo."]
+  },
+  {
+    "id": "T37",
+    "title": "Skill mutation-fix-verify (repair loop, combined check, delivery) and full run on run 15",
+    "wave": 14,
+    "dependsOn": ["T36"],
+    "model": "sonnet",
+    "specSections": ["§6.8.3", "§6.7.3", "§7.9"],
+    "files": {
+      "create": [".claude/skills/mutation-fix-verify/SKILL.md", "results/15-verified.md", "results/15-tests.patch"],
+      "modify": ["orchestrator/lib/FixVerify.psm1", "orchestrator/tests/FixVerify.Tests.ps1", "results/15-fixes.json", "results/15-fixes.md", "results/15-verified.json"],
+      "readOnly": ["out/test-app"]
+    },
+    "interfaces": {
+      "consumes": ["Invoke-MutFixVerify.ps1", "Test-MutFixReport.ps1", "skill mutation-fix-suggest (runtime facts)"],
+      "produces": ["Export-MutFixDelivery -RunNo [-RepoRoot]", "/mutation-fix-verify <RunNo>", "results/15-tests.patch, results/15-verified.md"]
+    },
+    "steps": [
+      { "n": 1, "do": "TDD Export-MutFixDelivery (only verified entries applied, patch written with New-MutTestPatch, verified.md sections per §6.8.3 step 4)." },
+      { "n": 2, "do": "Write SKILL.md per §6.8.3: self-contained, the repair-agent prompt template (entry + brief + evidence + runtime facts), max 2 rounds, combined check, delivery, hard rules." },
+      { "n": 3, "do": "Full run on run 15 following the skill (about 40 min of environment time plus repairs). Repairs are done by subagents, one per failed entry." },
+      { "n": 4, "do": "Commit.", "run": "git add .claude/skills/mutation-fix-verify orchestrator results/15-*; git commit -m \"feat(skill): mutation-fix-verify and verified test patch for run 15\"" }
+    ],
+    "acceptance": ["results/15-tests.patch applies with git apply -p1 --check on a copy of out/test-app.", "Every non-equivalent entry of run 15 has a verdict.", "Environment restored."],
+    "commit": "feat(skill): mutation-fix-verify and verified test patch for run 15",
+    "guardrails": ["Never write the test-app repo.", "One test job at a time."]
   }
 ]
