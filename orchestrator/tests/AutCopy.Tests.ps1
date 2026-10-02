@@ -85,6 +85,21 @@ Describe 'Sync-MutAutCopy' {
         Test-Path -LiteralPath (Join-Path $result.AutPath 'Foo.Codeunit.al') | Should -Be $true
     }
 
+    It 'removes a stale .git file already present in the destination' {
+        $wtSource = "$TestDrive/src/aut-worktree2"
+        New-Item -ItemType Directory -Path $wtSource -Force | Out-Null
+        Set-Content -Path (Join-Path $wtSource 'Foo.Codeunit.al') -Value 'codeunit 1 "Foo" { }'
+        $dest = Join-Path $script:workDir 'aut-original'
+        New-Item -ItemType Directory -Path $dest -Force | Out-Null
+        Set-Content -Path (Join-Path $dest '.git') -Value 'gitdir: C:/stale'
+        $config = New-MutTestConfig -WorkDir $script:workDir -AutSource $wtSource -TestAppSource $script:testAppSource
+
+        $result = Sync-MutAutCopy -Config $config
+
+        Test-Path -LiteralPath (Join-Path $result.AutPath '.git') | Should -Be $false
+        Test-Path -LiteralPath (Join-Path $result.AutPath 'Foo.Codeunit.al') | Should -Be $true
+    }
+
     It 'is idempotent: a second run re-mirrors cleanly and reflects source changes made between runs' {
         $config = New-MutTestConfig -WorkDir $script:workDir -AutSource $script:autSource -TestAppSource $script:testAppSource
 

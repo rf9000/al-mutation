@@ -44,6 +44,13 @@ function Invoke-MutRobocopyMirror {
         throw "Sync-MutAutCopy: robocopy failed mirroring '$Source' -> '$Destination' with exit code $code (codes 0-7 are success, 8+ is failure)."
     }
 
+    # /XF .git excludes a git worktree's .git file from copying but does not purge one that
+    # already exists at the destination (stale from an earlier mirror).
+    $destGit = Join-Path $Destination '.git'
+    if (Test-Path -LiteralPath $destGit -PathType Leaf) {
+        Remove-Item -LiteralPath $destGit -Force
+    }
+
     return $Destination
 }
 
