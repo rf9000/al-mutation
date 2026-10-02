@@ -1028,15 +1028,22 @@ repository. `<N>` is chosen by the caller.
 | `Invoke-MutFixVerify.ps1` | Verify completed, whatever the per-fix verdicts | Config or environment error, restore failure, environment lock held |
 
 #### 6.9.5 Environment lock (`orchestrator/lib/EnvLock.psm1`)
-`Invoke-MutationRun.ps1` and `Invoke-MutFixVerify.ps1` hold `<workDir>/.environment.lock` while they run.
-- `Enter-MutEnvLock -WorkDir <string> -RunNo <int> -Owner <string>` creates the file atomically (`FileMode.CreateNew`)
-  with `{ pid, runNo, owner, startedUtc }`.
-- When the file exists and its `pid` is a live process, it throws
-  `environment locked by <owner> run <runNo> (pid <pid>) since <startedUtc>: <path>`.
-- When the `pid` is not alive, or the file cannot be parsed, the lock is stale: it is replaced and a warning names
-  the old holder.
-- `Exit-MutEnvLock -WorkDir <string>` deletes the file only when its `pid` is the current process. Both scripts call it
-  in a `finally`.
+`Invoke-MutationRun.ps1` and `Invoke-MutFixVerify.ps1` hold `<workDir>/.environment.lock` while they run. Every
+config that targets one environment must use the same `workDir`; the lock does not protect two work directories.
+- The lock is an **open file handle**, not a pid check. `Enter-MutEnvLock -WorkDir <string> -RunNo <int> -Owner
+  <string>` creates the file with `FileMode.CreateNew`, `FileShare.Read` and `FileOptions.DeleteOnClose`, writes
+  `{ pid, runNo, owner, startedUtc }`, flushes, and keeps the stream open in module scope. When the process ends for any
+  reason, Windows closes the handle and deletes the file. A reused pid can therefore never hold a lock.
+- When the file exists, it tries to open it exclusively (`FileShare.None`). That fails while a holder has it open:
+  read the content (open for read with `FileShare.ReadWrite, Delete`) and throw
+  `environment locked by <owner> run <runNo> (pid <pid>) since <startedUtc>: <path>`. Unreadable content gives
+  `environment locked by unknown holder: <path>`.
+- When the exclusive open succeeds, nobody holds the file: it is a stale leftover (crash before close, or older code).
+  Delete it through that exclusive handle (`DeleteOnClose`), warn naming the old holder, and create the lock again with
+  `CreateNew`. A loser of that race gets the "locked" error, never a double hold.
+- `Exit-MutEnvLock -WorkDir <string>` closes the module's stream for that path, which deletes the file. No error when
+  this process holds no lock. Both scripts call it in a `finally`.
+- `runNo` is the `-RunNo` given; `0` means "auto-numbered".
 
 #### 6.9.6 Headless skill runs
 A prompt that contains `HEADLESS RUN` makes both skills run unattended:
