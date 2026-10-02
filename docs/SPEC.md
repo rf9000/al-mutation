@@ -1056,7 +1056,10 @@ A prompt that contains `HEADLESS RUN` makes both skills run unattended:
 
 #### 6.9.7 Stable outputs
 External callers depend on the file names and fields of §7.8 and §7.9 (`results/<N>-fixes.json`,
-`results/<N>-fixes.md`, `results/<N>-verified.json`). Renaming a file or a field is a breaking change: tell the callers
+`results/<N>-fixes.md`, `results/<N>-verified.json`, `results/<N>-tests.patch`). Paths in `results/<N>-tests.patch`
+are relative to the test-app root (`testApp.sourcePath`), as `a/<file>` and `b/<file>`: apply it with
+`git apply -p1 results/<N>-tests.patch` run in the test-app root, or with `git apply -p1 --directory=<test-app folder>`
+from the repository root that contains the test app (§6.8.1). Renaming a file or a field is a breaking change: tell the callers
 first. Optional fields may be added.
 
 ---

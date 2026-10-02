@@ -67,6 +67,10 @@ replaced with a warning. Every config for one environment must use the same `wor
 `Invoke-MutFixVerify.ps1` writes its rows under run number `-N`, so it cannot collide with a real run. Run numbers are
 any positive integer.
 
+`results/<N>-tests.patch` holds paths relative to the test-app root (`a/<file>`, `b/<file>`). Apply it with
+`git apply -p1 <patch>` in the test-app folder, or with `git apply -p1 --directory=<test-app folder> <patch>` from the
+root of the repository that contains it.
+
 ### Exit codes
 
 | Script | 0 | 1 |
