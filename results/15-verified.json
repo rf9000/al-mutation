@@ -1,0 +1,81 @@
+{
+    "runNo":  15,
+    "verifyRunNo":  9015,
+    "updatedUtc":  "2026-10-02T08:03:54Z",
+    "environmentName":  "mut-spike-02",
+    "entries":  [
+                    {
+                        "fixId":  "F022",
+                        "revision":  0,
+                        "verdict":  "fails-on-original",
+                        "verifiedUtc":  "2026-10-02T08:02:40Z",
+                        "compile":  {
+                                        "ok":  true,
+                                        "diagnostics":  [
+
+                                                        ]
+                                    },
+                        "original":  {
+                                         "result":  "Fail",
+                                         "error":  "Sorry, the current permissions prevented the action. (TableData 71553585 CTS-CB Bank Information Bank Information Insert: Continia Banking)",
+                                         "durationMs":  50157
+                                     },
+                        "mutants":  [
+
+                                    ]
+                    },
+                    {
+                        "fixId":  "F033",
+                        "revision":  0,
+                        "verdict":  "verified",
+                        "verifiedUtc":  "2026-10-02T08:03:14Z",
+                        "compile":  {
+                                        "ok":  true,
+                                        "diagnostics":  [
+
+                                                        ]
+                                    },
+                        "original":  {
+                                         "result":  "Pass",
+                                         "error":  null,
+                                         "durationMs":  40
+                                     },
+                        "mutants":  [
+                                        {
+                                            "mutantId":  271,
+                                            "outcome":  "killed",
+                                            "error":  "Assert.AreEqual failed. Expected:\u003cOther Bank A\u003e (Text). Actual:\u003cOTHERBANKA\u003e (Text). Target Bank Name must be the resolved bank name.",
+                                            "durationMs":  27
+                                        }
+                                    ]
+                    },
+                    {
+                        "fixId":  "F041",
+                        "revision":  0,
+                        "verdict":  "verified",
+                        "verifiedUtc":  "2026-10-02T08:03:24Z",
+                        "compile":  {
+                                        "ok":  true,
+                                        "diagnostics":  [
+
+                                                        ]
+                                    },
+                        "original":  {
+                                         "result":  "Pass",
+                                         "error":  null,
+                                         "durationMs":  3400
+                                     },
+                        "mutants":  [
+                                        {
+                                            "mutantId":  1883,
+                                            "outcome":  "killed",
+                                            "error":  "Assert.AreEqual failed. Expected:\u003c1\u003e (Integer). Actual:\u003c0\u003e (Integer). An unknown payment method should be mapped with the setup transaction type.",
+                                            "durationMs":  70
+                                        }
+                                    ]
+                    }
+                ],
+    "unmappedDiagnostics":  [
+
+                            ]
+}
