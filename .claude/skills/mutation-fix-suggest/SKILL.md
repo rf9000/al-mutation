@@ -19,6 +19,17 @@ schema), §7.8 (report schema). This skill is the working summary.
 - The only files you write are `results/<N>-fixes.json`, `results/<N>-fixes.md` (by the validator) and scratch part files
   outside the repo (use the session scratchpad).
 
+## Headless runs
+
+If the prompt contains `HEADLESS RUN`, nobody is watching. Run unattended (SPEC §6.9.6):
+
+- Never ask the user anything. Decide and continue.
+- Take the config path from the prompt line `Config file: <cfg>`. Use it for every `-ConfigPath`.
+- Finish only when `powershell -NoProfile -File orchestrator/Test-MutFixReport.ps1 -RunNo <N>` prints `ok`.
+- Every hard rule above still applies.
+
+Without `HEADLESS RUN`, if you need a config file and none is given, ask the user which one.
+
 ## Prerequisite
 
 If `results/<N>-fix-briefs.json` is missing, create it (works on any past run, no environment needed):

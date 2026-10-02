@@ -22,14 +22,31 @@ the entry names is killed by that test. Full rules: `docs/SPEC.md` §6.8 (proced
 - `equivalent` entries are never applied (verdict `skipped-equivalent`).
 - Repair agents edit only their own entry in `fixes.json`. Never use more than 2 repair rounds.
 
+## Headless runs
+
+If the prompt contains `HEADLESS RUN`, nobody is watching. Run unattended (SPEC §6.9.6):
+
+- Never ask the user anything. Decide and continue.
+- Take the config path from the prompt line `Config file: <cfg>`. Use it for every `-ConfigPath` and for
+  `Export-MutFixDelivery -Config <cfg>`.
+- The prompt gives the fix ids. Run Step 1 with `-FixIds <the given ids>` instead of all entries. Do the repair rounds
+  and the combined check for those ids only. Then deliver.
+- If a script fails with `environment locked by ...`, stop and write a short report. Do not wait and do not retry.
+- Every hard rule above still applies: one environment job at a time, never write `testApp.sourcePath` or
+  `out/test-app`, equivalent entries are never applied, repair agents edit only their own entry, at most 2 repair rounds.
+
+Without `HEADLESS RUN`, if the config file is not given, ask the user which one.
+
 ## Prerequisites
 
 1. `results/<N>-fixes.json` exists and `powershell -NoProfile -File orchestrator/Test-MutFixReport.ps1 -RunNo <N>`
    prints `ok`.
 2. `results/<N>-fix-briefs.json` exists (else `orchestrator/Export-MutFixBriefs.ps1 -ConfigPath <config> -RunNo <N>`).
-3. You know the config file of the run (`<config>` below).
+3. You know the config file of the run (`<config>` below). If it is not given, ask the user which one (headless: see above).
 
 ## Step 1: full verify
+
+Headless: add `-FixIds <the given ids>` to this command.
 
 ```
 powershell -NoProfile -File orchestrator/Invoke-MutFixVerify.ps1 -ConfigPath <config> -RunNo <N>
@@ -101,7 +118,7 @@ failed only in combination). Otherwise its new verdict stands and it leaves the 
 ## Step 4: deliver
 
 ```
-powershell -NoProfile -Command "Import-Module orchestrator/lib/FixVerify.psm1 -Force; Export-MutFixDelivery -RunNo <N> -Config (Get-Content <config> -Raw | ConvertFrom-Json)"
+powershell -NoProfile -Command "Import-Module orchestrator/lib/FixVerify.psm1 -Force; Export-MutFixDelivery -RunNo <N> -Config '<config>'"
 ```
 
 This applies only the `verified` entries to `<workDir>/fix-verify/<N>/delivery/test-app`, writes

@@ -48,3 +48,29 @@ codeunit 95155, which does not exist until the AUT is deployed — see `docs/iss
 | npm | 11.10 |
 | PowerShell | Windows PowerShell 5.1 |
 | Pester | 5.9.1 (installed per user with `-MaximumVersion 5.99`; import with `Import-Module Pester -MinimumVersion 5.0 -MaximumVersion 5.99`; the preinstalled 3.4.0 is too old) |
+
+## Headless use
+
+Another program can call al-mutation with no human in the loop. The call sequence is in
+[`docs/SPEC.md`](docs/SPEC.md) §6.9.1. Every call runs with the repository root as working directory, and the config
+file may live anywhere.
+
+The two skills run unattended when the prompt contains `HEADLESS RUN`. The prompt must also contain the line
+`Config file: <cfg>`. `mutation-fix-verify` also gets the fix ids to verify. The skills never ask questions in this
+mode (SPEC §6.9.6).
+
+`Invoke-MutationRun.ps1` and `Invoke-MutFixVerify.ps1` hold the lock file `<workDir>/.environment.lock` while they
+run. A second script on the same work directory fails with `environment locked by ...`. A lock left by a dead process
+is replaced with a warning.
+
+`Invoke-MutFixVerify.ps1` writes its rows under run number `-N`, so it cannot collide with a real run. Run numbers are
+any positive integer.
+
+### Exit codes
+
+| Script | 0 | 1 |
+|---|---|---|
+| `Invoke-MutationRun.ps1` | Run completed, with or without survivors | Config, environment or pipeline error; aborted run; lock held |
+| `Export-MutFixBriefs.ps1` | Briefs written | Any error |
+| `Test-MutFixReport.ps1` | Prints `ok` | Validation errors or any other error |
+| `Invoke-MutFixVerify.ps1` | Verify completed, whatever the verdicts | Config or environment error; restore failure; lock held |
