@@ -800,3 +800,103 @@ Describe 'Invoke-MutFixVerify' {
         $global:FvLog | Should -Contain 'ACT:20:9015'
     }
 }
+
+Describe 'Export-MutFixDelivery' {
+    BeforeEach {
+        $id = [guid]::NewGuid().ToString('N')
+        $script:Repo = Join-Path $TestDrive "repo$id"
+        $script:Work = Join-Path $TestDrive "work$id"
+        New-Item -ItemType Directory -Force -Path (Join-Path $script:Repo 'results') | Out-Null
+        Write-FvFile -Path (Join-Path $script:Work 'test-app\Sub\T.Codeunit.al') -Lines $script:BaseLines
+        $script:Cfg = [pscustomobject]@{ workDir = $script:Work }
+
+        $f1 = New-FvFix -Id 'F001' -Procedure 'A' -After 8 -Code '        Assert.AreEqual(1, X, ''one'');'
+        $f2 = New-FvFix -Id 'F002' -Procedure 'B' -After 14 -Code '        Assert.AreEqual(2, Y, ''two'');'
+        $f3 = New-FvFix -Id 'F003' -Procedure 'A' -Change 'new-test' -Code "    [Test]`n    procedure A_New()`n    begin`n    end;"
+        $f4 = New-FvFix -Id 'F004' -Procedure 'B' -After 14 -Code '        Foo;'
+        $f1 | Add-Member -NotePropertyName revision -NotePropertyValue 1
+        $fixes = [pscustomobject]@{ runNo = 7; generatedUtc = '2026-10-01T00:00:00Z'; fixes = @($f1, $f2, $f3, $f4) }
+        $fixes | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath (Join-Path $script:Repo 'results\7-fixes.json') -Encoding UTF8
+
+        $ok = [ordered]@{ ok = $true; diagnostics = @() }
+        $verified = [ordered]@{
+            runNo = 7; verifyRunNo = 9007; updatedUtc = '2026-10-02T10:00:00Z'; environmentName = 'mut-x'
+            entries = @(
+                [ordered]@{ fixId = 'F001'; revision = 1; verdict = 'verified'; verifiedUtc = '2026-10-02T09:58:00Z'; compile = $ok
+                    original = [ordered]@{ result = 'Pass'; error = $null; durationMs = 1 }
+                    mutants = @([ordered]@{ mutantId = 5; outcome = 'killed'; error = 'x'; durationMs = 1 }, [ordered]@{ mutantId = 6; outcome = 'timeout'; error = $null; durationMs = 1 }) },
+                [ordered]@{ fixId = 'F002'; revision = 0; verdict = 'fails-on-original'; verifiedUtc = '2026-10-02T09:58:00Z'; compile = $ok
+                    original = [ordered]@{ result = 'Fail'; error = 'permission prevented the action'; durationMs = 1 }; mutants = @() },
+                [ordered]@{ fixId = 'F003'; revision = 0; verdict = 'verified'; verifiedUtc = '2026-10-02T09:58:00Z'; compile = $ok
+                    original = [ordered]@{ result = 'Pass'; error = $null; durationMs = 1 }
+                    mutants = @([ordered]@{ mutantId = 9; outcome = 'killed'; error = 'x'; durationMs = 1 }) },
+                [ordered]@{ fixId = 'F004'; revision = 0; verdict = 'not-killed'; verifiedUtc = '2026-10-02T09:58:00Z'; compile = $ok
+                    original = [ordered]@{ result = 'Pass'; error = $null; durationMs = 1 }
+                    mutants = @([ordered]@{ mutantId = 11; outcome = 'survived'; error = $null; durationMs = 1 }, [ordered]@{ mutantId = 12; outcome = 'killed'; error = 'x'; durationMs = 1 }) }
+            )
+            unmappedDiagnostics = @()
+        }
+        $verified | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath (Join-Path $script:Repo 'results\7-verified.json') -Encoding UTF8
+    }
+
+    It 'applies only verified entries and writes the patch' {
+        Export-MutFixDelivery -RunNo 7 -RepoRoot $script:Repo -Config $script:Cfg
+        $delivered = [System.IO.File]::ReadAllText((Join-Path $script:Work 'fix-verify\7\delivery\test-app\Sub\T.Codeunit.al'))
+        $delivered | Should -Match "Assert.AreEqual\(1, X"
+        $delivered | Should -Match 'procedure A_New'
+        $delivered | Should -Not -Match "Assert.AreEqual\(2, Y"
+        $delivered | Should -Not -Match 'Foo;'
+        $patch = [System.IO.File]::ReadAllText((Join-Path $script:Repo 'results\7-tests.patch'))
+        $patch | Should -Match 'diff --git a/Sub/T.Codeunit.al b/Sub/T.Codeunit.al'
+        $patch | Should -Match '\+        Assert.AreEqual\(1, X'
+        $patch | Should -Not -Match 'Assert.AreEqual\(2, Y'
+    }
+
+    It 'does not touch the source test app' {
+        $before = [System.IO.File]::ReadAllText((Join-Path $script:Work 'test-app\Sub\T.Codeunit.al'))
+        Export-MutFixDelivery -RunNo 7 -RepoRoot $script:Repo -Config $script:Cfg
+        [System.IO.File]::ReadAllText((Join-Path $script:Work 'test-app\Sub\T.Codeunit.al')) | Should -Be $before
+    }
+
+    It 'writes verified.md with counts, entry lines, evidence and apply instructions' {
+        Export-MutFixDelivery -RunNo 7 -RepoRoot $script:Repo -Config $script:Cfg
+        $md = [System.IO.File]::ReadAllText((Join-Path $script:Repo 'results\7-verified.md'))
+        $md | Should -Match '(?m)^- verified: 2'
+        $md | Should -Match '(?m)^- fails-on-original: 1'
+        $md | Should -Match '(?m)^- not-killed: 1'
+        $md | Should -Match 'F001.*verified.*2/2.*revision 1'
+        $md | Should -Match 'F004.*not-killed.*1/2.*revision 0'
+        $md | Should -Match 'permission prevented the action'
+        $md | Should -Match 'survived: 11'
+        $md | Should -Match 'Applying the patch'
+        $md | Should -Match 'git apply -p1'
+        $md | Should -Match 'out/test-app'
+        $md | Should -Match 're-run'
+    }
+
+    It 'lists compile diagnostics as evidence' {
+        $p = Join-Path $script:Repo 'results\7-verified.json'
+        $v = ConvertFrom-Json -InputObject (Get-Content -LiteralPath $p -Raw)
+        $e = @($v.entries)[1]
+        $e.verdict = 'compile-failed'
+        $e.compile = [pscustomobject]@{ ok = $false; diagnostics = @('T.Codeunit.al(12,5): AL0118 The name ''Zed'' does not exist') }
+        $v | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $p -Encoding UTF8
+        Export-MutFixDelivery -RunNo 7 -RepoRoot $script:Repo -Config $script:Cfg
+        $md = [System.IO.File]::ReadAllText((Join-Path $script:Repo 'results\7-verified.md'))
+        $md | Should -Match "AL0118 The name 'Zed' does not exist"
+    }
+
+    It 'writes an empty patch when nothing is verified' {
+        $p = Join-Path $script:Repo 'results\7-verified.json'
+        $v = ConvertFrom-Json -InputObject (Get-Content -LiteralPath $p -Raw)
+        foreach ($e in @($v.entries)) { if ($e.verdict -eq 'verified') { $e.verdict = 'not-killed' } }
+        $v | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $p -Encoding UTF8
+        Export-MutFixDelivery -RunNo 7 -RepoRoot $script:Repo -Config $script:Cfg
+        (Get-Item (Join-Path $script:Repo 'results\7-tests.patch')).Length | Should -Be 0
+    }
+
+    It 'throws when verified.json is missing' {
+        Remove-Item (Join-Path $script:Repo 'results\7-verified.json')
+        { Export-MutFixDelivery -RunNo 7 -RepoRoot $script:Repo -Config $script:Cfg } | Should -Throw '*7-verified.json*'
+    }
+}

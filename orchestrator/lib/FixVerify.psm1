@@ -850,4 +850,107 @@ function Invoke-MutFixVerify {
     return $doc
 }
 
-Export-ModuleMember -Function Invoke-MutFixApply, New-MutTestPatch, Invoke-MutFixVerify
+function Export-MutFixDelivery {
+    <#
+        .SYNOPSIS
+        §6.8.3 step 4. Applies only the `verified` entries of results/<N>-fixes.json to
+        <workDir>/fix-verify/<N>/delivery/test-app, writes results/<N>-tests.patch against
+        <workDir>/test-app (New-MutTestPatch) and results/<N>-verified.md. Pure file work.
+    #>
+    param(
+        [Parameter(Mandatory = $true)][int]$RunNo,
+        [string]$RepoRoot,
+        $Config
+    )
+
+    if ([string]::IsNullOrEmpty($RepoRoot)) {
+        $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
+    }
+    if ($null -eq $Config) {
+        $cfgPath = Join-Path $RepoRoot 'mutation.config.json'
+        if (-not (Test-Path -LiteralPath $cfgPath)) { throw "Export-MutFixDelivery: no -Config given and $cfgPath not found" }
+        $Config = ConvertFrom-Json -InputObject (Get-Content -LiteralPath $cfgPath -Raw)
+    }
+    $workDir = [string]$Config.workDir
+    if (-not [System.IO.Path]::IsPathRooted($workDir)) { $workDir = Join-Path $RepoRoot $workDir }
+    $workDir = [System.IO.Path]::GetFullPath($workDir)
+    $sourceTestApp = Join-Path $workDir 'test-app'
+    $deliveryApp = Join-Path (Join-Path (Join-Path (Join-Path $workDir 'fix-verify') ([string]$RunNo)) 'delivery') 'test-app'
+    $fixesPath = Join-Path $RepoRoot "results/$RunNo-fixes.json"
+    $verifiedPath = Join-Path $RepoRoot "results/$RunNo-verified.json"
+    $patchPath = Join-Path $RepoRoot "results/$RunNo-tests.patch"
+    $mdPath = Join-Path $RepoRoot "results/$RunNo-verified.md"
+    foreach ($p in @($fixesPath, $verifiedPath)) {
+        if (-not (Test-Path -LiteralPath $p)) { throw "Export-MutFixDelivery: $p not found" }
+    }
+
+    $report = ConvertFrom-Json -InputObject (Get-Content -LiteralPath $fixesPath -Raw)
+    $verified = ConvertFrom-Json -InputObject (Get-Content -LiteralPath $verifiedPath -Raw)
+    $allFixes = @($report.fixes)
+    $entries = @(@($verified.entries) | Sort-Object -Property fixId)
+
+    $okIds = @($entries | Where-Object { $_.verdict -eq 'verified' } | ForEach-Object { [string]$_.fixId })
+    $toApply = @($allFixes | Where-Object { $okIds -contains [string]$_.fixId })
+    $missing = @($okIds | Where-Object { $id = $_; -not ($allFixes | Where-Object { [string]$_.fixId -eq $id }) })
+    if ($missing.Count -gt 0) { throw "Export-MutFixDelivery: verified fix(es) not in fixes.json: $($missing -join ', ')" }
+
+    Invoke-MutFixApply -SourcePath $sourceTestApp -DestinationPath $deliveryApp -Fixes @($toApply) | Out-Null
+    New-MutTestPatch -OriginalPath $sourceTestApp -PatchedPath $deliveryApp -OutPath $patchPath
+
+    # verified.md
+    $verdicts = @('verified', 'compile-failed', 'fails-on-original', 'not-killed', 'env-error', 'skipped-equivalent')
+    $nl = "`r`n"
+    $sb = New-Object System.Text.StringBuilder
+    [void]$sb.Append("# Verified test fixes for run $RunNo$nl$nl")
+    [void]$sb.Append("## Verdicts$nl$nl")
+    foreach ($v in $verdicts) {
+        $n = @($entries | Where-Object { $_.verdict -eq $v }).Count
+        [void]$sb.Append("- ${v}: $n$nl")
+    }
+    [void]$sb.Append($nl + "## Entries$nl$nl")
+    foreach ($e in $entries) {
+        $mutants = @($e.mutants)
+        $total = $mutants.Count
+        $killed = @($mutants | Where-Object { $_.outcome -eq 'killed' -or $_.outcome -eq 'timeout' }).Count
+        $rev = 0
+        if ($e.PSObject.Properties['revision'] -and $null -ne $e.revision) { $rev = [int]$e.revision }
+        [void]$sb.Append("- $($e.fixId): $($e.verdict), killed $killed/$total, revision $rev$nl")
+    }
+
+    $failed = @($entries | Where-Object { $_.verdict -ne 'verified' -and $_.verdict -ne 'skipped-equivalent' })
+    [void]$sb.Append($nl + "## Not verified$nl$nl")
+    if ($failed.Count -eq 0) { [void]$sb.Append("None.$nl") }
+    foreach ($e in $failed) {
+        [void]$sb.Append("### $($e.fixId): $($e.verdict)$nl$nl")
+        if ($e.compile -and -not $e.compile.ok) {
+            foreach ($d in @($e.compile.diagnostics)) { [void]$sb.Append("- compile: $d$nl") }
+        }
+        if ($e.original -and $e.original.result -eq 'Fail') {
+            [void]$sb.Append("- original run: $($e.original.error)$nl")
+        }
+        $surv = @(@($e.mutants) | Where-Object { $_.outcome -eq 'survived' })
+        foreach ($m in $surv) { [void]$sb.Append("- survived: $($m.mutantId)$nl") }
+        foreach ($m in @(@($e.mutants) | Where-Object { $_.outcome -eq 'not-run' })) { [void]$sb.Append("- not run: $($m.mutantId)$nl") }
+        if ($e.verdict -eq 'env-error') {
+            if ($e.original -and $e.original.error -and $e.original.result -ne 'Fail') { [void]$sb.Append("- environment: $($e.original.error)$nl") }
+            foreach ($m in @(@($e.mutants) | Where-Object { $_.error -and $_.outcome -ne 'killed' -and $_.outcome -ne 'survived' })) {
+                [void]$sb.Append("- environment (mutant $($m.mutantId)): $($m.error)$nl")
+            }
+        }
+        [void]$sb.Append($nl)
+    }
+    if (@($verified.unmappedDiagnostics).Count -gt 0) {
+        [void]$sb.Append("## Unmapped compile diagnostics$nl$nl")
+        foreach ($d in @($verified.unmappedDiagnostics)) { [void]$sb.Append("- $d$nl") }
+        [void]$sb.Append($nl)
+    }
+
+    [void]$sb.Append("## Applying the patch$nl$nl")
+    [void]$sb.Append("Patch: results/$RunNo-tests.patch ($($okIds.Count) verified entries). In the test-app root run:$nl$nl")
+    [void]$sb.Append("    git apply -p1 <path-to>/$RunNo-tests.patch$nl$nl")
+    [void]$sb.Append("Line numbers in the fixes come from the out/test-app snapshot (SPEC 6.7.5); procedures are located by name, so a drifted repository may still need a manual merge. After applying, re-run each changed test.$nl")
+
+    [System.IO.File]::WriteAllText($mdPath, $sb.ToString(), (New-Object System.Text.UTF8Encoding($false)))
+}
+
+Export-ModuleMember -Function Invoke-MutFixApply, New-MutTestPatch, Invoke-MutFixVerify, Export-MutFixDelivery
