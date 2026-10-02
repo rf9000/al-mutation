@@ -1,0 +1,1877 @@
+diff --git a/Authentication/TestAuthShareDetect.Codeunit.al b/Authentication/TestAuthShareDetect.Codeunit.al
+index 05dfeff..2c3a3d7 100644
+--- a/Authentication/TestAuthShareDetect.Codeunit.al
++++ b/Authentication/TestAuthShareDetect.Codeunit.al
+@@ -111,6 +111,7 @@ codeunit 95155 "CTS-CB Test Auth Share Detect"
+         // [Then] Placeholder mutates to SystemNotMapped against OTHERBANKA; account list serialized.
+         Assert.AreEqual(1, CountRows(TempAuthShareTarget), 'Expected exactly one row');
+         AssertRow(TempAuthShareTarget, OtherBankATok, Enum::"CTS-CB Share Target Annotation"::SystemNotMapped, 2, 'BA-001|BA-002');
++        Assert.AreEqual('Other Bank A', TempAuthShareTarget."Target Bank Name", 'Target Bank Name must be the resolved bank name');
+     end;
+ 
+     [Test]
+@@ -177,6 +178,7 @@ codeunit 95155 "CTS-CB Test Auth Share Detect"
+         // [Then] Placeholder mutates to DetectionFailed with the four unidentified accounts.
+         Assert.AreEqual(1, CountRows(TempAuthShareTarget), 'Expected exactly one row');
+         AssertRow(TempAuthShareTarget, '', Enum::"CTS-CB Share Target Annotation"::DetectionFailed, 4, 'BA-X1|BA-X2|BA-X3|BA-X4');
++        Assert.AreEqual('Bank detection failed for 4 of 4 bank accounts in this company. 2 accounts had lookup or connection errors, and 2 accounts had missing IBAN or branch information.', TempAuthShareTarget."Outcome Message", 'Outcome Message mismatch');
+     end;
+ 
+     [Test]
+@@ -691,4 +693,1076 @@ codeunit 95155 "CTS-CB Test Auth Share Detect"
+     end;
+ 
+     #endregion Provenance backfill (WS-C.1 — spec §Integration tests "ProvenanceBackfill")
++
++    [Test]
++    procedure MutA_DetectInCompany_TargetNotActivated_AnnotatesNotActivatedAndStops()
++    var
++        TempAuthShareTarget: Record "CTS-CB Auth Share Target" temporary;
++        AuthShareDetection: Codeunit "CTS-CB Auth Share Detection";
++        AuthShareHttpFixture: Codeunit "CTS-CB Auth Share Http Fixture";
++        IHttpFactory: Codeunit "CTS-CB Http Factory";
++        FakeHTTPClient: Codeunit "CTS-CB Fake HTTP Client";
++        FakeIHttpResponse: Codeunit "CTS-CB FakeIHttpResponse";
++        LibraryPermissions: Codeunit "CTS-CB Library Permissions";
++        LibraryActivationMgt: Codeunit "CTS-CB Library Activation Mgt.";
++        SourceEntryNo: Integer;
++        CurrentCo: Text[30];
++    begin
++        // [Scenario] The target company is not activated: detection must only annotate the placeholder
++        // and stop. It must not probe bank accounts (no HTTP) or overwrite the annotation.
++
++        LibraryPermissions.SetSuperPermissions();
++        CleanupDetectionTables();
++        CurrentCo := CopyStr(CompanyName(), 1, 30);
++        SourceEntryNo := SeedDetectionPocFixture();
++        AuthShareHttpFixture.Setup(IHttpFactory, FakeHTTPClient, FakeIHttpResponse, '{"name":"DetectPocBank","country-code":"DK"}');
++        InitPlaceholderInCurrentCompany(TempAuthShareTarget, CurrentCo);
++
++        // [Given] The target company is deactivated after the seed (source entry, bank and an unbound account exist).
++        LibraryActivationMgt.DeactivateCompany();
++
++        // [When] DetectInCompany runs against the deactivated company.
++        AuthShareDetection.DetectInCompany(SourceEntryNo, CurrentCo, TempAuthShareTarget, IHttpFactory);
++
++        // Restore the activation so later tests are unaffected, even if an assertion below fails.
++        LibraryActivationMgt.ActivateCompany();
++
++        // [Then] The placeholder is annotated NotActivated, nothing else is written and no lookup ran.
++        Assert.AreEqual(1, CountRows(TempAuthShareTarget), 'Expected exactly one row');
++        AssertRow(TempAuthShareTarget, '', Enum::"CTS-CB Share Target Annotation"::NotActivated, 0, '');
++        Assert.IsFalse(FakeHTTPClient.WasCalled(), 'No bank lookup may run for a company where the app is not activated.');
++    end;
++
++    [Test]
++    procedure MutA_DetectInCompany_SourceBankCodeBlank_LeavesPlaceholderUntouched()
++    var
++        TempAuthShareTarget: Record "CTS-CB Auth Share Target" temporary;
++        AuthenticationEntry: Record "CTS-CB Authentication Entry";
++        AuthShareDetection: Codeunit "CTS-CB Auth Share Detection";
++        AuthShareHttpFixture: Codeunit "CTS-CB Auth Share Http Fixture";
++        IHttpFactory: Codeunit "CTS-CB Http Factory";
++        FakeHTTPClient: Codeunit "CTS-CB Fake HTTP Client";
++        FakeIHttpResponse: Codeunit "CTS-CB FakeIHttpResponse";
++        LibraryPermissions: Codeunit "CTS-CB Library Permissions";
++        SourceEntryNo: Integer;
++        CurrentCo: Text[30];
++    begin
++        // [Scenario] The source authentication entry has no bank code, so no source bank can be
++        // resolved. Detection must abort (the guard after ResolveAccessibleSourceCompany) without
++        // probing accounts or touching the placeholder.
++
++        LibraryPermissions.SetSuperPermissions();
++        CleanupDetectionTables();
++        CurrentCo := CopyStr(CompanyName(), 1, 30);
++        SourceEntryNo := SeedDetectionPocFixture();
++        AuthShareHttpFixture.Setup(IHttpFactory, FakeHTTPClient, FakeIHttpResponse, '{"name":"DetectPocBank","country-code":"DK"}');
++        InitPlaceholderInCurrentCompany(TempAuthShareTarget, CurrentCo);
++
++        // [Given] The source entry loses its bank code.
++        AuthenticationEntry.Get(SourceEntryNo);
++        AuthenticationEntry."Bank Code" := '';
++        AuthenticationEntry.Modify();
++
++        // [When]
++        AuthShareDetection.DetectInCompany(SourceEntryNo, CurrentCo, TempAuthShareTarget, IHttpFactory);
++
++        // [Then] The placeholder is unchanged and no lookup ran.
++        Assert.AreEqual(1, CountRows(TempAuthShareTarget), 'Expected exactly one row');
++        AssertRow(TempAuthShareTarget, '', Enum::"CTS-CB Share Target Annotation"::NeedsDetection, 0, '');
++        Assert.IsFalse(FakeHTTPClient.WasCalled(), 'No bank lookup may run when the source bank cannot be resolved.');
++    end;
++
++    [Test]
++    procedure MutA_DetectInCompany_NoUnboundAccounts_BecomesNoMatchingAccounts()
++    var
++        TempAuthShareTarget: Record "CTS-CB Auth Share Target" temporary;
++        BankAccount: Record "Bank Account";
++        AuthShareDetection: Codeunit "CTS-CB Auth Share Detection";
++        AuthShareHttpFixture: Codeunit "CTS-CB Auth Share Http Fixture";
++        IHttpFactory: Codeunit "CTS-CB Http Factory";
++        FakeHTTPClient: Codeunit "CTS-CB Fake HTTP Client";
++        FakeIHttpResponse: Codeunit "CTS-CB FakeIHttpResponse";
++        LibraryPermissions: Codeunit "CTS-CB Library Permissions";
++        SourceEntryNo: Integer;
++        CurrentCo: Text[30];
++    begin
++        // [Scenario] The target company has no unbound bank accounts. FindSet must be false, no
++        // account is probed and the placeholder becomes NoMatchingAccounts.
++
++        LibraryPermissions.SetSuperPermissions();
++        CleanupDetectionTables();
++        CurrentCo := CopyStr(CompanyName(), 1, 30);
++        SourceEntryNo := SeedDetectionPocFixture();
++        AuthShareHttpFixture.Setup(IHttpFactory, FakeHTTPClient, FakeIHttpResponse, '{"name":"DetectPocBank","country-code":"DK"}');
++        InitPlaceholderInCurrentCompany(TempAuthShareTarget, CurrentCo);
++
++        // [Given] Every bank account is removed again.
++        BankAccount.DeleteAll();
++
++        // [When]
++        AuthShareDetection.DetectInCompany(SourceEntryNo, CurrentCo, TempAuthShareTarget, IHttpFactory);
++
++        // [Then] NoMatchingAccounts (not DetectionFailed) and no lookup.
++        Assert.AreEqual(1, CountRows(TempAuthShareTarget), 'Expected exactly one row');
++        AssertRow(TempAuthShareTarget, '', Enum::"CTS-CB Share Target Annotation"::NoMatchingAccounts, 0, '');
++        Assert.IsFalse(FakeHTTPClient.WasCalled(), 'No bank lookup may run when there are no unbound accounts.');
++    end;
++
++    [Test]
++    procedure MutA_DetectInCompany_FailedAccounts_SplitHttpAndMissingInfoCounts()
++    var
++        TempAuthShareTarget: Record "CTS-CB Auth Share Target" temporary;
++        BankAccount: Record "Bank Account";
++        AuthShareDetection: Codeunit "CTS-CB Auth Share Detection";
++        AuthShareHttpFixture: Codeunit "CTS-CB Auth Share Http Fixture";
++        IHttpFactory: Codeunit "CTS-CB Http Factory";
++        FakeHTTPClient: Codeunit "CTS-CB Fake HTTP Client";
++        FakeIHttpResponse: Codeunit "CTS-CB FakeIHttpResponse";
++        LibraryPermissions: Codeunit "CTS-CB Library Permissions";
++        MissingInfoAccountNoTok: Label 'BA-DETECT-MISS', Locked = true;
++        LookupFailAccountNoTok: Label 'BA-DETECT-POC', Locked = true;
++        LookupFailIbanTok: Label 'DE89370400440532013000', Locked = true;
++        UnparseableBodyTok: Label 'not-json', Locked = true;
++        ExpectedMessage: Text;
++        SourceEntryNo: Integer;
++        CurrentCo: Text[30];
++    begin
++        // [Scenario] One unbound account has no IBAN/branch (missing info) and one fails on the
++        // lookup (unparseable response). The DetectionFailed message reports the two counts separately.
++
++        LibraryPermissions.SetSuperPermissions();
++        CleanupDetectionTables();
++        CurrentCo := CopyStr(CompanyName(), 1, 30);
++        SourceEntryNo := SeedDetectionPocFixture();
++        AuthShareHttpFixture.Setup(IHttpFactory, FakeHTTPClient, FakeIHttpResponse, UnparseableBodyTok);
++        InitPlaceholderInCurrentCompany(TempAuthShareTarget, CurrentCo);
++
++        // [Given] The seeded account gets a non-DK IBAN that is in no Bank Information cache, so the IBAN
++        // lookup has to parse the unparseable response and fails, and no DK branch fallback applies.
++        BankAccount.Get(LookupFailAccountNoTok);
++        BankAccount.IBAN := LookupFailIbanTok;
++        BankAccount."Country/Region Code" := 'DE';
++        BankAccount.Modify();
++
++        // [Given] A second unbound account without IBAN and branch.
++        BankAccount.Init();
++        BankAccount."No." := MissingInfoAccountNoTok;
++        BankAccount.Insert();
++
++        // [When]
++        AuthShareDetection.DetectInCompany(SourceEntryNo, CurrentCo, TempAuthShareTarget, IHttpFactory);
++
++        // [Then] One DetectionFailed row: 2 failed of 2, 1 lookup failure and 1 missing-info account.
++        TempAuthShareTarget.Reset();
++        TempAuthShareTarget.SetRange(Annotation, Enum::"CTS-CB Share Target Annotation"::DetectionFailed);
++        Assert.IsTrue(TempAuthShareTarget.FindFirst(), 'Expected a DetectionFailed row');
++        Assert.AreEqual(2, TempAuthShareTarget."Account Count", 'Account Count mismatch');
++        ExpectedMessage := 'Bank detection failed for 2 of 2 bank accounts in this company. 1 accounts had lookup or connection errors, and 1 accounts had missing IBAN or branch information.';
++        Assert.AreEqual(ExpectedMessage, TempAuthShareTarget."Outcome Message", 'The failure counts must split into 1 lookup failure and 1 missing-info account.');
++    end;
++
++    [Test]
++    procedure MutA_DetectInCompany_TwoAccountsSameOtherBank_AccountsAccumulate()
++    var
++        TempAuthShareTarget: Record "CTS-CB Auth Share Target" temporary;
++        BankAccount: Record "Bank Account";
++        AuthShareDetection: Codeunit "CTS-CB Auth Share Detection";
++        AuthShareHttpFixture: Codeunit "CTS-CB Auth Share Http Fixture";
++        IHttpFactory: Codeunit "CTS-CB Http Factory";
++        FakeHTTPClient: Codeunit "CTS-CB Fake HTTP Client";
++        FakeIHttpResponse: Codeunit "CTS-CB FakeIHttpResponse";
++        LibraryPermissions: Codeunit "CTS-CB Library Permissions";
++        FirstAccountNoTok: Label 'BA-DETECT-POC', Locked = true;
++        SecondAccountNoTok: Label 'BA-DETECT-ALT', Locked = true;
++        SourceEntryNo: Integer;
++        CurrentCo: Text[30];
++    begin
++        // [Scenario] Two unbound accounts resolve to the same bank, which does not support the source
++        // bank system. Both accounts accumulate under that bank in a single SystemNotMapped row.
++
++        LibraryPermissions.SetSuperPermissions();
++        CleanupDetectionTables();
++        CurrentCo := CopyStr(CompanyName(), 1, 30);
++        SourceEntryNo := SeedDetectionPocFixture();
++        AuthShareHttpFixture.Setup(IHttpFactory, FakeHTTPClient, FakeIHttpResponse, '{"name":"DetectPocBank","country-code":"DK"}');
++        InitPlaceholderInCurrentCompany(TempAuthShareTarget, CurrentCo);
++
++        // [Given] A second unbound account with an IBAN, resolving to the same canned bank.
++        BankAccount.Init();
++        BankAccount."No." := SecondAccountNoTok;
++        BankAccount.IBAN := 'DK1234567890123457';
++        BankAccount."Country/Region Code" := 'DK';
++        BankAccount.Insert();
++
++        // [When]
++        AuthShareDetection.DetectInCompany(SourceEntryNo, CurrentCo, TempAuthShareTarget, IHttpFactory);
++
++        // [Then] One SystemNotMapped row that lists both accounts.
++        Assert.AreEqual(1, CountRows(TempAuthShareTarget), 'Expected exactly one row');
++        TempAuthShareTarget.Reset();
++        TempAuthShareTarget.SetRange(Annotation, Enum::"CTS-CB Share Target Annotation"::SystemNotMapped);
++        Assert.IsTrue(TempAuthShareTarget.FindFirst(), 'Expected a SystemNotMapped row');
++        Assert.AreEqual(2, TempAuthShareTarget."Account Count", 'Both accounts must be counted for the bank');
++        Assert.IsTrue(StrPos(TempAuthShareTarget."Resolved Account Nos", FirstAccountNoTok) > 0, 'The first account must be listed');
++        Assert.IsTrue(StrPos(TempAuthShareTarget."Resolved Account Nos", SecondAccountNoTok) > 0, 'The second account must be listed');
++    end;
++
++    [Test]
++    procedure MutA_DetectInCompany_ExactCommTypeMapping_BecomesReadyAndLinksAccount()
++    var
++        TempAuthShareTarget: Record "CTS-CB Auth Share Target" temporary;
++        BankAccount: Record "Bank Account";
++        BankSystemMapping2: Record "CTS-CB Bank System Mapping2";
++        TempBank: Record "CTS-CB Bank" temporary;
++        AuthShareDetection: Codeunit "CTS-CB Auth Share Detection";
++        AuthShareHttpFixture: Codeunit "CTS-CB Auth Share Http Fixture";
++        IHttpFactory: Codeunit "CTS-CB Http Factory";
++        FakeHTTPClient: Codeunit "CTS-CB Fake HTTP Client";
++        FakeIHttpResponse: Codeunit "CTS-CB FakeIHttpResponse";
++        LibraryPermissions: Codeunit "CTS-CB Library Permissions";
++        SourceBankTok: Label 'DETECT-SRC', Locked = true;
++        SourceSystemTok: Label 'DETECT-SYS', Locked = true;
++        AccountNoTok: Label 'BA-DETECT-POC', Locked = true;
++        ResolvedBankNameTok: Label 'DetectPocBank', Locked = true;
++        ResolvedBankCode: Code[30];
++        SourceEntryNo: Integer;
++        CurrentCo: Text[30];
++    begin
++        // [Scenario] The resolved bank has a Bank System Mapping2 row for the source bank system with
++        // the source's communication type: the account is an exact match, the placeholder becomes
++        // Ready and the account is linked to the source bank.
++
++        LibraryPermissions.SetSuperPermissions();
++        CleanupDetectionTables();
++        CurrentCo := CopyStr(CompanyName(), 1, 30);
++        SourceEntryNo := SeedDetectionPocFixture();
++        AuthShareHttpFixture.Setup(IHttpFactory, FakeHTTPClient, FakeIHttpResponse, '{"name":"DetectPocBank","country-code":"DK"}');
++        InitPlaceholderInCurrentCompany(TempAuthShareTarget, CurrentCo);
++
++        TempBank.Init();
++        TempBank.Validate(Name, ResolvedBankNameTok);
++        ResolvedBankCode := TempBank.Code;
++
++        // [Given] Mapping2 row (resolved bank, source system) with the source bank's Direct comm type.
++
++        BankSystemMapping2.Init();
++        BankSystemMapping2."Bank Code" := ResolvedBankCode;
++        BankSystemMapping2."Bank System Code" := SourceSystemTok;
++        BankSystemMapping2."Supported Communication" := Enum::"CTS-CB Communication Type"::Manual;
++        BankSystemMapping2."Import/Export Comm Type" := Enum::"CTS-CB Import/Export Comm Type"::Direct;
++        BankSystemMapping2.Insert();
++
++        // [When]
++        AuthShareDetection.DetectInCompany(SourceEntryNo, CurrentCo, TempAuthShareTarget, IHttpFactory);
++
++        // [Then] Ready against the source bank, and the account is linked to it.
++        Assert.AreEqual(1, CountRows(TempAuthShareTarget), 'Expected exactly one row');
++        AssertRow(TempAuthShareTarget, SourceBankTok, Enum::"CTS-CB Share Target Annotation"::Ready, 1, '');
++        BankAccount.Get(AccountNoTok);
++        Assert.AreEqual(SourceBankTok, BankAccount."CTS-CB Bank Code", 'The matching account must be linked to the source bank.');
++    end;
++
++    [Test]
++    procedure MutA_DetectInCompany_SystemMappedWithOtherCommType_BecomesCommTypeMismatch()
++    var
++        TempAuthShareTarget: Record "CTS-CB Auth Share Target" temporary;
++        BankSystemMapping2: Record "CTS-CB Bank System Mapping2";
++        TempBank: Record "CTS-CB Bank" temporary;
++        AuthShareDetection: Codeunit "CTS-CB Auth Share Detection";
++        AuthShareHttpFixture: Codeunit "CTS-CB Auth Share Http Fixture";
++        IHttpFactory: Codeunit "CTS-CB Http Factory";
++        FakeHTTPClient: Codeunit "CTS-CB Fake HTTP Client";
++        FakeIHttpResponse: Codeunit "CTS-CB FakeIHttpResponse";
++        LibraryPermissions: Codeunit "CTS-CB Library Permissions";
++        SourceBankTok: Label 'DETECT-SRC', Locked = true;
++        SourceSystemTok: Label 'DETECT-SYS', Locked = true;
++        ResolvedBankNameTok: Label 'DetectPocBank', Locked = true;
++        ResolvedBankCode: Code[30];
++        SourceEntryNo: Integer;
++        CurrentCo: Text[30];
++    begin
++        // [Scenario] The resolved bank supports the source bank system but with another communication
++        // type than the source's: soft mismatch, placeholder becomes CommTypeMismatch.
++
++        LibraryPermissions.SetSuperPermissions();
++        CleanupDetectionTables();
++        CurrentCo := CopyStr(CompanyName(), 1, 30);
++        SourceEntryNo := SeedDetectionPocFixture();
++        AuthShareHttpFixture.Setup(IHttpFactory, FakeHTTPClient, FakeIHttpResponse, '{"name":"DetectPocBank","country-code":"DK"}');
++        InitPlaceholderInCurrentCompany(TempAuthShareTarget, CurrentCo);
++
++        TempBank.Init();
++        TempBank.Validate(Name, ResolvedBankNameTok);
++        ResolvedBankCode := TempBank.Code;
++
++        // [Given] Mapping2 row (resolved bank, source system) with Manual while the source bank is Direct.
++
++        BankSystemMapping2.Init();
++        BankSystemMapping2."Bank Code" := ResolvedBankCode;
++        BankSystemMapping2."Bank System Code" := SourceSystemTok;
++        BankSystemMapping2."Supported Communication" := Enum::"CTS-CB Communication Type"::Manual;
++        BankSystemMapping2."Import/Export Comm Type" := Enum::"CTS-CB Import/Export Comm Type"::Manual;
++        BankSystemMapping2.Insert();
++
++        // [When]
++        AuthShareDetection.DetectInCompany(SourceEntryNo, CurrentCo, TempAuthShareTarget, IHttpFactory);
++
++        // [Then] CommTypeMismatch against the source bank.
++        Assert.AreEqual(1, CountRows(TempAuthShareTarget), 'Expected exactly one row');
++        AssertRow(TempAuthShareTarget, SourceBankTok, Enum::"CTS-CB Share Target Annotation"::CommTypeMismatch, 1, '');
++    end;
++
++    [Test]
++    procedure MutA_DetectInCompany_BlankSourceBankSystem_IgnoresMappingRows()
++    var
++        TempAuthShareTarget: Record "CTS-CB Auth Share Target" temporary;
++        AuthenticationEntry: Record "CTS-CB Authentication Entry";
++        BankSystemMapping2: Record "CTS-CB Bank System Mapping2";
++        TempBank: Record "CTS-CB Bank" temporary;
++        AuthShareDetection: Codeunit "CTS-CB Auth Share Detection";
++        AuthShareHttpFixture: Codeunit "CTS-CB Auth Share Http Fixture";
++        IHttpFactory: Codeunit "CTS-CB Http Factory";
++        FakeHTTPClient: Codeunit "CTS-CB Fake HTTP Client";
++        FakeIHttpResponse: Codeunit "CTS-CB FakeIHttpResponse";
++        LibraryPermissions: Codeunit "CTS-CB Library Permissions";
++        AccountNoTok: Label 'BA-DETECT-POC', Locked = true;
++        ResolvedBankNameTok: Label 'DetectPocBank', Locked = true;
++        ResolvedBankCode: Code[30];
++        SourceEntryNo: Integer;
++        CurrentCo: Text[30];
++    begin
++        // [Scenario] The source entry has no bank system code. Mapping checks must treat that as
++        // "cannot match" even when a Mapping2 row with a blank system code exists for the resolved bank.
++
++        LibraryPermissions.SetSuperPermissions();
++        CleanupDetectionTables();
++        CurrentCo := CopyStr(CompanyName(), 1, 30);
++        SourceEntryNo := SeedDetectionPocFixture();
++        AuthShareHttpFixture.Setup(IHttpFactory, FakeHTTPClient, FakeIHttpResponse, '{"name":"DetectPocBank","country-code":"DK"}');
++        InitPlaceholderInCurrentCompany(TempAuthShareTarget, CurrentCo);
++
++        TempBank.Init();
++        TempBank.Validate(Name, ResolvedBankNameTok);
++        ResolvedBankCode := TempBank.Code;
++
++        // [Given] The source entry's bank system code is blank, and a Mapping2 row with a blank
++        // system code and the source's Direct comm type exists for the resolved bank.
++        AuthenticationEntry.Get(SourceEntryNo);
++        AuthenticationEntry."Bank System Code" := '';
++        AuthenticationEntry.Modify();
++
++        BankSystemMapping2.Init();
++        BankSystemMapping2."Bank Code" := ResolvedBankCode;
++        BankSystemMapping2."Bank System Code" := '';
++        BankSystemMapping2."Supported Communication" := Enum::"CTS-CB Communication Type"::Manual;
++        BankSystemMapping2."Import/Export Comm Type" := Enum::"CTS-CB Import/Export Comm Type"::Direct;
++        BankSystemMapping2.Insert();
++
++        // [When]
++        AuthShareDetection.DetectInCompany(SourceEntryNo, CurrentCo, TempAuthShareTarget, IHttpFactory);
++
++        // [Then] No mapping counts: the account lands in the unmapped-bank bucket (SystemNotMapped).
++        Assert.AreEqual(1, CountRows(TempAuthShareTarget), 'Expected exactly one row');
++        AssertRow(TempAuthShareTarget, ResolvedBankCode, Enum::"CTS-CB Share Target Annotation"::SystemNotMapped, 1, AccountNoTok);
++    end;
++
++    [Test]
++    procedure MutA_DetectInCompany_OriginatingCompanyBank_UsesOriginatingCompanyBank()
++    var
++        TempAuthShareTarget: Record "CTS-CB Auth Share Target" temporary;
++        TempBank: Record "CTS-CB Bank" temporary;
++        AuthenticationEntry: Record "CTS-CB Authentication Entry";
++        BankSystemMapping2: Record "CTS-CB Bank System Mapping2";
++        Company: Record Company;
++        OriginBank: Record "CTS-CB Bank";
++        AuthShareDetection: Codeunit "CTS-CB Auth Share Detection";
++        AuthShareHttpFixture: Codeunit "CTS-CB Auth Share Http Fixture";
++        IHttpFactory: Codeunit "CTS-CB Http Factory";
++        FakeHTTPClient: Codeunit "CTS-CB Fake HTTP Client";
++        FakeIHttpResponse: Codeunit "CTS-CB FakeIHttpResponse";
++        LibraryPermissions: Codeunit "CTS-CB Library Permissions";
++        OriginBankTok: Label 'MUTA-ORIG', Locked = true;
++        MutAOriginCompanyTok: Label 'MUTA-ORIGIN', Locked = true;
++        SourceSystemTok: Label 'DETECT-SYS', Locked = true;
++        ResolvedBankNameTok: Label 'DetectPocBank', Locked = true;
++        ResolvedBankCode: Code[30];
++        SourceEntryNo: Integer;
++        CurrentCo: Text[30];
++    begin
++        // [Scenario] The source entry originates in another company that holds the source bank with a
++        // different default comm type than the copy in the current company. Detection must read the
++        // bank from the originating company first. The test creates and deletes that company itself.
++        LibraryPermissions.SetSuperPermissions();
++        CleanupDetectionTables();
++        CurrentCo := CopyStr(CompanyName(), 1, 30);
++
++        // [Given] a second company that is the originating company of the source entry.
++        if not Company.Get(MutAOriginCompanyTok) then begin
++            Company.Init();
++            Company.Name := MutAOriginCompanyTok;
++            Company."Display Name" := MutAOriginCompanyTok;
++            Company.Insert(true);
++        end;
++
++        SourceEntryNo := SeedDetectionPocFixture();
++        AuthShareHttpFixture.Setup(IHttpFactory, FakeHTTPClient, FakeIHttpResponse, '{"name":"DetectPocBank","country-code":"DK"}');
++        InitPlaceholderInCurrentCompany(TempAuthShareTarget, CurrentCo);
++
++        TempBank.Init();
++        TempBank.Validate(Name, ResolvedBankNameTok);
++        ResolvedBankCode := TempBank.Code;
++
++        // [Given] Source bank copy in the current company is Direct, the originating company's copy is Manual.
++        CreateBank(OriginBankTok, 'Originating Source Bank', "CTS-CB Import/Export Comm Type"::Direct);
++        OriginBank.ChangeCompany(MutAOriginCompanyTok);
++        if OriginBank.Get(OriginBankTok) then
++            OriginBank.Delete();
++        OriginBank.Init();
++        OriginBank.Code := OriginBankTok;
++        OriginBank.Name := 'Originating Source Bank';
++        OriginBank."Default Import/Export" := "CTS-CB Import/Export Comm Type"::Manual;
++        OriginBank.Insert();
++        AuthenticationEntry.Get(SourceEntryNo);
++        AuthenticationEntry."Bank Code" := OriginBankTok;
++        AuthenticationEntry."Originating Company" := MutAOriginCompanyTok;
++        AuthenticationEntry.Modify();
++
++        BankSystemMapping2.Init();
++        BankSystemMapping2."Bank Code" := ResolvedBankCode;
++        BankSystemMapping2."Bank System Code" := SourceSystemTok;
++        BankSystemMapping2."Supported Communication" := Enum::"CTS-CB Communication Type"::Manual;
++        BankSystemMapping2."Import/Export Comm Type" := Enum::"CTS-CB Import/Export Comm Type"::Manual;
++        BankSystemMapping2.Insert();
++
++        // [When]
++        AuthShareDetection.DetectInCompany(SourceEntryNo, CurrentCo, TempAuthShareTarget, IHttpFactory);
++
++        // Cleanup of the second company before asserting.
++        if Company.Get(MutAOriginCompanyTok) then
++            Company.Delete(true);
++
++        // [Then] The Manual comm type of the originating company's bank is used, so the account is an exact match.
++        Assert.AreEqual(1, CountRows(TempAuthShareTarget), 'Expected exactly one row');
++        AssertRow(TempAuthShareTarget, OriginBankTok, Enum::"CTS-CB Share Target Annotation"::Ready, 1, '');
++    end;
++
++    [Test]
++    procedure MutA_DetectInCompany_NoMatchingAccounts_DoesNotCopySourceBankToTarget()
++    var
++        TempAuthShareTarget: Record "CTS-CB Auth Share Target" temporary;
++        AuthenticationEntry: Record "CTS-CB Authentication Entry";
++        Company: Record Company;
++        OriginBank: Record "CTS-CB Bank";
++        TargetBank: Record "CTS-CB Bank";
++        AuthShareDetection: Codeunit "CTS-CB Auth Share Detection";
++        AuthShareHttpFixture: Codeunit "CTS-CB Auth Share Http Fixture";
++        IHttpFactory: Codeunit "CTS-CB Http Factory";
++        FakeHTTPClient: Codeunit "CTS-CB Fake HTTP Client";
++        FakeIHttpResponse: Codeunit "CTS-CB FakeIHttpResponse";
++        LibraryPermissions: Codeunit "CTS-CB Library Permissions";
++        OriginBankTok: Label 'MUTA-ORIG', Locked = true;
++        MutAOriginCompanyTok: Label 'MUTA-ORIGIN', Locked = true;
++        SourceEntryNo: Integer;
++        CurrentCo: Text[30];
++    begin
++        // [Scenario] No account matches the source bank system, so the source bank must not be copied
++        // into the target company. The source bank lives only in the originating company, so a copy into
++        // the current (target) company would be visible. The test creates and deletes that company itself.
++        LibraryPermissions.SetSuperPermissions();
++        CleanupDetectionTables();
++        CurrentCo := CopyStr(CompanyName(), 1, 30);
++
++        // [Given] a second company that is the originating company of the source entry.
++        if not Company.Get(MutAOriginCompanyTok) then begin
++            Company.Init();
++            Company.Name := MutAOriginCompanyTok;
++            Company."Display Name" := MutAOriginCompanyTok;
++            Company.Insert(true);
++        end;
++
++        SourceEntryNo := SeedDetectionPocFixture();
++        AuthShareHttpFixture.Setup(IHttpFactory, FakeHTTPClient, FakeIHttpResponse, '{"name":"DetectPocBank","country-code":"DK"}');
++        InitPlaceholderInCurrentCompany(TempAuthShareTarget, CurrentCo);
++
++        // [Given] The source bank exists only in the originating company; no Mapping2 rows exist.
++        OriginBank.ChangeCompany(MutAOriginCompanyTok);
++        if OriginBank.Get(OriginBankTok) then
++            OriginBank.Delete();
++        OriginBank.Init();
++        OriginBank.Code := OriginBankTok;
++        OriginBank.Name := 'Originating Source Bank';
++        OriginBank."Default Import/Export" := "CTS-CB Import/Export Comm Type"::Direct;
++        OriginBank.Insert();
++        AuthenticationEntry.Get(SourceEntryNo);
++        AuthenticationEntry."Bank Code" := OriginBankTok;
++        AuthenticationEntry."Originating Company" := MutAOriginCompanyTok;
++        AuthenticationEntry.Modify();
++
++        // [When]
++        AuthShareDetection.DetectInCompany(SourceEntryNo, CurrentCo, TempAuthShareTarget, IHttpFactory);
++
++        // Cleanup of the second company before asserting.
++        if Company.Get(MutAOriginCompanyTok) then
++            Company.Delete(true);
++
++        // [Then] The detection ran (SystemNotMapped) but the source bank was not copied into the target company.
++        Assert.AreEqual(1, CountRows(TempAuthShareTarget), 'Expected exactly one row');
++        Assert.IsTrue(FakeHTTPClient.WasCalled(), 'Detection must have run');
++        Assert.IsFalse(TargetBank.Get(OriginBankTok), 'The source bank must not be copied into the target company when no account matches.');
++    end;
++
++    [Test]
++    procedure MutA_DetectInCompany_OriginatingCompanyUnavailable_FallsBackToCurrentCompany()
++    var
++        TempAuthShareTarget: Record "CTS-CB Auth Share Target" temporary;
++        AuthenticationEntry: Record "CTS-CB Authentication Entry";
++        BankSystemActiveMap: Record "CTS-CB Bank System Active Map";
++        BankSystemMapping2: Record "CTS-CB Bank System Mapping2";
++        TempBank: Record "CTS-CB Bank" temporary;
++        AuthShareDetection: Codeunit "CTS-CB Auth Share Detection";
++        AuthShareHttpFixture: Codeunit "CTS-CB Auth Share Http Fixture";
++        IHttpFactory: Codeunit "CTS-CB Http Factory";
++        FakeHTTPClient: Codeunit "CTS-CB Fake HTTP Client";
++        FakeIHttpResponse: Codeunit "CTS-CB FakeIHttpResponse";
++        LibraryPermissions: Codeunit "CTS-CB Library Permissions";
++        SourceBankTok: Label 'DETECT-SRC', Locked = true;
++        SourceSystemTok: Label 'DETECT-SYS', Locked = true;
++        UnreadableCompanyTok: Label 'MUTA NO SUCH CO', Locked = true;
++        ResolvedBankNameTok: Label 'DetectPocBank', Locked = true;
++        SourceBankNameTxt: Label 'Detect POC Source Bank', Locked = true;
++        ResolvedBankCode: Code[30];
++        SourceEntryNo: Integer;
++        CurrentCo: Text[30];
++    begin
++        // [Scenario] The originating company cannot be read (it does not exist here). The source bank
++        // is then read from the current company and its active comm type is taken from that company.
++
++        LibraryPermissions.SetSuperPermissions();
++        CleanupDetectionTables();
++        CurrentCo := CopyStr(CompanyName(), 1, 30);
++        SourceEntryNo := SeedDetectionPocFixture();
++        AuthShareHttpFixture.Setup(IHttpFactory, FakeHTTPClient, FakeIHttpResponse, '{"name":"DetectPocBank","country-code":"DK"}');
++        InitPlaceholderInCurrentCompany(TempAuthShareTarget, CurrentCo);
++
++        TempBank.Init();
++        TempBank.Validate(Name, ResolvedBankNameTok);
++        ResolvedBankCode := TempBank.Code;
++
++        // [Given] The source entry points at an unreadable company; the current company holds the
++        // source bank (default Direct) with an active Manual comm type for the source system, and the
++        // resolved bank has a Manual Mapping2 row.
++        AuthenticationEntry.Get(SourceEntryNo);
++        AuthenticationEntry."Originating Company" := UnreadableCompanyTok;
++        AuthenticationEntry.Modify();
++        BankSystemActiveMap.SetRange("Bank Code", SourceBankTok);
++        BankSystemActiveMap.DeleteAll();
++        BankSystemActiveMap.Reset();
++        BankSystemActiveMap.Init();
++        BankSystemActiveMap."Bank Code" := SourceBankTok;
++        BankSystemActiveMap."Bank System Code" := SourceSystemTok;
++        BankSystemActiveMap.ImportExportCommType := "CTS-CB Import/Export Comm Type"::Manual;
++        BankSystemActiveMap.Active := true;
++        BankSystemActiveMap.Insert();
++
++        BankSystemMapping2.Init();
++        BankSystemMapping2."Bank Code" := ResolvedBankCode;
++        BankSystemMapping2."Bank System Code" := SourceSystemTok;
++        BankSystemMapping2."Supported Communication" := Enum::"CTS-CB Communication Type"::Manual;
++        BankSystemMapping2."Import/Export Comm Type" := Enum::"CTS-CB Import/Export Comm Type"::Manual;
++        BankSystemMapping2.Insert();
++
++        // [When]
++        AuthShareDetection.DetectInCompany(SourceEntryNo, CurrentCo, TempAuthShareTarget, IHttpFactory);
++
++        // Clean up the active map row before asserting.
++        BankSystemActiveMap.Reset();
++        BankSystemActiveMap.SetRange("Bank Code", SourceBankTok);
++        BankSystemActiveMap.DeleteAll();
++
++        // [Then] Ready against the source bank, named from the bank record read in the current company.
++        Assert.AreEqual(1, CountRows(TempAuthShareTarget), 'Expected exactly one row');
++        AssertRow(TempAuthShareTarget, SourceBankTok, Enum::"CTS-CB Share Target Annotation"::Ready, 1, '');
++        TempAuthShareTarget.Reset();
++        Assert.IsTrue(TempAuthShareTarget.FindFirst(), 'Expected a row');
++        Assert.AreEqual(SourceBankNameTxt, TempAuthShareTarget."Target Bank Name", 'The source bank must have been read from the current company.');
++    end;
++
++    [Test]
++    procedure MutB_DetectInCompany_ExactMatchInSameCompany_LinksAccountAndKeepsSourceBank()
++    var
++        TempAuthShareTarget: Record "CTS-CB Auth Share Target" temporary;
++        TempResolvedBank: Record "CTS-CB Bank" temporary;
++        Bank: Record "CTS-CB Bank";
++        BankAccount: Record "Bank Account";
++        BankSystemMapping2: Record "CTS-CB Bank System Mapping2";
++        AuthShareDetection: Codeunit "CTS-CB Auth Share Detection";
++        AuthShareHttpFixture: Codeunit "CTS-CB Auth Share Http Fixture";
++        IHttpFactory: Codeunit "CTS-CB Http Factory";
++        FakeHTTPClient: Codeunit "CTS-CB Fake HTTP Client";
++        FakeIHttpResponse: Codeunit "CTS-CB FakeIHttpResponse";
++        LibraryPermissions: Codeunit "CTS-CB Library Permissions";
++        SourceEntryNo: Integer;
++        CurrentCo: Text[30];
++        DetectPocSourceBankCodeTok: Label 'DETECT-SRC', Locked = true;
++        DetectPocSourceSystemTok: Label 'DETECT-SYS', Locked = true;
++        DetectPocBankAccountNoTok: Label 'BA-DETECT-POC', Locked = true;
++    begin
++        LibraryPermissions.SetSuperPermissions();
++        CleanupDetectionTables();
++        CurrentCo := CopyStr(CompanyName(), 1, 30);
++
++        // [Given] source AuthEntry + Bank and one unbound BankAccount in the current company, which is also the target.
++        SourceEntryNo := SeedDetectionPocFixture();
++
++        // [Given] the bank the canned directory response resolves to supports the source system with the source comm type (Direct).
++        TempResolvedBank.Validate(Name, 'DetectPocBank');
++        BankSystemMapping2.Init();
++        BankSystemMapping2."Bank Code" := TempResolvedBank.Code;
++        BankSystemMapping2."Bank System Code" := DetectPocSourceSystemTok;
++        BankSystemMapping2."Supported Communication" := Enum::"CTS-CB Communication Type"::Webservice;
++        BankSystemMapping2."Import/Export Comm Type" := "CTS-CB Import/Export Comm Type"::Direct;
++        BankSystemMapping2.Insert(false);
++
++        AuthShareHttpFixture.Setup(IHttpFactory, FakeHTTPClient, FakeIHttpResponse, '{"name":"DetectPocBank","country-code":"DK"}');
++        InitPlaceholderInCurrentCompany(TempAuthShareTarget, CurrentCo);
++
++        // [When] DetectInCompany runs end-to-end through the fakes.
++        AuthShareDetection.DetectInCompany(SourceEntryNo, CurrentCo, TempAuthShareTarget, IHttpFactory);
++
++        // [Then] the placeholder is Ready against the source bank with the one matched account.
++        Assert.AreEqual(1, CountRows(TempAuthShareTarget), 'Expected exactly one row');
++        AssertRow(TempAuthShareTarget, DetectPocSourceBankCodeTok, Enum::"CTS-CB Share Target Annotation"::Ready, 1, '');
++
++        // [Then] the matched account is linked to the source bank, and the existing bank is kept (not re-inserted).
++        BankAccount.Get(DetectPocBankAccountNoTok);
++        Assert.AreEqual('DETECT-SRC', BankAccount."CTS-CB Bank Code", 'The matched Bank Account must be linked to the source bank.');
++        Bank.SetRange(Code, DetectPocSourceBankCodeTok);
++        Assert.AreEqual(1, Bank.Count(), 'The source bank must still exist exactly once.');
++    end;
++
++    [Test]
++    procedure MutB_DetectInCompany_ExactMatchInOtherCompany_CopiesSourceBankAndLinksAccount()
++    var
++        TempAuthShareTarget: Record "CTS-CB Auth Share Target" temporary;
++        TempResolvedBank: Record "CTS-CB Bank" temporary;
++        AuthenticationEntry: Record "CTS-CB Authentication Entry";
++        BankSystemMapping2: Record "CTS-CB Bank System Mapping2";
++        Company: Record Company;
++        CSCSubscription: Record "CSC Subscription";
++        TargetCSCSubscription: Record "CSC Subscription";
++        TargetBank: Record "CTS-CB Bank";
++        TargetBankAccount: Record "Bank Account";
++        AuthShareDetection: Codeunit "CTS-CB Auth Share Detection";
++        AuthShareHttpFixture: Codeunit "CTS-CB Auth Share Http Fixture";
++        IHttpFactory: Codeunit "CTS-CB Http Factory";
++        FakeHTTPClient: Codeunit "CTS-CB Fake HTTP Client";
++        FakeIHttpResponse: Codeunit "CTS-CB FakeIHttpResponse";
++        LibraryPermissions: Codeunit "CTS-CB Library Permissions";
++        CoreMgt: Codeunit "CTS-CB Core Mgt.";
++        SourceEntryNo: Integer;
++        MutBTargetCompanyTok: Label 'MUTB-TARGET', Locked = true;
++        DetectPocSourceBankCodeTok: Label 'DETECT-SRC', Locked = true;
++        DetectPocSourceSystemTok: Label 'DETECT-SYS', Locked = true;
++        DetectPocBankAccountNoTok: Label 'BA-DETECT-POC', Locked = true;
++        DetectPocIbanTok: Label 'DK1234567890123456', Locked = true;
++    begin
++        LibraryPermissions.SetSuperPermissions();
++        CleanupDetectionTables();
++
++        // [Given] a second, empty company that has Continia Banking activated and one unbound Bank Account.
++        if not Company.Get(MutBTargetCompanyTok) then begin
++            Company.Init();
++            Company.Name := MutBTargetCompanyTok;
++            Company."Display Name" := MutBTargetCompanyTok;
++            Company.Insert(true);
++        end;
++        AuthShareHttpFixture.Setup(IHttpFactory, FakeHTTPClient, FakeIHttpResponse, '{"name":"DetectPocBank","country-code":"DK"}');
++        CSCSubscription.SetRange("App Code", CoreMgt.ProductCode());
++        CSCSubscription.FindFirst();
++        TargetCSCSubscription.ChangeCompany(MutBTargetCompanyTok);
++        TargetCSCSubscription := CSCSubscription;
++        if TargetCSCSubscription.Insert() then;
++        TargetBankAccount.ChangeCompany(MutBTargetCompanyTok);
++        TargetBankAccount.Init();
++        TargetBankAccount."No." := DetectPocBankAccountNoTok;
++        TargetBankAccount.IBAN := DetectPocIbanTok;
++        TargetBankAccount."Country/Region Code" := 'DK';
++        TargetBankAccount.Insert();
++
++        // [Given] the source AuthEntry + Bank live only in the current company; the AuthEntry names the empty target company as its origin, so the source bank is found through the current-company fallback.
++        SourceEntryNo := SeedDetectionPocFixture();
++        AuthenticationEntry.Get(SourceEntryNo);
++        AuthenticationEntry."Originating Company" := MutBTargetCompanyTok;
++        AuthenticationEntry.Modify();
++
++        // [Given] the resolved bank supports the source system with the source comm type (Direct).
++        TempResolvedBank.Validate(Name, 'DetectPocBank');
++        BankSystemMapping2.Init();
++        BankSystemMapping2."Bank Code" := TempResolvedBank.Code;
++        BankSystemMapping2."Bank System Code" := DetectPocSourceSystemTok;
++        BankSystemMapping2."Supported Communication" := Enum::"CTS-CB Communication Type"::Webservice;
++        BankSystemMapping2."Import/Export Comm Type" := "CTS-CB Import/Export Comm Type"::Direct;
++        BankSystemMapping2.Insert(false);
++        InitPlaceholderInCurrentCompany(TempAuthShareTarget, MutBTargetCompanyTok);
++
++        // [When] detection runs against the second company.
++        AuthShareDetection.DetectInCompany(SourceEntryNo, MutBTargetCompanyTok, TempAuthShareTarget, IHttpFactory);
++
++        // [Then] the placeholder is Ready against the source bank.
++        AssertRow(TempAuthShareTarget, DetectPocSourceBankCodeTok, Enum::"CTS-CB Share Target Annotation"::Ready, 1, '');
++
++        // [Then] the source bank was copied into the target company and the account there is linked to it.
++        TargetBank.ChangeCompany(MutBTargetCompanyTok);
++        Assert.IsTrue(TargetBank.Get(DetectPocSourceBankCodeTok), 'The source bank must be copied into the target company.');
++        Assert.AreEqual('Detect POC Source Bank', TargetBank.Name, 'The copied bank must carry the source bank name.');
++        TargetBankAccount.Get(DetectPocBankAccountNoTok);
++        Assert.AreEqual('DETECT-SRC', TargetBankAccount."CTS-CB Bank Code", 'The target Bank Account must be linked to the copied bank.');
++
++        // Cleanup of the second company.
++        if Company.Get(MutBTargetCompanyTok) then
++            Company.Delete(true);
++    end;
++
++    [Test]
++    procedure MutB_DetectInCompany_ExactMatchWithReadOnlyPermissions_DoesNotCopyBankOrLinkAccount()
++    var
++        TempAuthShareTarget: Record "CTS-CB Auth Share Target" temporary;
++        TempResolvedBank: Record "CTS-CB Bank" temporary;
++        AuthenticationEntry: Record "CTS-CB Authentication Entry";
++        BankInformation: Record "CTS-CB Bank Information";
++        BankSystemMapping2: Record "CTS-CB Bank System Mapping2";
++        Company: Record Company;
++        CSCSubscription: Record "CSC Subscription";
++        TargetCSCSubscription: Record "CSC Subscription";
++        TargetBank: Record "CTS-CB Bank";
++        TargetBankAccount: Record "Bank Account";
++        AuthShareDetection: Codeunit "CTS-CB Auth Share Detection";
++        AuthShareHttpFixture: Codeunit "CTS-CB Auth Share Http Fixture";
++        IHttpFactory: Codeunit "CTS-CB Http Factory";
++        FakeHTTPClient: Codeunit "CTS-CB Fake HTTP Client";
++        FakeIHttpResponse: Codeunit "CTS-CB FakeIHttpResponse";
++        LibraryPermissions: Codeunit "CTS-CB Library Permissions";
++        LibraryLowerPermissions: Codeunit "Library - Lower Permissions";
++        CoreMgt: Codeunit "CTS-CB Core Mgt.";
++        SourceEntryNo: Integer;
++        MutBTargetCompanyTok: Label 'MUTB-NOWRITE', Locked = true;
++        DetectPocSourceBankCodeTok: Label 'DETECT-SRC', Locked = true;
++        DetectPocSourceSystemTok: Label 'DETECT-SYS', Locked = true;
++        DetectPocBankAccountNoTok: Label 'BA-DETECT-POC', Locked = true;
++        MutBNoWriteIbanTok: Label 'DK5000400440116243', Locked = true;
++    begin
++        // [Scenario] The session has only read permission on CTS-CB Bank and Bank Account. Detection must
++        // skip the bank copy and the account link silently (WritePermission guards) instead of raising a
++        // permission error.
++        LibraryPermissions.SetSuperPermissions();
++        CleanupDetectionTables();
++
++        // [Given] a second company with Continia Banking activated and one unbound Bank Account (own IBAN).
++        // Setup is idempotent: a failed earlier run may have left the company, account or a copied bank.
++        if not Company.Get(MutBTargetCompanyTok) then begin
++            Company.Init();
++            Company.Name := MutBTargetCompanyTok;
++            Company."Display Name" := MutBTargetCompanyTok;
++            Company.Insert(true);
++        end;
++        AuthShareHttpFixture.Setup(IHttpFactory, FakeHTTPClient, FakeIHttpResponse, '{"name":"DetectPocBank","country-code":"DK"}');
++        CSCSubscription.SetRange("App Code", CoreMgt.ProductCode());
++        CSCSubscription.FindFirst();
++        TargetCSCSubscription.ChangeCompany(MutBTargetCompanyTok);
++        TargetCSCSubscription := CSCSubscription;
++        if TargetCSCSubscription.Insert() then;
++        TargetBank.ChangeCompany(MutBTargetCompanyTok);
++        if TargetBank.Get(DetectPocSourceBankCodeTok) then
++            TargetBank.Delete();
++        TargetBankAccount.ChangeCompany(MutBTargetCompanyTok);
++        if TargetBankAccount.Get(DetectPocBankAccountNoTok) then
++            TargetBankAccount.Delete();
++        TargetBankAccount.Init();
++        TargetBankAccount."No." := DetectPocBankAccountNoTok;
++        TargetBankAccount.IBAN := MutBNoWriteIbanTok;
++        TargetBankAccount."Country/Region Code" := 'DK';
++        TargetBankAccount.Insert();
++
++        SourceEntryNo := SeedDetectionPocFixture();
++        AuthenticationEntry.Get(SourceEntryNo);
++        AuthenticationEntry."Originating Company" := MutBTargetCompanyTok;
++        AuthenticationEntry.Modify();
++
++        TempResolvedBank.Validate(Name, 'DetectPocBank');
++        BankSystemMapping2.Init();
++        BankSystemMapping2."Bank Code" := TempResolvedBank.Code;
++        BankSystemMapping2."Bank System Code" := DetectPocSourceSystemTok;
++        BankSystemMapping2."Supported Communication" := Enum::"CTS-CB Communication Type"::Webservice;
++        BankSystemMapping2."Import/Export Comm Type" := "CTS-CB Import/Export Comm Type"::Direct;
++        BankSystemMapping2.Insert(false);
++        InitPlaceholderInCurrentCompany(TempAuthShareTarget, MutBTargetCompanyTok);
++
++        // [Given] the IBAN lookup is already cached in CTS-CB Bank Information, so detection makes no
++        // database write before the WritePermission guards (a cache miss inserts into Bank Information,
++        // which a read-only session may not do).
++        BankInformation.SetRange(IBAN, MutBNoWriteIbanTok);
++        if not BankInformation.IsEmpty() then
++            BankInformation.DeleteAll();
++        BankInformation.Reset();
++        BankInformation.Init();
++        BankInformation.IBAN := MutBNoWriteIbanTok;
++        BankInformation.Name := 'DetectPocBank';
++        BankInformation."Country/Region Code" := 'DK';
++        BankInformation."Check Successful" := true;
++        BankInformation.Insert(true);
++
++        // [When] detection runs with read-only permissions (an exact match is found).
++        LibraryLowerPermissions.SetRead();
++        LibraryLowerPermissions.AddPermissionSet('CTS CB Base Read');
++        AuthShareDetection.DetectInCompany(SourceEntryNo, MutBTargetCompanyTok, TempAuthShareTarget, IHttpFactory);
++        LibraryPermissions.SetSuperPermissions();
++
++        // [Then] no error occurred (reaching this line), the exact match was found, no bank was copied and the account was not linked.
++        AssertRow(TempAuthShareTarget, DetectPocSourceBankCodeTok, Enum::"CTS-CB Share Target Annotation"::Ready, 1, '');
++        Assert.IsFalse(TargetBank.Get(DetectPocSourceBankCodeTok), 'The source bank must not be copied without write permission.');
++        TargetBankAccount.Get(DetectPocBankAccountNoTok);
++        Assert.AreEqual('', TargetBankAccount."CTS-CB Bank Code", 'The Bank Account must not be linked without write permission.');
++
++        // Cleanup of the cached lookup and the second company.
++        BankInformation.SetRange(IBAN, MutBNoWriteIbanTok);
++        BankInformation.DeleteAll();
++        if Company.Get(MutBTargetCompanyTok) then
++            Company.Delete(true);
++    end;
++
++    [Test]
++    procedure MutB_DetectInCompany_AppNotActivated_AnnotatesPlaceholderAsNotActivated()
++    var
++        TempAuthShareTarget: Record "CTS-CB Auth Share Target" temporary;
++        AuthShareDetection: Codeunit "CTS-CB Auth Share Detection";
++        IHttpFactory: Codeunit "CTS-CB Http Factory";
++        LibraryActivationMgt: Codeunit "CTS-CB Library Activation Mgt.";
++        LibraryPermissions: Codeunit "CTS-CB Library Permissions";
++        CurrentCo: Text[30];
++    begin
++        LibraryPermissions.SetSuperPermissions();
++        CurrentCo := CopyStr(CompanyName(), 1, 30);
++
++        // [Given] Continia Banking is not active in the target company (the current company, deactivated) and a placeholder row addresses it.
++        LibraryActivationMgt.DeactivateCompany();
++        InitPlaceholderInCurrentCompany(TempAuthShareTarget, CurrentCo);
++
++        // [When] DetectInCompany runs; the entry no. is irrelevant because detection stops at the activation check.
++        AuthShareDetection.DetectInCompany(1, CurrentCo, TempAuthShareTarget, IHttpFactory);
++
++        // [Then] the placeholder row is annotated NotActivated and carries the explanatory message.
++        Assert.AreEqual(1, CountRows(TempAuthShareTarget), 'Expected exactly one row');
++        AssertRow(TempAuthShareTarget, '', Enum::"CTS-CB Share Target Annotation"::NotActivated, 0, '');
++        Assert.IsTrue(StrPos(TempAuthShareTarget."Outcome Message", CurrentCo) > 0, 'Outcome Message must name the company where the app is not active.');
++
++        LibraryActivationMgt.ActivateCompany();
++    end;
++
++    [Test]
++    procedure MutB_DetectInCompany_AppNotActivated_NoPlaceholder_LeavesBufferEmpty()
++    var
++        TempAuthShareTarget: Record "CTS-CB Auth Share Target" temporary;
++        AuthShareDetection: Codeunit "CTS-CB Auth Share Detection";
++        IHttpFactory: Codeunit "CTS-CB Http Factory";
++        LibraryActivationMgt: Codeunit "CTS-CB Library Activation Mgt.";
++        LibraryPermissions: Codeunit "CTS-CB Library Permissions";
++        CurrentCo: Text[30];
++    begin
++        LibraryPermissions.SetSuperPermissions();
++        CurrentCo := CopyStr(CompanyName(), 1, 30);
++
++        // [Given] Continia Banking is not active in the target company and the buffer has no placeholder row (defensive case).
++        LibraryActivationMgt.DeactivateCompany();
++
++        // [When]
++        AuthShareDetection.DetectInCompany(1, CurrentCo, TempAuthShareTarget, IHttpFactory);
++
++        // [Then] detection exits cleanly and does not try to modify a row that does not exist.
++        Assert.AreEqual(0, CountRows(TempAuthShareTarget), 'Expected zero rows - there is no placeholder to annotate');
++
++        LibraryActivationMgt.ActivateCompany();
++    end;
++
++    [Test]
++    procedure MutB_UpdatePlaceholderRows_StaleRowForSourceBank_IsRemoved()
++    var
++        TempAuthShareTarget: Record "CTS-CB Auth Share Target" temporary;
++        SourceBank: Record "CTS-CB Bank";
++        AuthShareDetection: Codeunit "CTS-CB Auth Share Detection";
++        ResolvedOtherAccountsByBank: Dictionary of [Code[30], List of [Code[20]]];
++        UnidentifiedAccounts: List of [Code[20]];
++    begin
++        // [Given] A placeholder (line 10) plus a stale row for the source bank left by an earlier discovery (line 20).
++        InitPlaceholder(TempAuthShareTarget);
++        TempAuthShareTarget.Init();
++        TempAuthShareTarget."Line No." := 20;
++        TempAuthShareTarget."Target Company" := TargetCompanyTok;
++        TempAuthShareTarget."Target Bank Code" := SourceBankCodeTok;
++        TempAuthShareTarget.Annotation := Enum::"CTS-CB Share Target Annotation"::Ready;
++        TempAuthShareTarget.Insert();
++        CreateBank(SourceBankCodeTok, 'Source Bank', "CTS-CB Import/Export Comm Type"::Direct);
++        SourceBank.Get(SourceBankCodeTok);
++
++        // Position the caller's record on the placeholder (line 10) so it differs from the last row (line 20).
++        TempAuthShareTarget.Get(10);
++
++        // [When] Three accounts matched the source bank exactly.
++        AuthShareDetection.UpdatePlaceholderRows(TempAuthShareTarget, TargetCompanyTok, SourceBank, SourceBankSystemTok, "CTS-CB Import/Export Comm Type"::Direct, 3, 0, ResolvedOtherAccountsByBank, UnidentifiedAccounts, 0, 0);
++
++        // [Then] The placeholder became Ready and the stale pre-existing row for the same bank is gone.
++        Assert.AreEqual(1, CountRows(TempAuthShareTarget), 'The stale row for the source bank must be deleted');
++        AssertRow(TempAuthShareTarget, SourceBankCodeTok, Enum::"CTS-CB Share Target Annotation"::Ready, 3, '');
++    end;
++
++    [Test]
++    procedure MutB_UpdatePlaceholderRows_NoMatchedAccounts_KeepsRowForSourceBank()
++    var
++        TempAuthShareTarget: Record "CTS-CB Auth Share Target" temporary;
++        SourceBank: Record "CTS-CB Bank";
++        AuthShareDetection: Codeunit "CTS-CB Auth Share Detection";
++        ResolvedOtherAccountsByBank: Dictionary of [Code[30], List of [Code[20]]];
++        UnidentifiedAccounts: List of [Code[20]];
++        AccountsForOtherA: List of [Code[20]];
++    begin
++        // [Given] A placeholder, an existing row for the source bank (line 20) and accounts resolved only to another bank.
++        InitPlaceholder(TempAuthShareTarget);
++        TempAuthShareTarget.Init();
++        TempAuthShareTarget."Line No." := 20;
++        TempAuthShareTarget."Target Company" := TargetCompanyTok;
++        TempAuthShareTarget."Target Bank Code" := SourceBankCodeTok;
++        TempAuthShareTarget.Annotation := Enum::"CTS-CB Share Target Annotation"::Ready;
++        TempAuthShareTarget.Insert();
++        CreateBank(SourceBankCodeTok, 'Source Bank', "CTS-CB Import/Export Comm Type"::Direct);
++        SourceBank.Get(SourceBankCodeTok);
++        CreateBank(OtherBankATok, 'Other Bank A', "CTS-CB Import/Export Comm Type"::Direct);
++        AccountsForOtherA.Add('BA-001');
++        ResolvedOtherAccountsByBank.Add(OtherBankATok, AccountsForOtherA);
++
++        // [When] No account matched the source bank (ExactMatchCount = MismatchCount = 0).
++        AuthShareDetection.UpdatePlaceholderRows(TempAuthShareTarget, TargetCompanyTok, SourceBank, SourceBankSystemTok, "CTS-CB Import/Export Comm Type"::Direct, 0, 0, ResolvedOtherAccountsByBank, UnidentifiedAccounts, 0, 0);
++
++        // [Then] The placeholder became SystemNotMapped and the unrelated row for the source bank is left alone.
++        Assert.AreEqual(2, CountRows(TempAuthShareTarget), 'Expected two rows - SystemNotMapped plus the untouched source-bank row');
++        AssertSpecificRow(TempAuthShareTarget, OtherBankATok, Enum::"CTS-CB Share Target Annotation"::SystemNotMapped, 1, 'BA-001');
++        AssertSpecificRow(TempAuthShareTarget, SourceBankCodeTok, Enum::"CTS-CB Share Target Annotation"::Ready, 0, '');
++    end;
++
++    [Test]
++    procedure MutB_UpdatePlaceholderRows_EmptySourceBankCode_KeepsOtherRowsWithoutBank()
++    var
++        TempAuthShareTarget: Record "CTS-CB Auth Share Target" temporary;
++        SourceBank: Record "CTS-CB Bank";
++        AuthShareDetection: Codeunit "CTS-CB Auth Share Detection";
++        ResolvedOtherAccountsByBank: Dictionary of [Code[30], List of [Code[20]]];
++        UnidentifiedAccounts: List of [Code[20]];
++    begin
++        // [Given] A placeholder (line 10), an unrelated row without a bank code (line 20) and a source bank record that has no code.
++        InitPlaceholder(TempAuthShareTarget);
++        TempAuthShareTarget.Init();
++        TempAuthShareTarget."Line No." := 20;
++        TempAuthShareTarget."Target Company" := TargetCompanyTok;
++        TempAuthShareTarget."Target Bank Code" := '';
++        TempAuthShareTarget.Annotation := Enum::"CTS-CB Share Target Annotation"::DetectionFailed;
++        TempAuthShareTarget.Insert();
++
++        // [When] Two accounts matched; the cleanup is asked to run for an empty bank code.
++        AuthShareDetection.UpdatePlaceholderRows(TempAuthShareTarget, TargetCompanyTok, SourceBank, SourceBankSystemTok, "CTS-CB Import/Export Comm Type"::Direct, 2, 0, ResolvedOtherAccountsByBank, UnidentifiedAccounts, 0, 0);
++
++        // [Then] An empty bank code never triggers a cleanup: the unrelated row survives.
++        Assert.AreEqual(2, CountRows(TempAuthShareTarget), 'Expected two rows - the row without a bank code must not be deleted');
++        Assert.IsTrue(TempAuthShareTarget.Get(20), 'The unrelated row without a bank code must survive');
++    end;
++
++    [Test]
++    procedure MutB_UpdatePlaceholderRows_UnknownResolvedBank_UsesBankCodeAsName()
++    var
++        TempAuthShareTarget: Record "CTS-CB Auth Share Target" temporary;
++        SourceBank: Record "CTS-CB Bank";
++        AuthShareDetection: Codeunit "CTS-CB Auth Share Detection";
++        ResolvedOtherAccountsByBank: Dictionary of [Code[30], List of [Code[20]]];
++        UnidentifiedAccounts: List of [Code[20]];
++        AccountsForGhost: List of [Code[20]];
++        GhostBankTok: Label 'GHOSTBANK', Locked = true;
++    begin
++        // [Given] An account resolved to a bank that has no CTS-CB Bank record in this company.
++        InitPlaceholder(TempAuthShareTarget);
++        CreateBank(SourceBankCodeTok, 'Source Bank', "CTS-CB Import/Export Comm Type"::Direct);
++        SourceBank.Get(SourceBankCodeTok);
++        AccountsForGhost.Add('BA-001');
++        ResolvedOtherAccountsByBank.Add(GhostBankTok, AccountsForGhost);
++
++        // [When]
++        AuthShareDetection.UpdatePlaceholderRows(TempAuthShareTarget, TargetCompanyTok, SourceBank, SourceBankSystemTok, "CTS-CB Import/Export Comm Type"::Direct, 0, 0, ResolvedOtherAccountsByBank, UnidentifiedAccounts, 0, 0);
++
++        // [Then] The SystemNotMapped row falls back to the bank code as its caption.
++        Assert.AreEqual(1, CountRows(TempAuthShareTarget), 'Expected exactly one row');
++        AssertRow(TempAuthShareTarget, GhostBankTok, Enum::"CTS-CB Share Target Annotation"::SystemNotMapped, 1, 'BA-001');
++        Assert.AreEqual('GHOSTBANK', TempAuthShareTarget."Target Bank Name", 'Target Bank Name must fall back to the bank code when no Bank record exists');
++    end;
++
++    [Test]
++    procedure MutB_NextLineNo_SecondEmittedRow_UsesMaxLineNoPlusTen()
++    var
++        TempAuthShareTarget: Record "CTS-CB Auth Share Target" temporary;
++        SourceBank: Record "CTS-CB Bank";
++        AuthShareDetection: Codeunit "CTS-CB Auth Share Detection";
++        ResolvedOtherAccountsByBank: Dictionary of [Code[30], List of [Code[20]]];
++        UnidentifiedAccounts: List of [Code[20]];
++        AccountsForOtherA: List of [Code[20]];
++        UnrelatedBankTok: Label 'UNRELATED', Locked = true;
++    begin
++        // [Given] A placeholder (line 10) and an unrelated row for another bank (line 20).
++        InitPlaceholder(TempAuthShareTarget);
++        TempAuthShareTarget.Init();
++        TempAuthShareTarget."Line No." := 20;
++        TempAuthShareTarget."Target Company" := TargetCompanyTok;
++        TempAuthShareTarget."Target Bank Code" := UnrelatedBankTok;
++        TempAuthShareTarget.Annotation := Enum::"CTS-CB Share Target Annotation"::Ready;
++        TempAuthShareTarget.Insert();
++        CreateBank(SourceBankCodeTok, 'Source Bank', "CTS-CB Import/Export Comm Type"::Direct);
++        SourceBank.Get(SourceBankCodeTok);
++        CreateBank(OtherBankATok, 'Other Bank A', "CTS-CB Import/Export Comm Type"::Direct);
++        AccountsForOtherA.Add('BA-001');
++        ResolvedOtherAccountsByBank.Add(OtherBankATok, AccountsForOtherA);
++
++        // [When] One account matched the source bank exactly (consumes the placeholder) and one resolved to another bank (needs a new row).
++        AuthShareDetection.UpdatePlaceholderRows(TempAuthShareTarget, TargetCompanyTok, SourceBank, SourceBankSystemTok, "CTS-CB Import/Export Comm Type"::Direct, 1, 0, ResolvedOtherAccountsByBank, UnidentifiedAccounts, 0, 0);
++
++        // [Then] The new row is appended after the highest existing line (20), i.e. at line 30.
++        Assert.AreEqual(3, CountRows(TempAuthShareTarget), 'Expected placeholder, unrelated row and one new row');
++        Assert.IsTrue(TempAuthShareTarget.Get(30), 'The new SystemNotMapped row must be inserted at max line + 10');
++        Assert.AreEqual(OtherBankATok, TempAuthShareTarget."Target Bank Code", 'Line 30 must be the row for the other bank');
++        Assert.AreEqual(Enum::"CTS-CB Share Target Annotation"::SystemNotMapped, TempAuthShareTarget.Annotation, 'Annotation mismatch');
++    end;
++
++    [Test]
++    procedure MutB_UpdatePlaceholderRows_OtherBankAndUnidentified_FailureMessageCountsOtherBankAccounts()
++    var
++        TempAuthShareTarget: Record "CTS-CB Auth Share Target" temporary;
++        SourceBank: Record "CTS-CB Bank";
++        AuthShareDetection: Codeunit "CTS-CB Auth Share Detection";
++        ResolvedOtherAccountsByBank: Dictionary of [Code[30], List of [Code[20]]];
++        UnidentifiedAccounts: List of [Code[20]];
++        AccountsForOtherA: List of [Code[20]];
++    begin
++        // [Given] Two accounts resolved to another bank and one account could not be resolved (HTTP failure).
++        InitPlaceholder(TempAuthShareTarget);
++        CreateBank(SourceBankCodeTok, 'Source Bank', "CTS-CB Import/Export Comm Type"::Direct);
++        SourceBank.Get(SourceBankCodeTok);
++        CreateBank(OtherBankATok, 'Other Bank A', "CTS-CB Import/Export Comm Type"::Direct);
++        AccountsForOtherA.Add('BA-001');
++        AccountsForOtherA.Add('BA-002');
++        ResolvedOtherAccountsByBank.Add(OtherBankATok, AccountsForOtherA);
++        UnidentifiedAccounts.Add('BA-X1');
++
++        // [When]
++        AuthShareDetection.UpdatePlaceholderRows(TempAuthShareTarget, TargetCompanyTok, SourceBank, SourceBankSystemTok, "CTS-CB Import/Export Comm Type"::Direct, 0, 0, ResolvedOtherAccountsByBank, UnidentifiedAccounts, 1, 0);
++
++        // [Then] Two rows; the DetectionFailed message reports 1 failed out of 3 attempted accounts.
++        Assert.AreEqual(2, CountRows(TempAuthShareTarget), 'Expected two rows - SystemNotMapped + DetectionFailed');
++        TempAuthShareTarget.SetRange(Annotation, Enum::"CTS-CB Share Target Annotation"::DetectionFailed);
++        Assert.IsTrue(TempAuthShareTarget.FindFirst(), 'Expected a DetectionFailed row');
++        Assert.AreEqual('Bank detection failed for 1 of 3 bank accounts in this company. 1 accounts had lookup or connection errors, and 0 accounts had missing IBAN or branch information.', TempAuthShareTarget."Outcome Message", 'Outcome Message must count the other-bank accounts as attempted');
++        TempAuthShareTarget.Reset();
++    end;
+ }
+diff --git a/Bank Account/BankSysPmtMapTests.Codeunit.al b/Bank Account/BankSysPmtMapTests.Codeunit.al
+index 32ab89a..69b83a7 100644
+--- a/Bank Account/BankSysPmtMapTests.Codeunit.al	
++++ b/Bank Account/BankSysPmtMapTests.Codeunit.al	
+@@ -736,4 +736,542 @@ codeunit 95110 "CTS-CB Bank Sys Pmt Map Tests"
+         if not BankSystem.IsEmpty() then
+             BankSystem.DeleteAll();
+     end;
++
++    [Test]
++    procedure TestCopyPaymentMethodsFromBankSystem_NonBankSystemType_CreatesNoMappings()
++    var
++        BankAccount: Record "Bank Account";
++        BankAccComSetup: Record "CTS-CB Bank Acc. Com. Setup";
++        BankSysPmtMthMap: Record "CTS-CB Bank Sys. Pmt. Mth. Map";
++        BankSystem: Record "CTS-CB Bank System";
++        BankSystemPmtMth: Record "CTS-CB Bank System Pmt. Mth.";
++        PaymentMethod: Record "Payment Method";
++        PaymentMethodMapper: Codeunit "CTS-CB Payment Method Mapper";
++    begin
++        DeleteTables();
++        // [SCENARIO] Payment methods are only copied for setups whose System Type is BankSystem
++
++        // [GIVEN] A bank system with a payment method, and a CSV Port setup that uses the same code
++        CreateBankAccount(BankAccount);
++        CreateBankSystem(BankSystem);
++        CreatePaymentMethod(PaymentMethod);
++        CreateBankSystemPaymentMethod(BankSystemPmtMth, BankSystem.Code, PaymentMethod.Code);
++        BankAccComSetup.Init();
++        BankAccComSetup.Code := BankAccount."No.";
++        BankAccComSetup."System Type" := BankAccComSetup."System Type"::"CSV Port";
++        BankAccComSetup."System Type Code" := BankSystem.Code;
++        BankAccComSetup."Transaction Type" := BankAccComSetup."Transaction Type"::Payment;
++        BankAccComSetup."File Type" := BankAccComSetup."File Type"::BankFormat;
++
++        // [WHEN] Copying payment methods from bank system
++        PaymentMethodMapper.CopyPaymentMethodsFromBankSystem(BankAccComSetup);
++
++        // [THEN] No mapping is created because the setup is not a BankSystem setup
++        BankSysPmtMthMap.SetRange("Bank Account No.", BankAccount."No.");
++        Assert.IsTrue(BankSysPmtMthMap.IsEmpty(), 'No mappings should be created for a setup whose System Type is not BankSystem');
++
++        // Cleanup
++        CleanupTestData(BankAccount, BankSystem, PaymentMethod);
++    end;
++
++    [Test]
++    procedure TestCopyPaymentMethodsFromBankSystem_NonPaymentTransactionType_CreatesNoMappings()
++    var
++        BankAccount: Record "Bank Account";
++        BankAccComSetup: Record "CTS-CB Bank Acc. Com. Setup";
++        BankSysPmtMthMap: Record "CTS-CB Bank Sys. Pmt. Mth. Map";
++        BankSystem: Record "CTS-CB Bank System";
++        BankSystemPmtMth: Record "CTS-CB Bank System Pmt. Mth.";
++        PaymentMethod: Record "Payment Method";
++        PaymentMethodMapper: Codeunit "CTS-CB Payment Method Mapper";
++    begin
++        DeleteTables();
++        // [SCENARIO] Payment methods are only copied for Payment and Direct Debit transaction types
++
++        // [GIVEN] A bank system payment method that has no CTS-CB Payment Method, and an Account Statement setup
++        CreateBankAccount(BankAccount);
++        CreateBankSystem(BankSystem);
++        CreatePaymentMethod(PaymentMethod);
++        CreateBankSystemPaymentMethod(BankSystemPmtMth, BankSystem.Code, PaymentMethod.Code);
++        BankAccComSetup.Init();
++        BankAccComSetup.Code := BankAccount."No.";
++        BankAccComSetup."System Type" := BankAccComSetup."System Type"::BankSystem;
++        BankAccComSetup."System Type Code" := BankSystem.Code;
++        BankAccComSetup."Transaction Type" := BankAccComSetup."Transaction Type"::"Account Statement";
++        BankAccComSetup."File Type" := BankAccComSetup."File Type"::BankFormat;
++
++        // [WHEN] Copying payment methods from bank system
++        PaymentMethodMapper.CopyPaymentMethodsFromBankSystem(BankAccComSetup);
++
++        // [THEN] No mapping is created because Account Statement does not use payment method mappings
++        BankSysPmtMthMap.SetRange("Bank Account No.", BankAccount."No.");
++        Assert.IsTrue(BankSysPmtMthMap.IsEmpty(), 'No mappings should be created for an Account Statement setup');
++
++        // Cleanup
++        CleanupTestData(BankAccount, BankSystem, PaymentMethod);
++    end;
++
++    [Test]
++    procedure TestCopyPaymentMethodsFromBankSystem_NoBankSystemPaymentMethods_CreatesNoMappings()
++    var
++        BankAccount: Record "Bank Account";
++        BankAccComSetup: Record "CTS-CB Bank Acc. Com. Setup";
++        BankSysPmtMthMap: Record "CTS-CB Bank Sys. Pmt. Mth. Map";
++        BankSystem: Record "CTS-CB Bank System";
++        PaymentMethod: Record "Payment Method";
++        PaymentMethodMapper: Codeunit "CTS-CB Payment Method Mapper";
++    begin
++        DeleteTables();
++        // [SCENARIO] Nothing is mapped when the bank system has no payment methods
++
++        // [GIVEN] A bank system without any payment methods and a Payment setup for it
++        CreateBankAccount(BankAccount);
++        CreateBankSystem(BankSystem);
++        BankAccComSetup.Init();
++        BankAccComSetup.Code := BankAccount."No.";
++        BankAccComSetup."System Type" := BankAccComSetup."System Type"::BankSystem;
++        BankAccComSetup."System Type Code" := BankSystem.Code;
++        BankAccComSetup."Transaction Type" := BankAccComSetup."Transaction Type"::Payment;
++        BankAccComSetup."File Type" := BankAccComSetup."File Type"::BankFormat;
++
++        // [WHEN] Copying payment methods from bank system
++        PaymentMethodMapper.CopyPaymentMethodsFromBankSystem(BankAccComSetup);
++
++        // [THEN] No mapping is created
++        BankSysPmtMthMap.SetRange("Bank Account No.", BankAccount."No.");
++        Assert.IsTrue(BankSysPmtMthMap.IsEmpty(), 'No mappings should be created when the bank system has no payment methods');
++
++        // Cleanup
++        CleanupTestData(BankAccount, BankSystem, PaymentMethod);
++    end;
++
++    [Test]
++    procedure TestCopyPaymentMethodsFromBankSystem_UnknownPaymentMethod_UsesSetupTransactionType()
++    var
++        BankAccount: Record "Bank Account";
++        BankAccComSetup: Record "CTS-CB Bank Acc. Com. Setup";
++        BankSysPmtMthMap: Record "CTS-CB Bank Sys. Pmt. Mth. Map";
++        BankSystem: Record "CTS-CB Bank System";
++        BankSystemPmtMth: Record "CTS-CB Bank System Pmt. Mth.";
++        PaymentMethod: Record "Payment Method";
++        PaymentMethodMapper: Codeunit "CTS-CB Payment Method Mapper";
++    begin
++        DeleteTables();
++        // [SCENARIO] A bank system payment method without a CTS-CB Payment Method is mapped with the setup's transaction type
++
++        // [GIVEN] A bank system payment method that is not a CTS-CB Payment Method, and a Payment setup
++        CreateBankAccount(BankAccount);
++        CreateBankSystem(BankSystem);
++        CreatePaymentMethod(PaymentMethod);
++        CreateBankSystemPaymentMethod(BankSystemPmtMth, BankSystem.Code, PaymentMethod.Code);
++        BankAccComSetup.Init();
++        BankAccComSetup.Code := BankAccount."No.";
++        BankAccComSetup."System Type" := BankAccComSetup."System Type"::BankSystem;
++        BankAccComSetup."System Type Code" := BankSystem.Code;
++        BankAccComSetup."Transaction Type" := BankAccComSetup."Transaction Type"::Payment;
++        BankAccComSetup."File Type" := BankAccComSetup."File Type"::BankFormat;
++
++        // [WHEN] Copying payment methods from bank system
++        PaymentMethodMapper.CopyPaymentMethodsFromBankSystem(BankAccComSetup);
++
++        // [THEN] One mapping with the setup's transaction type is created
++        BankSysPmtMthMap.SetRange("Bank Account No.", BankAccount."No.");
++        BankSysPmtMthMap.SetRange("Payment Method Code", PaymentMethod.Code);
++        BankSysPmtMthMap.SetRange("Transaction Type", BankSysPmtMthMap."Transaction Type"::Payment);
++        Assert.AreEqual(1, BankSysPmtMthMap.Count, 'An unknown payment method should be mapped with the setup transaction type');
++
++        // Cleanup
++        CleanupTestData(BankAccount, BankSystem, PaymentMethod);
++    end;
++
++    [Test]
++    procedure TestCopyPaymentMethodsFromBankSystem_MismatchedTransactionType_IsSkipped()
++    var
++        BankAccount: Record "Bank Account";
++        BankAccComSetup: Record "CTS-CB Bank Acc. Com. Setup";
++        BankSysPmtMthMap: Record "CTS-CB Bank Sys. Pmt. Mth. Map";
++        BankSystem: Record "CTS-CB Bank System";
++        BankSystemPmtMth: Record "CTS-CB Bank System Pmt. Mth.";
++        CTSCBPaymentMethod: Record "CTS-CB Payment Method";
++        PaymentMethod: Record "Payment Method";
++        PaymentMethodMapper: Codeunit "CTS-CB Payment Method Mapper";
++    begin
++        DeleteTables();
++        // [SCENARIO] A Direct Debit payment method is not mapped for a Payment setup
++
++        // [GIVEN] A payment method with Credit Transaction = true (Direct Debit) and a Payment setup
++        CreateBankAccount(BankAccount);
++        CreateBankSystem(BankSystem);
++        CreatePaymentMethodWithCreditTransaction(PaymentMethod, CTSCBPaymentMethod, true);
++        CreateBankSystemPaymentMethod(BankSystemPmtMth, BankSystem.Code, CTSCBPaymentMethod."Payment Method Code");
++        BankAccComSetup.Init();
++        BankAccComSetup.Code := BankAccount."No.";
++        BankAccComSetup."System Type" := BankAccComSetup."System Type"::BankSystem;
++        BankAccComSetup."System Type Code" := BankSystem.Code;
++        BankAccComSetup."Transaction Type" := BankAccComSetup."Transaction Type"::Payment;
++        BankAccComSetup."File Type" := BankAccComSetup."File Type"::BankFormat;
++
++        // [WHEN] Copying payment methods from bank system
++        PaymentMethodMapper.CopyPaymentMethodsFromBankSystem(BankAccComSetup);
++
++        // [THEN] No mapping is created, because the payment method belongs to Direct Debit
++        BankSysPmtMthMap.SetRange("Bank Account No.", BankAccount."No.");
++        Assert.IsTrue(BankSysPmtMthMap.IsEmpty(), 'A Direct Debit payment method should not be mapped for a Payment setup');
++
++        // Cleanup
++        CleanupTestDataWithCTSCB(BankAccount, BankSystem, PaymentMethod, CTSCBPaymentMethod);
++    end;
++
++    [Test]
++    procedure TestPropagatePaymentMethodToMappings_BlankCTSCBCode_CreatesNoMappings()
++    var
++        BankAccount: Record "Bank Account";
++        BankSysPmtMthMap: Record "CTS-CB Bank Sys. Pmt. Mth. Map";
++        BankSystem: Record "CTS-CB Bank System";
++        BankSystemPmtMth: Record "CTS-CB Bank System Pmt. Mth.";
++        BlankCodeCTSCBPaymentMethod: Record "CTS-CB Payment Method";
++        PaymentMethod: Record "Payment Method";
++        PaymentMethodMapper: Codeunit "CTS-CB Payment Method Mapper";
++        MappingCount: Integer;
++    begin
++        DeleteTables();
++        // [SCENARIO] Propagation stops at once when the target PM has a blank CTS-CB Payment Method Code, even if a CTS-CB PM with a blank Code exists
++
++        // [GIVEN] A CTS-CB Payment Method with a blank Code and an existing mapping on its Payment Method Code
++        CreateBankAccount(BankAccount);
++        CreateBankSystem(BankSystem);
++        BlankCodeCTSCBPaymentMethod.Init();
++        BlankCodeCTSCBPaymentMethod.Code := '';
++        BlankCodeCTSCBPaymentMethod."Sender Country" := '00';
++        BlankCodeCTSCBPaymentMethod."Recipient Country" := '00';
++        BlankCodeCTSCBPaymentMethod."Payment Method Code" := 'BLANKCODEPM';
++        BlankCodeCTSCBPaymentMethod.Insert();
++        CreateBankSystemPaymentMethod(BankSystemPmtMth, BankSystem.Code, 'BLANKCODEPM');
++        BankSysPmtMthMap.Init();
++        BankSysPmtMthMap."Bank Account No." := BankAccount."No.";
++        BankSysPmtMthMap."System Type" := BankSysPmtMthMap."System Type"::BankSystem;
++        BankSysPmtMthMap."System Type Code" := BankSystem.Code;
++        BankSysPmtMthMap."Transaction Type" := BankSysPmtMthMap."Transaction Type"::Payment;
++        BankSysPmtMthMap."Payment Method Code" := 'BLANKCODEPM';
++        BankSysPmtMthMap."Short Payment Method Code" := 'OTHER';
++        BankSysPmtMthMap.Insert(true);
++
++        // [GIVEN] A BC Payment Method without CTS-CB Payment Method Code
++        CreatePaymentMethod(PaymentMethod);
++
++        // [WHEN] Propagating the payment method
++        PaymentMethodMapper.PropagatePaymentMethodToMappings(PaymentMethod);
++
++        // [THEN] No new mapping is created
++        BankSysPmtMthMap.Reset();
++        BankSysPmtMthMap.SetRange("Bank Account No.", BankAccount."No.");
++        MappingCount := BankSysPmtMthMap.Count;
++
++        // Cleanup
++        BlankCodeCTSCBPaymentMethod.Delete();
++        CleanupTestData(BankAccount, BankSystem, PaymentMethod);
++
++        Assert.AreEqual(1, MappingCount, 'No mapping should be propagated for a PM without CTS-CB Payment Method Code');
++    end;
++
++    [Test]
++    procedure TestPropagatePaymentMethodToMappings_UnknownCTSCBCode_CreatesNoMappings()
++    var
++        BankAccount: Record "Bank Account";
++        BankSysPmtMthMap: Record "CTS-CB Bank Sys. Pmt. Mth. Map";
++        BankSystem: Record "CTS-CB Bank System";
++        PaymentMethod: Record "Payment Method";
++        PaymentMethodMapper: Codeunit "CTS-CB Payment Method Mapper";
++        MappingCount: Integer;
++    begin
++        DeleteTables();
++        // [SCENARIO] Propagation does nothing when the target PM points to a CTS-CB Payment Method that does not exist
++
++        // [GIVEN] An existing mapping with a blank Payment Method Code
++        CreateBankAccount(BankAccount);
++        CreateBankSystem(BankSystem);
++        BankSysPmtMthMap.Init();
++        BankSysPmtMthMap."Bank Account No." := BankAccount."No.";
++        BankSysPmtMthMap."System Type" := BankSysPmtMthMap."System Type"::BankSystem;
++        BankSysPmtMthMap."System Type Code" := BankSystem.Code;
++        BankSysPmtMthMap."Transaction Type" := BankSysPmtMthMap."Transaction Type"::Payment;
++        BankSysPmtMthMap."Payment Method Code" := '';
++        BankSysPmtMthMap."Short Payment Method Code" := 'OTHER';
++        BankSysPmtMthMap.Insert(true);
++
++        // [GIVEN] A BC Payment Method whose CTS-CB Payment Method Code does not exist
++        CreatePaymentMethod(PaymentMethod);
++        PaymentMethod."CTS-CB Payment Method Code" := 'NOSUCH';
++        PaymentMethod.Modify(true);
++
++        // [WHEN] Propagating the payment method
++        PaymentMethodMapper.PropagatePaymentMethodToMappings(PaymentMethod);
++
++        // [THEN] No new mapping is created
++        BankSysPmtMthMap.Reset();
++        BankSysPmtMthMap.SetRange("Bank Account No.", BankAccount."No.");
++        MappingCount := BankSysPmtMthMap.Count;
++
++        // Cleanup
++        CleanupTestData(BankAccount, BankSystem, PaymentMethod);
++
++        Assert.AreEqual(1, MappingCount, 'No mapping should be propagated when the CTS-CB Payment Method does not exist');
++    end;
++
++    [Test]
++    procedure TestPropagatePaymentMethodToMappings_NoExistingMappings_CreatesNoMappings()
++    var
++        BankSysPmtMthMap: Record "CTS-CB Bank Sys. Pmt. Mth. Map";
++        CTSCBPaymentMethod: Record "CTS-CB Payment Method";
++        PaymentMethod: Record "Payment Method";
++        PaymentMethodMapper: Codeunit "CTS-CB Payment Method Mapper";
++        MappingCount: Integer;
++    begin
++        DeleteTables();
++        // [SCENARIO] Propagation does nothing when no mapping uses the CTS-CB Payment Method
++
++        // [GIVEN] A CTS-CB Payment Method with a linked BC Payment Method but no mappings
++        CreateCTSCBPaymentMethod(CTSCBPaymentMethod, false);
++        CreateBCPaymentMethodWithCTSCB(PaymentMethod, CTSCBPaymentMethod.Code);
++
++        // [WHEN] Propagating the payment method
++        PaymentMethodMapper.PropagatePaymentMethodToMappings(PaymentMethod);
++
++        // [THEN] No mapping is created
++        MappingCount := BankSysPmtMthMap.Count;
++
++        // Cleanup
++        BankSysPmtMthMap.DeleteAll();
++        if PaymentMethod.Get(PaymentMethod.Code) then
++            PaymentMethod.Delete(true);
++        if CTSCBPaymentMethod.Get(CTSCBPaymentMethod.Code, CTSCBPaymentMethod."Sender Country", CTSCBPaymentMethod."Recipient Country") then
++            CTSCBPaymentMethod.Delete(true);
++
++        Assert.AreEqual(0, MappingCount, 'No mapping should be created when there are no existing mappings to propagate to');
++    end;
++
++    [Test]
++    procedure TestPopulatePaymentMethodsWithConflictCheck_ConflictAndSkipFlag_ControlPopulation()
++    var
++        BankAccount: Record "Bank Account";
++        BankAccComSetupExisting: Record "CTS-CB Bank Acc. Com. Setup";
++        BankAccComSetupNew: Record "CTS-CB Bank Acc. Com. Setup";
++        BankSysPmtMthMap: Record "CTS-CB Bank Sys. Pmt. Mth. Map";
++        BankSystemExisting: Record "CTS-CB Bank System";
++        BankSystemNew: Record "CTS-CB Bank System";
++        BankSystemPmtMth: Record "CTS-CB Bank System Pmt. Mth.";
++        CTSCBPaymentMethod: Record "CTS-CB Payment Method";
++        PaymentMethod: Record "Payment Method";
++        PaymentMethodMapper: Codeunit "CTS-CB Payment Method Mapper";
++    begin
++        DeleteTables();
++        // [SCENARIO] A payment method conflict stops population unless the conflict check is skipped
++
++        // [GIVEN] Two bank systems that support the same Payment payment method
++        CreateBankAccount(BankAccount);
++        CreateBankSystem(BankSystemExisting);
++        CreateBankSystem(BankSystemNew);
++        CreatePaymentMethodWithCreditTransaction(PaymentMethod, CTSCBPaymentMethod, false);
++        CreateBankSystemPaymentMethod(BankSystemPmtMth, BankSystemExisting.Code, CTSCBPaymentMethod."Payment Method Code");
++        CreateBankSystemPaymentMethod(BankSystemPmtMth, BankSystemNew.Code, CTSCBPaymentMethod."Payment Method Code");
++
++        // [GIVEN] An enabled setup for the first system that already owns a mapping for the payment method
++        BankAccComSetupExisting.Init();
++        BankAccComSetupExisting.Code := BankAccount."No.";
++        BankAccComSetupExisting."System Type" := BankAccComSetupExisting."System Type"::BankSystem;
++        BankAccComSetupExisting."System Type Code" := BankSystemExisting.Code;
++        BankAccComSetupExisting."Transaction Type" := BankAccComSetupExisting."Transaction Type"::Payment;
++        BankAccComSetupExisting."File Type" := BankAccComSetupExisting."File Type"::BankFormat;
++        BankAccComSetupExisting.Enabled := true;
++        BankAccComSetupExisting."Auto Populate Pmt Methods" := false;
++        BankAccComSetupExisting.Insert(true);
++
++        BankSysPmtMthMap.Init();
++        BankSysPmtMthMap."Bank Account No." := BankAccount."No.";
++        BankSysPmtMthMap."System Type" := BankSysPmtMthMap."System Type"::BankSystem;
++        BankSysPmtMthMap."System Type Code" := BankSystemExisting.Code;
++        BankSysPmtMthMap."Transaction Type" := BankSysPmtMthMap."Transaction Type"::Payment;
++        BankSysPmtMthMap."Payment Method Code" := CTSCBPaymentMethod."Payment Method Code";
++        BankSysPmtMthMap."Short Payment Method Code" := 'OTHER';
++        BankSysPmtMthMap.Insert(true);
++
++        // [GIVEN] A not yet saved setup for the second system
++        BankAccComSetupNew.Init();
++        BankAccComSetupNew.Code := BankAccount."No.";
++        BankAccComSetupNew."System Type" := BankAccComSetupNew."System Type"::BankSystem;
++        BankAccComSetupNew."System Type Code" := BankSystemNew.Code;
++        BankAccComSetupNew."Transaction Type" := BankAccComSetupNew."Transaction Type"::Payment;
++        BankAccComSetupNew."File Type" := BankAccComSetupNew."File Type"::BankFormat;
++
++        // [WHEN] Populating with the conflict check enabled
++        PaymentMethodMapper.PopulatePaymentMethodsWithConflictCheck(BankAccComSetupNew, false);
++
++        // [THEN] The conflict stops the population
++        BankSysPmtMthMap.Reset();
++        BankSysPmtMthMap.SetRange("Bank Account No.", BankAccount."No.");
++        BankSysPmtMthMap.SetRange("System Type Code", BankSystemNew.Code);
++        Assert.IsTrue(BankSysPmtMthMap.IsEmpty(), 'A detected conflict should stop the population of payment methods');
++
++        // [WHEN] Populating with the conflict check skipped
++        PaymentMethodMapper.PopulatePaymentMethodsWithConflictCheck(BankAccComSetupNew, true);
++
++        // [THEN] The payment method is mapped for the second system
++        Assert.IsFalse(BankSysPmtMthMap.IsEmpty(), 'Skipping the conflict check should populate the payment methods');
++
++        // Cleanup
++        CleanupTestDataWithCTSCB(BankAccount, BankSystemExisting, PaymentMethod, CTSCBPaymentMethod);
++        if BankSystemNew.Get(BankSystemNew.Code) then
++            BankSystemNew.Delete(true);
++    end;
++
++    [Test]
++    procedure TestCleanupExceptSystem_RemovesOnlyOtherSystemMappings()
++    var
++        BankAccount: Record "Bank Account";
++        BankSysPmtMthMap: Record "CTS-CB Bank Sys. Pmt. Mth. Map";
++        BankSystemKeep: Record "CTS-CB Bank System";
++        BankSystemOther: Record "CTS-CB Bank System";
++        BankSystemPmtMth: Record "CTS-CB Bank System Pmt. Mth.";
++        PaymentMethod: Record "Payment Method";
++        PaymentMethodMapper: Codeunit "CTS-CB Payment Method Mapper";
++    begin
++        DeleteTables();
++        // [SCENARIO] Cleaning up an incomplete setup removes the mappings of all systems except the one to keep
++
++        // [GIVEN] Payment method mappings for two bank systems on the same bank account
++        CreateBankAccount(BankAccount);
++        CreateBankSystem(BankSystemKeep);
++        CreateBankSystem(BankSystemOther);
++        CreatePaymentMethod(PaymentMethod);
++        CreateBankSystemPaymentMethod(BankSystemPmtMth, BankSystemKeep.Code, PaymentMethod.Code);
++        CreateBankSystemPaymentMethod(BankSystemPmtMth, BankSystemOther.Code, PaymentMethod.Code);
++
++        BankSysPmtMthMap.Init();
++        BankSysPmtMthMap."Bank Account No." := BankAccount."No.";
++        BankSysPmtMthMap."System Type" := BankSysPmtMthMap."System Type"::BankSystem;
++        BankSysPmtMthMap."System Type Code" := BankSystemKeep.Code;
++        BankSysPmtMthMap."Transaction Type" := BankSysPmtMthMap."Transaction Type"::Payment;
++        BankSysPmtMthMap."Payment Method Code" := PaymentMethod.Code;
++        BankSysPmtMthMap.Insert(true);
++
++        BankSysPmtMthMap."Entry No." := 0;
++        BankSysPmtMthMap.Init();
++        BankSysPmtMthMap."Bank Account No." := BankAccount."No.";
++        BankSysPmtMthMap."System Type" := BankSysPmtMthMap."System Type"::BankSystem;
++        BankSysPmtMthMap."System Type Code" := BankSystemOther.Code;
++        BankSysPmtMthMap."Transaction Type" := BankSysPmtMthMap."Transaction Type"::Payment;
++        BankSysPmtMthMap."Payment Method Code" := PaymentMethod.Code;
++        BankSysPmtMthMap.Insert(true);
++
++        // [WHEN] Cleaning up except the first system
++        PaymentMethodMapper.CleanupExceptSystem(BankAccount."No.", "CTS-CB Transaction Type"::Payment, BankSystemKeep.Code);
++
++        // [THEN] The mappings of the other system are deleted
++        BankSysPmtMthMap.Reset();
++        BankSysPmtMthMap.SetRange("Bank Account No.", BankAccount."No.");
++        BankSysPmtMthMap.SetRange("System Type Code", BankSystemOther.Code);
++        Assert.IsTrue(BankSysPmtMthMap.IsEmpty(), 'Mappings of the other system should be deleted');
++
++        // [THEN] The mappings of the kept system are preserved
++        BankSysPmtMthMap.SetRange("System Type Code", BankSystemKeep.Code);
++        Assert.IsFalse(BankSysPmtMthMap.IsEmpty(), 'Mappings of the kept system should be preserved');
++
++        // Cleanup
++        BankSystemPmtMth.SetRange("Bank System Code", BankSystemOther.Code);
++        BankSystemPmtMth.DeleteAll(true);
++        CleanupTestData(BankAccount, BankSystemKeep, PaymentMethod);
++        if BankSystemOther.Get(BankSystemOther.Code) then
++            BankSystemOther.Delete(true);
++    end;
++
++    [Test]
++    procedure TestCopyPaymentMethodsFromBankSystem_ExistingMappingWithShortCode_IsNotDuplicated()
++    var
++        BankAccount: Record "Bank Account";
++        BankAccComSetup: Record "CTS-CB Bank Acc. Com. Setup";
++        BankSysPmtMthMap: Record "CTS-CB Bank Sys. Pmt. Mth. Map";
++        BankSystem: Record "CTS-CB Bank System";
++        BankSystemPmtMth: Record "CTS-CB Bank System Pmt. Mth.";
++        PaymentMethod: Record "Payment Method";
++        PaymentMethodMapper: Codeunit "CTS-CB Payment Method Mapper";
++    begin
++        DeleteTables();
++        // [SCENARIO] A mapping without Short PM Code is not added when a mapping for the same payment method already exists with a Short PM Code
++
++        // [GIVEN] An existing mapping with a Short Payment Method Code for a bank system payment method without CTS-CB Payment Method
++        CreateBankAccount(BankAccount);
++        CreateBankSystem(BankSystem);
++        CreatePaymentMethod(PaymentMethod);
++        CreateBankSystemPaymentMethod(BankSystemPmtMth, BankSystem.Code, PaymentMethod.Code);
++        BankSysPmtMthMap.Init();
++        BankSysPmtMthMap."Bank Account No." := BankAccount."No.";
++        BankSysPmtMthMap."System Type" := BankSysPmtMthMap."System Type"::BankSystem;
++        BankSysPmtMthMap."System Type Code" := BankSystem.Code;
++        BankSysPmtMthMap."Transaction Type" := BankSysPmtMthMap."Transaction Type"::Payment;
++        BankSysPmtMthMap."Payment Method Code" := PaymentMethod.Code;
++        BankSysPmtMthMap."Short Payment Method Code" := 'OTHER';
++        BankSysPmtMthMap.Insert(true);
++        BankAccComSetup.Init();
++        BankAccComSetup.Code := BankAccount."No.";
++        BankAccComSetup."System Type" := BankAccComSetup."System Type"::BankSystem;
++        BankAccComSetup."System Type Code" := BankSystem.Code;
++        BankAccComSetup."Transaction Type" := BankAccComSetup."Transaction Type"::Payment;
++        BankAccComSetup."File Type" := BankAccComSetup."File Type"::BankFormat;
++
++        // [WHEN] Copying payment methods from bank system (the fallback path inserts with a blank Short PM Code)
++        PaymentMethodMapper.CopyPaymentMethodsFromBankSystem(BankAccComSetup);
++
++        // [THEN] No second mapping is created for the payment method
++        BankSysPmtMthMap.Reset();
++        BankSysPmtMthMap.SetRange("Bank Account No.", BankAccount."No.");
++        BankSysPmtMthMap.SetRange("Payment Method Code", PaymentMethod.Code);
++        Assert.AreEqual(1, BankSysPmtMthMap.Count, 'An existing mapping should prevent a duplicate when the Short PM Code is blank');
++
++        // Cleanup
++        CleanupTestData(BankAccount, BankSystem, PaymentMethod);
++    end;
++
++    [Test]
++    procedure TestPropagatePaymentMethodToMappings_UnsupportedExistingMapping_RaisesInsertValidation()
++    var
++        BankAccount: Record "Bank Account";
++        BankSysPmtMthMap: Record "CTS-CB Bank Sys. Pmt. Mth. Map";
++        BankSystem: Record "CTS-CB Bank System";
++        BankSystemPmtMth: Record "CTS-CB Bank System Pmt. Mth.";
++        CTSCBPaymentMethod: Record "CTS-CB Payment Method";
++        ExistingPaymentMethod: Record "Payment Method";
++        NewPaymentMethod: Record "Payment Method";
++        PaymentMethodMapper: Codeunit "CTS-CB Payment Method Mapper";
++    begin
++        DeleteTables();
++        // [SCENARIO] Mappings are inserted with their insert trigger, so a payment method the bank system no longer supports is rejected
++
++        // [GIVEN] An existing mapping whose bank system payment method has since been removed
++        CreateBankAccount(BankAccount);
++        CreateBankSystem(BankSystem);
++        CreateCTSCBPaymentMethod(CTSCBPaymentMethod, false);
++        CreateBCPaymentMethodWithCTSCB(ExistingPaymentMethod, CTSCBPaymentMethod.Code);
++        CreateBankSystemPaymentMethod(BankSystemPmtMth, BankSystem.Code, CTSCBPaymentMethod."Payment Method Code");
++        BankSysPmtMthMap.Init();
++        BankSysPmtMthMap."Bank Account No." := BankAccount."No.";
++        BankSysPmtMthMap."System Type" := BankSysPmtMthMap."System Type"::BankSystem;
++        BankSysPmtMthMap."System Type Code" := BankSystem.Code;
++        BankSysPmtMthMap."Transaction Type" := BankSysPmtMthMap."Transaction Type"::Payment;
++        BankSysPmtMthMap."Payment Method Code" := CTSCBPaymentMethod."Payment Method Code";
++        BankSysPmtMthMap."Short Payment Method Code" := ExistingPaymentMethod.Code;
++        BankSysPmtMthMap.Insert(true);
++        BankSystemPmtMth.Delete();
++
++        // [GIVEN] A new BC Payment Method with the same CTS-CB Payment Method Code
++        CreateBCPaymentMethodWithCTSCB(NewPaymentMethod, CTSCBPaymentMethod.Code);
++
++        // [WHEN] Propagating the new BC Payment Method to the existing mappings
++        asserterror PaymentMethodMapper.PropagatePaymentMethodToMappings(NewPaymentMethod);
++
++        // [THEN] The insert validation rejects the unsupported payment method
++        Assert.ExpectedError('not supported');
++
++        // Cleanup
++        CleanupMultipleBCPMTestData(BankAccount, BankSystem, CTSCBPaymentMethod, ExistingPaymentMethod, NewPaymentMethod);
++    end;
+ }
+diff --git a/Export/Payment Validation/ValLevelMgtUT.Codeunit.al b/Export/Payment Validation/ValLevelMgtUT.Codeunit.al
+index 0a2203a..99632c8 100644
+--- a/Export/Payment Validation/ValLevelMgtUT.Codeunit.al	
++++ b/Export/Payment Validation/ValLevelMgtUT.Codeunit.al	
+@@ -123,4 +123,46 @@ codeunit 95058 "CTS-CB Val. Level Mgt. UT"
+         LibraryAssert.AreEqual(3, ValidationLevelMgt.GetValidationLevel('', CopyStr(LibraryRandom.RandText(10), 1, 20)), 'Parameter version level 3 mismatch');
+         LibraryAssert.AreEqual(4, ValidationLevelMgt.GetValidationLevel('', ''), 'Parameter version level 4 mismatch');
+     end;
++
++    [Test]
++    procedure TestGetBankSystemCodeByLevel_Level3_ReturnsEmpty()
++    var
++        TempFieldContent: Record "CTS-CB Field Content" temporary;
++        BankSystemCode: Code[30];
++    begin
++        // [GIVEN] Field content with level 3 and a bank system code
++        TempFieldContent.Level := 3;
++        BankSystemCode := CopyStr(LibraryRandom.RandText(10), 1, MaxStrLen(BankSystemCode));
++        TempFieldContent."Bank System Code" := BankSystemCode;
++
++        // [WHEN] Get bank system code by level
++        // [THEN] Should return empty
++        LibraryAssert.AreEqual('', ValidationLevelMgt.GetBankSystemCodeByLevel(TempFieldContent), 'Bank system code should be empty for level 3');
++    end;
++
++    [Test]
++    procedure TestGetBankSystemCodeByLevel_LevelAndCodeOverload_Level1_ReturnsCode()
++    var
++        BankSystemCode: Code[30];
++    begin
++        // [GIVEN] A bank system code
++        BankSystemCode := CopyStr(LibraryRandom.RandText(10), 1, MaxStrLen(BankSystemCode));
++
++        // [WHEN] Get bank system code by level using the (Level, BankSystemCode) overload
++        // [THEN] Should return the code for level 1
++        LibraryAssert.AreEqual(BankSystemCode, ValidationLevelMgt.GetBankSystemCodeByLevel(1, BankSystemCode), 'Bank system code should be returned for level 1');
++    end;
++
++    [Test]
++    procedure TestGetPaymentMethodCodeByLevel_LevelAndCodeOverload_Level1_ReturnsCode()
++    var
++        PaymentMethodCode: Code[20];
++    begin
++        // [GIVEN] A payment method code
++        PaymentMethodCode := CopyStr(LibraryRandom.RandText(10), 1, MaxStrLen(PaymentMethodCode));
++
++        // [WHEN] Get payment method code by level using the (Level, PaymentMethod) overload
++        // [THEN] Should return the code for level 1
++        LibraryAssert.AreEqual(PaymentMethodCode, ValidationLevelMgt.GetPaymentMethodCodeByLevel(1, PaymentMethodCode), 'Payment method code should be returned for level 1');
++    end;
+ }
+diff --git a/Yapily/IntBatchDispTests.Codeunit.al b/Yapily/IntBatchDispTests.Codeunit.al
+index 32af47c..53d6148 100644
+--- a/Yapily/IntBatchDispTests.Codeunit.al
++++ b/Yapily/IntBatchDispTests.Codeunit.al
+@@ -164,6 +164,10 @@ codeunit 95121 "CTS-CB Int. Batch Disp Tests"
+         Initialize();
+         CreateTestBank(Bank);
+         CreateTestBankAccComSetup(BankAccComSetup);
++        TempIntBatchDisplay.Init();
++        TempIntBatchDisplay.ID := 1;
++        TempIntBatchDisplay."Entry Type" := "CTS-CB Batch Entry Type"::Header;
++        TempIntBatchDisplay.Insert();
+ 
+         // [WHEN] BuildBatchDisplay is called with empty entries
+         IntBatchDispBldr.BuildBatchDisplay(TempPaymentEntry, Bank, IntBatchStrategy, TempIntBatchDisplay, BankAccComSetup);
+@@ -287,6 +291,8 @@ codeunit 95121 "CTS-CB Int. Batch Disp Tests"
+         CreateTempPaymentEntry(TempPaymentEntry, CopyStr(Bank.Code, 1, 20), 100);
+         TempSourcePaymentEntry := TempPaymentEntry;
+         TempSourcePaymentEntry.Insert();
++        TempRetrievedPaymentEntry := TempSourcePaymentEntry;
++        TempRetrievedPaymentEntry.Insert();
+         IntBatchDispBldr.BuildBatchDisplay(TempPaymentEntry, Bank, IntBatchStrategy, TempIntBatchDisplay, BankAccComSetup);
+ 
+         // [WHEN] GetPaymentEntriesForBatch is called with a line record
+@@ -637,4 +643,157 @@ codeunit 95121 "CTS-CB Int. Batch Disp Tests"
+         exit(PaymentRegister."No.");
+     end;
+     #endregion
++
++    [Test]
++    procedure TestGetPaymentEntriesForBatch_NonHeaderRecordWithHeaderId_ReturnsEmpty()
++    var
++        Bank: Record "CTS-CB Bank";
++        BankAccComSetup: Record "CTS-CB Bank Acc. Com. Setup";
++        BulkPaymentRule: Record "CTS-CB Bulk Payment Rule";
++        TempIntBatchDisplay: Record "CTS-CB Int. Batch Display" temporary;
++        TempNonHeaderIntBatchDisplay: Record "CTS-CB Int. Batch Display" temporary;
++        TempPaymentEntry: Record "CTS-CB Payment Entry" temporary;
++        TempRetrievedPaymentEntry: Record "CTS-CB Payment Entry" temporary;
++        TempSourcePaymentEntry: Record "CTS-CB Payment Entry" temporary;
++        IntBatchDispBldr: Codeunit "CTS-CB Int. Batch Disp Bldr";
++        IntBatchStrategy: Codeunit "CTS-CB Int. Batch Strategy";
++    begin
++        // [SCENARIO] GetPaymentEntriesForBatch returns nothing for a non-header record, even when its ID is the Batch Header ID of existing lines
++
++        // [GIVEN] A built display with one header and one line
++        Initialize();
++        CreateTestBank(Bank);
++        CreateTestBankAccComSetup(BankAccComSetup);
++        CreateBulkPaymentRule(BulkPaymentRule, Bank.Code, 1, 100, 1000000);
++        CreateTempPaymentEntry(TempPaymentEntry, CopyStr(Bank.Code, 1, 20), 100);
++        TempSourcePaymentEntry := TempPaymentEntry;
++        TempSourcePaymentEntry.Insert();
++        IntBatchDispBldr.BuildBatchDisplay(TempPaymentEntry, Bank, IntBatchStrategy, TempIntBatchDisplay, BankAccComSetup);
++
++        // [GIVEN] A non-header record that carries the header's ID (so the line lookup would find the header's lines)
++#pragma warning disable AA0210 // Key not necessary due to table size.
++        TempIntBatchDisplay.SetRange("Entry Type", "CTS-CB Batch Entry Type"::Header);
++#pragma warning restore AA0210
++        TempIntBatchDisplay.FindFirst();
++        TempNonHeaderIntBatchDisplay := TempIntBatchDisplay;
++        TempNonHeaderIntBatchDisplay."Entry Type" := "CTS-CB Batch Entry Type"::Line;
++        TempIntBatchDisplay.Reset();
++
++        // [WHEN] GetPaymentEntriesForBatch is called with the non-header record
++        IntBatchDispBldr.GetPaymentEntriesForBatch(TempNonHeaderIntBatchDisplay, TempRetrievedPaymentEntry, TempIntBatchDisplay, TempSourcePaymentEntry);
++
++        // [THEN] Nothing is returned
++        Assert.IsTrue(TempRetrievedPaymentEntry.IsEmpty(), 'Should return empty for a non-header record even if lines exist for its ID');
++    end;
++
++    [Test]
++    procedure TestGetPaymentEntriesForBatch_HeaderWithoutLines_ReturnsEmpty()
++    var
++        Bank: Record "CTS-CB Bank";
++        BankAccComSetup: Record "CTS-CB Bank Acc. Com. Setup";
++        BulkPaymentRule: Record "CTS-CB Bulk Payment Rule";
++        TempHeaderWithoutLines: Record "CTS-CB Int. Batch Display" temporary;
++        TempIntBatchDisplay: Record "CTS-CB Int. Batch Display" temporary;
++        TempPaymentEntry: Record "CTS-CB Payment Entry" temporary;
++        TempRetrievedPaymentEntry: Record "CTS-CB Payment Entry" temporary;
++        TempSourcePaymentEntry: Record "CTS-CB Payment Entry" temporary;
++        IntBatchDispBldr: Codeunit "CTS-CB Int. Batch Disp Bldr";
++        IntBatchStrategy: Codeunit "CTS-CB Int. Batch Strategy";
++    begin
++        // [SCENARIO] GetPaymentEntriesForBatch returns nothing for a header that has no lines, even when the display buffer is positioned on a line
++
++        // [GIVEN] A built display with one header and one line, and the display buffer positioned on the line
++        Initialize();
++        CreateTestBank(Bank);
++        CreateTestBankAccComSetup(BankAccComSetup);
++        CreateBulkPaymentRule(BulkPaymentRule, Bank.Code, 1, 100, 1000000);
++        CreateTempPaymentEntry(TempPaymentEntry, CopyStr(Bank.Code, 1, 20), 100);
++        TempSourcePaymentEntry := TempPaymentEntry;
++        TempSourcePaymentEntry.Insert();
++        IntBatchDispBldr.BuildBatchDisplay(TempPaymentEntry, Bank, IntBatchStrategy, TempIntBatchDisplay, BankAccComSetup);
++        TempIntBatchDisplay.Reset();
++        TempIntBatchDisplay.FindLast();
++
++        // [GIVEN] A header record whose ID no line refers to
++        TempHeaderWithoutLines.Init();
++        TempHeaderWithoutLines.ID := 99999;
++        TempHeaderWithoutLines."Entry Type" := "CTS-CB Batch Entry Type"::Header;
++
++        // [WHEN] GetPaymentEntriesForBatch is called for the header without lines
++        IntBatchDispBldr.GetPaymentEntriesForBatch(TempHeaderWithoutLines, TempRetrievedPaymentEntry, TempIntBatchDisplay, TempSourcePaymentEntry);
++
++        // [THEN] Nothing is returned
++        Assert.IsTrue(TempRetrievedPaymentEntry.IsEmpty(), 'Should return empty for a header without lines');
++    end;
++
++    [Test]
++    procedure TestBuildBatchDisplay_SingleLineBatch_HeaderIsSinglePaymentWithCreditorName()
++    var
++        Bank: Record "CTS-CB Bank";
++        BankAccComSetup: Record "CTS-CB Bank Acc. Com. Setup";
++        BulkPaymentRule: Record "CTS-CB Bulk Payment Rule";
++        TempIntBatchDisplay: Record "CTS-CB Int. Batch Display" temporary;
++        TempPaymentEntry: Record "CTS-CB Payment Entry" temporary;
++        IntBatchDispBldr: Codeunit "CTS-CB Int. Batch Disp Bldr";
++        IntBatchStrategy: Codeunit "CTS-CB Int. Batch Strategy";
++    begin
++        // [SCENARIO] A batch with exactly one line gets a SinglePayment header named after the creditor
++
++        // [GIVEN] One payment entry and a rule with minimum 1 line (the strategy itself reports BulkPayment for it)
++        Initialize();
++        CreateTestBank(Bank);
++        CreateTestBankAccComSetup(BankAccComSetup);
++        CreateBulkPaymentRule(BulkPaymentRule, Bank.Code, 1, 100, 1000000);
++        CreateTempPaymentEntry(TempPaymentEntry, CopyStr(Bank.Code, 1, 20), 100);
++
++        // [WHEN] BuildBatchDisplay is called
++        IntBatchDispBldr.BuildBatchDisplay(TempPaymentEntry, Bank, IntBatchStrategy, TempIntBatchDisplay, BankAccComSetup);
++
++        // [THEN] The header is a SinglePayment named after the creditor
++#pragma warning disable AA0210 // Key not necessary due to table size.
++        TempIntBatchDisplay.SetRange("Entry Type", "CTS-CB Batch Entry Type"::Header);
++#pragma warning restore AA0210
++        TempIntBatchDisplay.FindFirst();
++        Assert.AreEqual("CTS-CB Int. Token Type"::SinglePayment, TempIntBatchDisplay."Token Type", 'A one-line batch should have SinglePayment token type');
++        Assert.AreEqual('Test Creditor 1', Format(TempIntBatchDisplay."Account Name"), 'A one-line batch header should show the creditor name');
++    end;
++
++    [Test]
++    procedure TestBuildBatchDisplay_BulkBatch_HeaderUsesFirstEntryAndPaymentCount()
++    var
++        Bank: Record "CTS-CB Bank";
++        BankAccComSetup: Record "CTS-CB Bank Acc. Com. Setup";
++        BulkPaymentRule: Record "CTS-CB Bulk Payment Rule";
++        TempIntBatchDisplay: Record "CTS-CB Int. Batch Display" temporary;
++        TempPaymentEntry: Record "CTS-CB Payment Entry" temporary;
++        IntBatchDispBldr: Codeunit "CTS-CB Int. Batch Disp Bldr";
++        IntBatchStrategy: Codeunit "CTS-CB Int. Batch Strategy";
++    begin
++        // [SCENARIO] The header of a multi-line batch takes common fields from the first entry and is named after the payment count
++
++        // [GIVEN] 3 payment entries in one batch; the first has currency EUR, the others USD
++        Initialize();
++        CreateTestBank(Bank);
++        CreateTestBankAccComSetup(BankAccComSetup);
++        CreateBulkPaymentRule(BulkPaymentRule, Bank.Code, 1, 100, 1000000);
++        CreateTempPaymentEntry(TempPaymentEntry, CopyStr(Bank.Code, 1, 20), 100);
++        CreateTempPaymentEntry(TempPaymentEntry, CopyStr(Bank.Code, 1, 20), 200);
++        CreateTempPaymentEntry(TempPaymentEntry, CopyStr(Bank.Code, 1, 20), 300);
++        TempPaymentEntry.SetFilter("Entry No.", '>1');
++        TempPaymentEntry.ModifyAll(Currency, 'USD');
++        TempPaymentEntry.Reset();
++
++        // [WHEN] BuildBatchDisplay is called
++        IntBatchDispBldr.BuildBatchDisplay(TempPaymentEntry, Bank, IntBatchStrategy, TempIntBatchDisplay, BankAccComSetup);
++
++        // [THEN] The header shows the first entry's common fields and the payment count
++#pragma warning disable AA0210 // Key not necessary due to table size.
++        TempIntBatchDisplay.SetRange("Entry Type", "CTS-CB Batch Entry Type"::Header);
++#pragma warning restore AA0210
++        TempIntBatchDisplay.FindFirst();
++        Assert.AreEqual("CTS-CB Int. Token Type"::BulkPayment, TempIntBatchDisplay."Token Type", 'A three-line batch should have BulkPayment token type');
++        Assert.AreEqual('3 payments', Format(TempIntBatchDisplay."Account Name"), 'A multi-line batch header should show the payment count');
++        Assert.AreEqual('EUR', Format(TempIntBatchDisplay."Currency Code"), 'Header currency should come from the first entry');
++        Assert.AreEqual(Format(CopyStr(Bank.Code, 1, 20)), Format(TempIntBatchDisplay."Bal. Account No."), 'Header bal. account should come from the first entry');
++    end;
+ }

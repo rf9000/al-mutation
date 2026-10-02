@@ -1,14 +1,14 @@
 {
     "runNo":  15,
     "verifyRunNo":  9015,
-    "updatedUtc":  "2026-10-02T08:03:54Z",
+    "updatedUtc":  "2026-10-02T10:08:05Z",
     "environmentName":  "mut-spike-02",
     "entries":  [
                     {
-                        "fixId":  "F022",
+                        "fixId":  "F001",
                         "revision":  0,
-                        "verdict":  "fails-on-original",
-                        "verifiedUtc":  "2026-10-02T08:02:40Z",
+                        "verdict":  "verified",
+                        "verifiedUtc":  "2026-10-02T09:41:38Z",
                         "compile":  {
                                         "ok":  true,
                                         "diagnostics":  [
@@ -16,19 +16,30 @@
                                                         ]
                                     },
                         "original":  {
-                                         "result":  "Fail",
-                                         "error":  "Sorry, the current permissions prevented the action. (TableData 71553585 CTS-CB Bank Information Bank Information Insert: Continia Banking)",
-                                         "durationMs":  50157
+                                         "result":  "Pass",
+                                         "error":  null,
+                                         "durationMs":  3430
                                      },
                         "mutants":  [
-
+                                        {
+                                            "mutantId":  140,
+                                            "outcome":  "killed",
+                                            "error":  "Assert.AreEqual failed. Expected:\u003cNot activated\u003e (Integer). Actual:\u003cDetection failed\u003e (Integer). Annotation mismatch.",
+                                            "durationMs":  926
+                                        },
+                                        {
+                                            "mutantId":  141,
+                                            "outcome":  "killed",
+                                            "error":  "Assert.AreEqual failed. Expected:\u003cNot activated\u003e (Integer). Actual:\u003cDetection failed\u003e (Integer). Annotation mismatch.",
+                                            "durationMs":  784
+                                        }
                                     ]
                     },
                     {
-                        "fixId":  "F033",
-                        "revision":  0,
+                        "fixId":  "F002",
+                        "revision":  1,
                         "verdict":  "verified",
-                        "verifiedUtc":  "2026-10-02T08:03:14Z",
+                        "verifiedUtc":  "2026-10-02T09:41:58Z",
                         "compile":  {
                                         "ok":  true,
                                         "diagnostics":  [
@@ -42,18 +53,24 @@
                                      },
                         "mutants":  [
                                         {
-                                            "mutantId":  271,
+                                            "mutantId":  151,
                                             "outcome":  "killed",
-                                            "error":  "Assert.AreEqual failed. Expected:\u003cOther Bank A\u003e (Text). Actual:\u003cOTHERBANKA\u003e (Text). Target Bank Name must be the resolved bank name.",
-                                            "durationMs":  27
+                                            "error":  "Assert.AreEqual failed. Expected:\u003c\u003e (Text). Actual:\u003cDETECTPOCBANK\u003e (Text). Target Bank Code mismatch.",
+                                            "durationMs":  43
+                                        },
+                                        {
+                                            "mutantId":  152,
+                                            "outcome":  "killed",
+                                            "error":  "Assert.AreEqual failed. Expected:\u003c\u003e (Text). Actual:\u003cDETECTPOCBANK\u003e (Text). Target Bank Code mismatch.",
+                                            "durationMs":  43
                                         }
                                     ]
                     },
                     {
-                        "fixId":  "F041",
-                        "revision":  0,
+                        "fixId":  "F003",
+                        "revision":  1,
                         "verdict":  "verified",
-                        "verifiedUtc":  "2026-10-02T08:03:24Z",
+                        "verifiedUtc":  "2026-10-02T09:42:07Z",
                         "compile":  {
                                         "ok":  true,
                                         "diagnostics":  [
@@ -63,15 +80,1686 @@
                         "original":  {
                                          "result":  "Pass",
                                          "error":  null,
-                                         "durationMs":  3400
+                                         "durationMs":  36
+                                     },
+                        "mutants":  [
+                                        {
+                                            "mutantId":  153,
+                                            "outcome":  "killed",
+                                            "error":  "Assert.AreEqual failed. Expected:\u003cNo matching accounts\u003e (Integer). Actual:\u003cDetection failed\u003e (Integer). Annotation mismatch.",
+                                            "durationMs":  37
+                                        }
+                                    ]
+                    },
+                    {
+                        "fixId":  "F004",
+                        "revision":  2,
+                        "verdict":  "verified",
+                        "verifiedUtc":  "2026-10-02T09:42:48Z",
+                        "compile":  {
+                                        "ok":  true,
+                                        "diagnostics":  [
+
+                                                        ]
+                                    },
+                        "original":  {
+                                         "result":  "Pass",
+                                         "error":  null,
+                                         "durationMs":  54
+                                     },
+                        "mutants":  [
+                                        {
+                                            "mutantId":  157,
+                                            "outcome":  "killed",
+                                            "error":  "Assert.AreEqual failed. Expected:\u003cBank detection failed for 2 of 2 bank accounts in this company. 1 accounts had lookup or connection errors, and 1 accounts had missing IBAN or branch information.\u003e (Text). Actual:\u003cBank detection failed for 2 of 2 bank accounts in this company. 0 accounts had lookup or connection errors, and 2 accounts had missing IBAN or branch information.\u003e (Text). The failure counts must split into 1 lookup failure and 1 missing-info account..",
+                                            "durationMs":  50
+                                        },
+                                        {
+                                            "mutantId":  158,
+                                            "outcome":  "killed",
+                                            "error":  "Assert.AreEqual failed. Expected:\u003cBank detection failed for 2 of 2 bank accounts in this company. 1 accounts had lookup or connection errors, and 1 accounts had missing IBAN or branch information.\u003e (Text). Actual:\u003cBank detection failed for 2 of 2 bank accounts in this company. 2 accounts had lookup or connection errors, and 0 accounts had missing IBAN or branch information.\u003e (Text). The failure counts must split into 1 lookup failure and 1 missing-info account..",
+                                            "durationMs":  43
+                                        },
+                                        {
+                                            "mutantId":  173,
+                                            "outcome":  "killed",
+                                            "error":  "Assert.AreEqual failed. Expected:\u003cBank detection failed for 2 of 2 bank accounts in this company. 1 accounts had lookup or connection errors, and 1 accounts had missing IBAN or branch information.\u003e (Text). Actual:\u003cBank detection failed for 2 of 2 bank accounts in this company. 2 accounts had lookup or connection errors, and 0 accounts had missing IBAN or branch information.\u003e (Text). The failure counts must split into 1 lookup failure and 1 missing-info account..",
+                                            "durationMs":  50
+                                        },
+                                        {
+                                            "mutantId":  176,
+                                            "outcome":  "killed",
+                                            "error":  "Assert.AreEqual failed. Expected:\u003cBank detection failed for 2 of 2 bank accounts in this company. 1 accounts had lookup or connection errors, and 1 accounts had missing IBAN or branch information.\u003e (Text). Actual:\u003cBank detection failed for 2 of 2 bank accounts in this company. 2 accounts had lookup or connection errors, and 0 accounts had missing IBAN or branch information.\u003e (Text). The failure counts must split into 1 lookup failure and 1 missing-info account..",
+                                            "durationMs":  46
+                                        }
+                                    ]
+                    },
+                    {
+                        "fixId":  "F005",
+                        "revision":  1,
+                        "verdict":  "verified",
+                        "verifiedUtc":  "2026-10-02T09:42:57Z",
+                        "compile":  {
+                                        "ok":  true,
+                                        "diagnostics":  [
+
+                                                        ]
+                                    },
+                        "original":  {
+                                         "result":  "Pass",
+                                         "error":  null,
+                                         "durationMs":  50
+                                     },
+                        "mutants":  [
+                                        {
+                                            "mutantId":  171,
+                                            "outcome":  "killed",
+                                            "error":  "Assert.AreEqual failed. Expected:\u003c2\u003e (Integer). Actual:\u003c1\u003e (Integer). Both accounts must be counted for the bank.",
+                                            "durationMs":  54
+                                        }
+                                    ]
+                    },
+                    {
+                        "fixId":  "F006",
+                        "revision":  1,
+                        "verdict":  "verified",
+                        "verifiedUtc":  "2026-10-02T09:43:48Z",
+                        "compile":  {
+                                        "ok":  true,
+                                        "diagnostics":  [
+
+                                                        ]
+                                    },
+                        "original":  {
+                                         "result":  "Pass",
+                                         "error":  null,
+                                         "durationMs":  47
+                                     },
+                        "mutants":  [
+                                        {
+                                            "mutantId":  161,
+                                            "outcome":  "killed",
+                                            "error":  "Assert.AreEqual failed. Expected:\u003cDETECT-SRC\u003e (Text). Actual:\u003c\u003e (Text). The matching account must be linked to the source bank..",
+                                            "durationMs":  77
+                                        },
+                                        {
+                                            "mutantId":  193,
+                                            "outcome":  "killed",
+                                            "error":  "Assert.AreEqual failed. Expected:\u003cReady\u003e (Integer). Actual:\u003cCommunication Type Mismatch\u003e (Integer). Annotation mismatch.",
+                                            "durationMs":  40
+                                        },
+                                        {
+                                            "mutantId":  194,
+                                            "outcome":  "killed",
+                                            "error":  "Assert.AreEqual failed. Expected:\u003cReady\u003e (Integer). Actual:\u003cCommunication Type Mismatch\u003e (Integer). Annotation mismatch.",
+                                            "durationMs":  93
+                                        },
+                                        {
+                                            "mutantId":  196,
+                                            "outcome":  "killed",
+                                            "error":  "Assert.AreEqual failed. Expected:\u003cReady\u003e (Integer). Actual:\u003cCommunication Type Mismatch\u003e (Integer). Annotation mismatch.",
+                                            "durationMs":  57
+                                        },
+                                        {
+                                            "mutantId":  199,
+                                            "outcome":  "killed",
+                                            "error":  "Assert.AreEqual failed. Expected:\u003cReady\u003e (Integer). Actual:\u003cCommunication Type Mismatch\u003e (Integer). Annotation mismatch.",
+                                            "durationMs":  50
+                                        }
+                                    ]
+                    },
+                    {
+                        "fixId":  "F007",
+                        "revision":  1,
+                        "verdict":  "verified",
+                        "verifiedUtc":  "2026-10-02T09:44:28Z",
+                        "compile":  {
+                                        "ok":  true,
+                                        "diagnostics":  [
+
+                                                        ]
+                                    },
+                        "original":  {
+                                         "result":  "Pass",
+                                         "error":  null,
+                                         "durationMs":  44
+                                     },
+                        "mutants":  [
+                                        {
+                                            "mutantId":  186,
+                                            "outcome":  "killed",
+                                            "error":  "Assert.AreEqual failed. Expected:\u003cDETECT-SRC\u003e (Text). Actual:\u003cDETECTPOCBANK\u003e (Text). Target Bank Code mismatch.",
+                                            "durationMs":  50
+                                        },
+                                        {
+                                            "mutantId":  187,
+                                            "outcome":  "killed",
+                                            "error":  "Assert.AreEqual failed. Expected:\u003cDETECT-SRC\u003e (Text). Actual:\u003cDETECTPOCBANK\u003e (Text). Target Bank Code mismatch.",
+                                            "durationMs":  53
+                                        },
+                                        {
+                                            "mutantId":  189,
+                                            "outcome":  "killed",
+                                            "error":  "Assert.AreEqual failed. Expected:\u003cDETECT-SRC\u003e (Text). Actual:\u003cDETECTPOCBANK\u003e (Text). Target Bank Code mismatch.",
+                                            "durationMs":  40
+                                        },
+                                        {
+                                            "mutantId":  192,
+                                            "outcome":  "killed",
+                                            "error":  "Assert.AreEqual failed. Expected:\u003cDETECT-SRC\u003e (Text). Actual:\u003cDETECTPOCBANK\u003e (Text). Target Bank Code mismatch.",
+                                            "durationMs":  40
+                                        }
+                                    ]
+                    },
+                    {
+                        "fixId":  "F008",
+                        "revision":  1,
+                        "verdict":  "verified",
+                        "verifiedUtc":  "2026-10-02T09:45:27Z",
+                        "compile":  {
+                                        "ok":  true,
+                                        "diagnostics":  [
+
+                                                        ]
+                                    },
+                        "original":  {
+                                         "result":  "Pass",
+                                         "error":  null,
+                                         "durationMs":  63
+                                     },
+                        "mutants":  [
+                                        {
+                                            "mutantId":  188,
+                                            "outcome":  "killed",
+                                            "error":  "Assert.AreEqual failed. Expected:\u003cDETECTPOCBANK\u003e (Text). Actual:\u003cDETECT-SRC\u003e (Text). Target Bank Code mismatch.",
+                                            "durationMs":  43
+                                        },
+                                        {
+                                            "mutantId":  190,
+                                            "outcome":  "killed",
+                                            "error":  "Assert.AreEqual failed. Expected:\u003cDETECTPOCBANK\u003e (Text). Actual:\u003cDETECT-SRC\u003e (Text). Target Bank Code mismatch.",
+                                            "durationMs":  43
+                                        },
+                                        {
+                                            "mutantId":  191,
+                                            "outcome":  "killed",
+                                            "error":  "Assert.AreEqual failed. Expected:\u003cDETECTPOCBANK\u003e (Text). Actual:\u003cDETECT-SRC\u003e (Text). Target Bank Code mismatch.",
+                                            "durationMs":  40
+                                        },
+                                        {
+                                            "mutantId":  195,
+                                            "outcome":  "killed",
+                                            "error":  "Assert.AreEqual failed. Expected:\u003cDETECTPOCBANK\u003e (Text). Actual:\u003cDETECT-SRC\u003e (Text). Target Bank Code mismatch.",
+                                            "durationMs":  47
+                                        },
+                                        {
+                                            "mutantId":  197,
+                                            "outcome":  "killed",
+                                            "error":  "Assert.AreEqual failed. Expected:\u003cDETECTPOCBANK\u003e (Text). Actual:\u003cDETECT-SRC\u003e (Text). Target Bank Code mismatch.",
+                                            "durationMs":  43
+                                        },
+                                        {
+                                            "mutantId":  198,
+                                            "outcome":  "killed",
+                                            "error":  "Assert.AreEqual failed. Expected:\u003cDETECTPOCBANK\u003e (Text). Actual:\u003cDETECT-SRC\u003e (Text). Target Bank Code mismatch.",
+                                            "durationMs":  70
+                                        }
+                                    ]
+                    },
+                    {
+                        "fixId":  "F009",
+                        "revision":  2,
+                        "verdict":  "verified",
+                        "verifiedUtc":  "2026-10-02T09:48:49Z",
+                        "compile":  {
+                                        "ok":  true,
+                                        "diagnostics":  [
+
+                                                        ]
+                                    },
+                        "original":  {
+                                         "result":  "Pass",
+                                         "error":  null,
+                                         "durationMs":  26870
+                                     },
+                        "mutants":  [
+                                        {
+                                            "mutantId":  146,
+                                            "outcome":  "killed",
+                                            "error":  "Assert.AreEqual failed. Expected:\u003cReady\u003e (Integer). Actual:\u003cCommunication Type Mismatch\u003e (Integer). Annotation mismatch.",
+                                            "durationMs":  40316
+                                        },
+                                        {
+                                            "mutantId":  148,
+                                            "outcome":  "killed",
+                                            "error":  "Assert.AreEqual failed. Expected:\u003cReady\u003e (Integer). Actual:\u003cCommunication Type Mismatch\u003e (Integer). Annotation mismatch.",
+                                            "durationMs":  39650
+                                        },
+                                        {
+                                            "mutantId":  201,
+                                            "outcome":  "killed",
+                                            "error":  "Assert.AreEqual failed. Expected:\u003cReady\u003e (Integer). Actual:\u003cCommunication Type Mismatch\u003e (Integer). Annotation mismatch.",
+                                            "durationMs":  39614
+                                        },
+                                        {
+                                            "mutantId":  202,
+                                            "outcome":  "killed",
+                                            "error":  "Assert.AreEqual failed. Expected:\u003cReady\u003e (Integer). Actual:\u003cCommunication Type Mismatch\u003e (Integer). Annotation mismatch.",
+                                            "durationMs":  39194
+                                        }
+                                    ]
+                    },
+                    {
+                        "fixId":  "F010",
+                        "revision":  2,
+                        "verdict":  "verified",
+                        "verifiedUtc":  "2026-10-02T09:50:27Z",
+                        "compile":  {
+                                        "ok":  true,
+                                        "diagnostics":  [
+
+                                                        ]
+                                    },
+                        "original":  {
+                                         "result":  "Pass",
+                                         "error":  null,
+                                         "durationMs":  27404
+                                     },
+                        "mutants":  [
+                                        {
+                                            "mutantId":  159,
+                                            "outcome":  "killed",
+                                            "error":  "Assert.IsFalse failed. The source bank must not be copied into the target company when no account matches.",
+                                            "durationMs":  38713
+                                        },
+                                        {
+                                            "mutantId":  160,
+                                            "outcome":  "killed",
+                                            "error":  "Assert.IsFalse failed. The source bank must not be copied into the target company when no account matches.",
+                                            "durationMs":  38604
+                                        }
+                                    ]
+                    },
+                    {
+                        "fixId":  "F011",
+                        "revision":  1,
+                        "verdict":  "verified",
+                        "verifiedUtc":  "2026-10-02T09:51:06Z",
+                        "compile":  {
+                                        "ok":  true,
+                                        "diagnostics":  [
+
+                                                        ]
+                                    },
+                        "original":  {
+                                         "result":  "Pass",
+                                         "error":  null,
+                                         "durationMs":  50
+                                     },
+                        "mutants":  [
+                                        {
+                                            "mutantId":  203,
+                                            "outcome":  "killed",
+                                            "error":  "The company \"MUTA NO SUCH CO\" does not exist.",
+                                            "durationMs":  36
+                                        },
+                                        {
+                                            "mutantId":  205,
+                                            "outcome":  "killed",
+                                            "error":  "Assert.AreEqual failed. Expected:\u003cDETECT-SRC\u003e (Text). Actual:\u003c\u003e (Text). Target Bank Code mismatch.",
+                                            "durationMs":  43
+                                        },
+                                        {
+                                            "mutantId":  206,
+                                            "outcome":  "killed",
+                                            "error":  "Assert.AreEqual failed. Expected:\u003cDETECT-SRC\u003e (Text). Actual:\u003c\u003e (Text). Target Bank Code mismatch.",
+                                            "durationMs":  40
+                                        },
+                                        {
+                                            "mutantId":  207,
+                                            "outcome":  "killed",
+                                            "error":  "The company \"MUTA NO SUCH CO\" does not exist.",
+                                            "durationMs":  33
+                                        }
+                                    ]
+                    },
+                    {
+                        "fixId":  "F012",
+                        "revision":  0,
+                        "verdict":  "skipped-equivalent",
+                        "verifiedUtc":  "2026-10-02T08:24:56Z",
+                        "compile":  null,
+                        "original":  null,
+                        "mutants":  [
+
+                                    ]
+                    },
+                    {
+                        "fixId":  "F013",
+                        "revision":  0,
+                        "verdict":  "skipped-equivalent",
+                        "verifiedUtc":  "2026-10-02T08:24:56Z",
+                        "compile":  null,
+                        "original":  null,
+                        "mutants":  [
+
+                                    ]
+                    },
+                    {
+                        "fixId":  "F014",
+                        "revision":  0,
+                        "verdict":  "skipped-equivalent",
+                        "verifiedUtc":  "2026-10-02T08:24:56Z",
+                        "compile":  null,
+                        "original":  null,
+                        "mutants":  [
+
+                                    ]
+                    },
+                    {
+                        "fixId":  "F015",
+                        "revision":  0,
+                        "verdict":  "skipped-equivalent",
+                        "verifiedUtc":  "2026-10-02T08:24:56Z",
+                        "compile":  null,
+                        "original":  null,
+                        "mutants":  [
+
+                                    ]
+                    },
+                    {
+                        "fixId":  "F016",
+                        "revision":  0,
+                        "verdict":  "skipped-equivalent",
+                        "verifiedUtc":  "2026-10-02T08:24:56Z",
+                        "compile":  null,
+                        "original":  null,
+                        "mutants":  [
+
+                                    ]
+                    },
+                    {
+                        "fixId":  "F017",
+                        "revision":  0,
+                        "verdict":  "skipped-equivalent",
+                        "verifiedUtc":  "2026-10-02T08:24:56Z",
+                        "compile":  null,
+                        "original":  null,
+                        "mutants":  [
+
+                                    ]
+                    },
+                    {
+                        "fixId":  "F018",
+                        "revision":  0,
+                        "verdict":  "skipped-equivalent",
+                        "verifiedUtc":  "2026-10-02T08:24:56Z",
+                        "compile":  null,
+                        "original":  null,
+                        "mutants":  [
+
+                                    ]
+                    },
+                    {
+                        "fixId":  "F019",
+                        "revision":  0,
+                        "verdict":  "skipped-equivalent",
+                        "verifiedUtc":  "2026-10-02T08:24:56Z",
+                        "compile":  null,
+                        "original":  null,
+                        "mutants":  [
+
+                                    ]
+                    },
+                    {
+                        "fixId":  "F020",
+                        "revision":  0,
+                        "verdict":  "verified",
+                        "verifiedUtc":  "2026-10-02T09:51:52Z",
+                        "compile":  {
+                                        "ok":  true,
+                                        "diagnostics":  [
+
+                                                        ]
+                                    },
+                        "original":  {
+                                         "result":  "Pass",
+                                         "error":  null,
+                                         "durationMs":  40
+                                     },
+                        "mutants":  [
+                                        {
+                                            "mutantId":  218,
+                                            "outcome":  "killed",
+                                            "error":  "The record in table Bank already exists. Identification fields and values: Code=\u0027DETECT-SRC\u0027",
+                                            "durationMs":  53
+                                        },
+                                        {
+                                            "mutantId":  219,
+                                            "outcome":  "killed",
+                                            "error":  "The record in table Bank already exists. Identification fields and values: Code=\u0027DETECT-SRC\u0027",
+                                            "durationMs":  40
+                                        },
+                                        {
+                                            "mutantId":  227,
+                                            "outcome":  "killed",
+                                            "error":  "Assert.AreEqual failed. Expected:\u003cDETECT-SRC\u003e (Text). Actual:\u003c\u003e (Text). The matched Bank Account must be linked to the source bank..",
+                                            "durationMs":  44
+                                        },
+                                        {
+                                            "mutantId":  228,
+                                            "outcome":  "killed",
+                                            "error":  "Assert.AreEqual failed. Expected:\u003cDETECT-SRC\u003e (Text). Actual:\u003c\u003e (Text). The matched Bank Account must be linked to the source bank..",
+                                            "durationMs":  40
+                                        },
+                                        {
+                                            "mutantId":  231,
+                                            "outcome":  "killed",
+                                            "error":  "Assert.AreEqual failed. Expected:\u003cDETECT-SRC\u003e (Text). Actual:\u003c\u003e (Text). The matched Bank Account must be linked to the source bank..",
+                                            "durationMs":  53
+                                        }
+                                    ]
+                    },
+                    {
+                        "fixId":  "F021",
+                        "revision":  0,
+                        "verdict":  "verified",
+                        "verifiedUtc":  "2026-10-02T09:55:20Z",
+                        "compile":  {
+                                        "ok":  true,
+                                        "diagnostics":  [
+
+                                                        ]
+                                    },
+                        "original":  {
+                                         "result":  "Pass",
+                                         "error":  null,
+                                         "durationMs":  28307
+                                     },
+                        "mutants":  [
+                                        {
+                                            "mutantId":  209,
+                                            "outcome":  "killed",
+                                            "error":  "Assert.AreEqual failed. Expected:\u003cDETECT-SRC\u003e (Text). Actual:\u003c\u003e (Text). Target Bank Code mismatch.",
+                                            "durationMs":  24083
+                                        },
+                                        {
+                                            "mutantId":  212,
+                                            "outcome":  "killed",
+                                            "error":  "Assert.AreEqual failed. Expected:\u003cDETECT-SRC\u003e (Text). Actual:\u003c\u003e (Text). Target Bank Code mismatch.",
+                                            "durationMs":  23430
+                                        },
+                                        {
+                                            "mutantId":  213,
+                                            "outcome":  "killed",
+                                            "error":  "Assert.IsTrue failed. The source bank must be copied into the target company.",
+                                            "durationMs":  23933
+                                        },
+                                        {
+                                            "mutantId":  214,
+                                            "outcome":  "killed",
+                                            "error":  "Assert.IsTrue failed. The source bank must be copied into the target company.",
+                                            "durationMs":  23400
+                                        },
+                                        {
+                                            "mutantId":  217,
+                                            "outcome":  "killed",
+                                            "error":  "Assert.IsTrue failed. The source bank must be copied into the target company.",
+                                            "durationMs":  25396
+                                        },
+                                        {
+                                            "mutantId":  220,
+                                            "outcome":  "killed",
+                                            "error":  "Assert.IsTrue failed. The source bank must be copied into the target company.",
+                                            "durationMs":  23770
+                                        }
+                                    ]
+                    },
+                    {
+                        "fixId":  "F022",
+                        "revision":  1,
+                        "verdict":  "verified",
+                        "verifiedUtc":  "2026-10-02T09:57:42Z",
+                        "compile":  {
+                                        "ok":  true,
+                                        "diagnostics":  [
+
+                                                        ]
+                                    },
+                        "original":  {
+                                         "result":  "Pass",
+                                         "error":  null,
+                                         "durationMs":  27744
+                                     },
+                        "mutants":  [
+                                        {
+                                            "mutantId":  215,
+                                            "outcome":  "killed",
+                                            "error":  "You do not have the following permissions on TableData 71553577 CTS-CB Bank Bank: IndirectInsert for company MUTB-NOWRITE.\\\\To view details about your permissions, see the Effective Permissions page. To report a problem, refer to the following server session ID: \u00271570\u0027.",
+                                            "durationMs":  24290
+                                        },
+                                        {
+                                            "mutantId":  216,
+                                            "outcome":  "killed",
+                                            "error":  "You do not have the following permissions on TableData 71553577 CTS-CB Bank Bank: IndirectInsert for company MUTB-NOWRITE.\\\\To view details about your permissions, see the Effective Permissions page. To report a problem, refer to the following server session ID: \u00271582\u0027.",
+                                            "durationMs":  26260
+                                        },
+                                        {
+                                            "mutantId":  229,
+                                            "outcome":  "killed",
+                                            "error":  "You do not have the following permissions on TableData 270 Bank Account: IndirectModify for company MUTB-NOWRITE.\\\\To view details about your permissions, see the Effective Permissions page. To report a problem, refer to the following server session ID: \u00271592\u0027.",
+                                            "durationMs":  26387
+                                        },
+                                        {
+                                            "mutantId":  230,
+                                            "outcome":  "killed",
+                                            "error":  "You do not have the following permissions on TableData 270 Bank Account: IndirectModify for company MUTB-NOWRITE.\\\\To view details about your permissions, see the Effective Permissions page. To report a problem, refer to the following server session ID: \u00271604\u0027.",
+                                            "durationMs":  24557
+                                        }
+                                    ]
+                    },
+                    {
+                        "fixId":  "F023",
+                        "revision":  0,
+                        "verdict":  "skipped-equivalent",
+                        "verifiedUtc":  "2026-10-02T08:24:56Z",
+                        "compile":  null,
+                        "original":  null,
+                        "mutants":  [
+
+                                    ]
+                    },
+                    {
+                        "fixId":  "F024",
+                        "revision":  0,
+                        "verdict":  "verified",
+                        "verifiedUtc":  "2026-10-02T09:58:10Z",
+                        "compile":  {
+                                        "ok":  true,
+                                        "diagnostics":  [
+
+                                                        ]
+                                    },
+                        "original":  {
+                                         "result":  "Pass",
+                                         "error":  null,
+                                         "durationMs":  1023
+                                     },
+                        "mutants":  [
+                                        {
+                                            "mutantId":  222,
+                                            "outcome":  "killed",
+                                            "error":  "Assert.AreEqual failed. Expected:\u003cNot activated\u003e (Integer). Actual:\u003cNeeds detection\u003e (Integer). Annotation mismatch.",
+                                            "durationMs":  23
+                                        },
+                                        {
+                                            "mutantId":  223,
+                                            "outcome":  "killed",
+                                            "error":  "Assert.AreEqual failed. Expected:\u003cNot activated\u003e (Integer). Actual:\u003cNeeds detection\u003e (Integer). Annotation mismatch.",
+                                            "durationMs":  23
+                                        },
+                                        {
+                                            "mutantId":  226,
+                                            "outcome":  "killed",
+                                            "error":  "Assert.AreEqual failed. Expected:\u003cNot activated\u003e (Integer). Actual:\u003cNeeds detection\u003e (Integer). Annotation mismatch.",
+                                            "durationMs":  40
+                                        }
+                                    ]
+                    },
+                    {
+                        "fixId":  "F025",
+                        "revision":  0,
+                        "verdict":  "verified",
+                        "verifiedUtc":  "2026-10-02T09:58:29Z",
+                        "compile":  {
+                                        "ok":  true,
+                                        "diagnostics":  [
+
+                                                        ]
+                                    },
+                        "original":  {
+                                         "result":  "Pass",
+                                         "error":  null,
+                                         "durationMs":  1127
+                                     },
+                        "mutants":  [
+                                        {
+                                            "mutantId":  224,
+                                            "outcome":  "killed",
+                                            "error":  "The Share Authentication Target does not exist. Identification fields and values: Line No.=\u00270\u0027",
+                                            "durationMs":  23
+                                        },
+                                        {
+                                            "mutantId":  225,
+                                            "outcome":  "killed",
+                                            "error":  "The Share Authentication Target does not exist. Identification fields and values: Line No.=\u00270\u0027",
+                                            "durationMs":  30
+                                        }
+                                    ]
+                    },
+                    {
+                        "fixId":  "F027",
+                        "revision":  0,
+                        "verdict":  "verified",
+                        "verifiedUtc":  "2026-10-02T09:59:43Z",
+                        "compile":  {
+                                        "ok":  true,
+                                        "diagnostics":  [
+
+                                                        ]
+                                    },
+                        "original":  {
+                                         "result":  "Pass",
+                                         "error":  null,
+                                         "durationMs":  37
+                                     },
+                        "mutants":  [
+                                        {
+                                            "mutantId":  232,
+                                            "outcome":  "killed",
+                                            "error":  "Assert.AreEqual failed. Expected:\u003c1\u003e (Integer). Actual:\u003c2\u003e (Integer). The stale row for the source bank must be deleted.",
+                                            "durationMs":  24
+                                        },
+                                        {
+                                            "mutantId":  233,
+                                            "outcome":  "killed",
+                                            "error":  "Assert.AreEqual failed. Expected:\u003c1\u003e (Integer). Actual:\u003c2\u003e (Integer). The stale row for the source bank must be deleted.",
+                                            "durationMs":  20
+                                        },
+                                        {
+                                            "mutantId":  253,
+                                            "outcome":  "killed",
+                                            "error":  "Assert.AreEqual failed. Expected:\u003c1\u003e (Integer). Actual:\u003c2\u003e (Integer). The stale row for the source bank must be deleted.",
+                                            "durationMs":  20
+                                        },
+                                        {
+                                            "mutantId":  287,
+                                            "outcome":  "killed",
+                                            "error":  "Assert.AreEqual failed. Expected:\u003c1\u003e (Integer). Actual:\u003c2\u003e (Integer). The stale row for the source bank must be deleted.",
+                                            "durationMs":  23
+                                        },
+                                        {
+                                            "mutantId":  288,
+                                            "outcome":  "killed",
+                                            "error":  "Assert.AreEqual failed. Expected:\u003c1\u003e (Integer). Actual:\u003c2\u003e (Integer). The stale row for the source bank must be deleted.",
+                                            "durationMs":  26
+                                        },
+                                        {
+                                            "mutantId":  291,
+                                            "outcome":  "killed",
+                                            "error":  "Assert.AreEqual failed. Expected:\u003c1\u003e (Integer). Actual:\u003c2\u003e (Integer). The stale row for the source bank must be deleted.",
+                                            "durationMs":  20
+                                        },
+                                        {
+                                            "mutantId":  293,
+                                            "outcome":  "killed",
+                                            "error":  "Assert.AreEqual failed. Expected:\u003c1\u003e (Integer). Actual:\u003c2\u003e (Integer). The stale row for the source bank must be deleted.",
+                                            "durationMs":  23
+                                        },
+                                        {
+                                            "mutantId":  294,
+                                            "outcome":  "killed",
+                                            "error":  "Assert.AreEqual failed. Expected:\u003c1\u003e (Integer). Actual:\u003c2\u003e (Integer). The stale row for the source bank must be deleted.",
+                                            "durationMs":  27
+                                        }
+                                    ]
+                    },
+                    {
+                        "fixId":  "F028",
+                        "revision":  0,
+                        "verdict":  "verified",
+                        "verifiedUtc":  "2026-10-02T10:00:01Z",
+                        "compile":  {
+                                        "ok":  true,
+                                        "diagnostics":  [
+
+                                                        ]
+                                    },
+                        "original":  {
+                                         "result":  "Pass",
+                                         "error":  null,
+                                         "durationMs":  30
+                                     },
+                        "mutants":  [
+                                        {
+                                            "mutantId":  251,
+                                            "outcome":  "killed",
+                                            "error":  "Assert.AreEqual failed. Expected:\u003c2\u003e (Integer). Actual:\u003c1\u003e (Integer). Expected two rows - SystemNotMapped plus the untouched source-bank row.",
+                                            "durationMs":  20
+                                        },
+                                        {
+                                            "mutantId":  252,
+                                            "outcome":  "killed",
+                                            "error":  "Assert.AreEqual failed. Expected:\u003c2\u003e (Integer). Actual:\u003c1\u003e (Integer). Expected two rows - SystemNotMapped plus the untouched source-bank row.",
+                                            "durationMs":  23
+                                        }
+                                    ]
+                    },
+                    {
+                        "fixId":  "F029",
+                        "revision":  0,
+                        "verdict":  "verified",
+                        "verifiedUtc":  "2026-10-02T10:00:20Z",
+                        "compile":  {
+                                        "ok":  true,
+                                        "diagnostics":  [
+
+                                                        ]
+                                    },
+                        "original":  {
+                                         "result":  "Pass",
+                                         "error":  null,
+                                         "durationMs":  13
+                                     },
+                        "mutants":  [
+                                        {
+                                            "mutantId":  289,
+                                            "outcome":  "killed",
+                                            "error":  "Assert.AreEqual failed. Expected:\u003c2\u003e (Integer). Actual:\u003c1\u003e (Integer). Expected two rows - the row without a bank code must not be deleted.",
+                                            "durationMs":  10
+                                        },
+                                        {
+                                            "mutantId":  290,
+                                            "outcome":  "killed",
+                                            "error":  "Assert.AreEqual failed. Expected:\u003c2\u003e (Integer). Actual:\u003c1\u003e (Integer). Expected two rows - the row without a bank code must not be deleted.",
+                                            "durationMs":  14
+                                        }
+                                    ]
+                    },
+                    {
+                        "fixId":  "F030",
+                        "revision":  0,
+                        "verdict":  "skipped-equivalent",
+                        "verifiedUtc":  "2026-10-02T08:24:56Z",
+                        "compile":  null,
+                        "original":  null,
+                        "mutants":  [
+
+                                    ]
+                    },
+                    {
+                        "fixId":  "F031",
+                        "revision":  0,
+                        "verdict":  "skipped-equivalent",
+                        "verifiedUtc":  "2026-10-02T08:24:56Z",
+                        "compile":  null,
+                        "original":  null,
+                        "mutants":  [
+
+                                    ]
+                    },
+                    {
+                        "fixId":  "F032",
+                        "revision":  0,
+                        "verdict":  "verified",
+                        "verifiedUtc":  "2026-10-02T10:00:29Z",
+                        "compile":  {
+                                        "ok":  true,
+                                        "diagnostics":  [
+
+                                                        ]
+                                    },
+                        "original":  {
+                                         "result":  "Pass",
+                                         "error":  null,
+                                         "durationMs":  23
+                                     },
+                        "mutants":  [
+                                        {
+                                            "mutantId":  258,
+                                            "outcome":  "killed",
+                                            "error":  "Assert.AreEqual failed. Expected:\u003cBank detection failed for 4 of 4 bank accounts in this company. 2 accounts had lookup or connection errors, and 2 accounts had missing IBAN or branch information.\u003e (Text). Actual:\u003cBank detection did not return a valid result for any bank account in this company.\u003e (Text). Outcome Message mismatch.",
+                                            "durationMs":  23
+                                        }
+                                    ]
+                    },
+                    {
+                        "fixId":  "F033",
+                        "revision":  0,
+                        "verdict":  "verified",
+                        "verifiedUtc":  "2026-10-02T10:00:38Z",
+                        "compile":  {
+                                        "ok":  true,
+                                        "diagnostics":  [
+
+                                                        ]
+                                    },
+                        "original":  {
+                                         "result":  "Pass",
+                                         "error":  null,
+                                         "durationMs":  27
+                                     },
+                        "mutants":  [
+                                        {
+                                            "mutantId":  271,
+                                            "outcome":  "killed",
+                                            "error":  "Assert.AreEqual failed. Expected:\u003cOther Bank A\u003e (Text). Actual:\u003cOTHERBANKA\u003e (Text). Target Bank Name must be the resolved bank name.",
+                                            "durationMs":  33
+                                        }
+                                    ]
+                    },
+                    {
+                        "fixId":  "F034",
+                        "revision":  0,
+                        "verdict":  "verified",
+                        "verifiedUtc":  "2026-10-02T10:00:48Z",
+                        "compile":  {
+                                        "ok":  true,
+                                        "diagnostics":  [
+
+                                                        ]
+                                    },
+                        "original":  {
+                                         "result":  "Pass",
+                                         "error":  null,
+                                         "durationMs":  23
+                                     },
+                        "mutants":  [
+                                        {
+                                            "mutantId":  270,
+                                            "outcome":  "killed",
+                                            "error":  "Assert.AreEqual failed. Expected:\u003cGHOSTBANK\u003e (Text). Actual:\u003c\u003e (Text). Target Bank Name must fall back to the bank code when no Bank record exists.",
+                                            "durationMs":  20
+                                        }
+                                    ]
+                    },
+                    {
+                        "fixId":  "F035",
+                        "revision":  0,
+                        "verdict":  "verified",
+                        "verifiedUtc":  "2026-10-02T10:00:57Z",
+                        "compile":  {
+                                        "ok":  true,
+                                        "diagnostics":  [
+
+                                                        ]
+                                    },
+                        "original":  {
+                                         "result":  "Pass",
+                                         "error":  null,
+                                         "durationMs":  27
+                                     },
+                        "mutants":  [
+                                        {
+                                            "mutantId":  282,
+                                            "outcome":  "killed",
+                                            "error":  "The record in table Share Authentication Target already exists. Identification fields and values: Line No.=\u002720\u0027",
+                                            "durationMs":  23
+                                        }
+                                    ]
+                    },
+                    {
+                        "fixId":  "F036",
+                        "revision":  0,
+                        "verdict":  "verified",
+                        "verifiedUtc":  "2026-10-02T10:01:06Z",
+                        "compile":  {
+                                        "ok":  true,
+                                        "diagnostics":  [
+
+                                                        ]
+                                    },
+                        "original":  {
+                                         "result":  "Pass",
+                                         "error":  null,
+                                         "durationMs":  23
+                                     },
+                        "mutants":  [
+                                        {
+                                            "mutantId":  285,
+                                            "outcome":  "killed",
+                                            "error":  "Assert.AreEqual failed. Expected:\u003cBank detection failed for 1 of 3 bank accounts in this company. 1 accounts had lookup or connection errors, and 0 accounts had missing IBAN or branch information.\u003e (Text). Actual:\u003cBank detection failed for 1 of 1 bank accounts in this company. 1 accounts had lookup or connection errors, and 0 accounts had missing IBAN or branch information.\u003e (Text). Outcome Message must count the other-bank accounts as attempted.",
+                                            "durationMs":  23
+                                        }
+                                    ]
+                    },
+                    {
+                        "fixId":  "F037",
+                        "revision":  0,
+                        "verdict":  "skipped-equivalent",
+                        "verifiedUtc":  "2026-10-02T08:24:56Z",
+                        "compile":  null,
+                        "original":  null,
+                        "mutants":  [
+
+                                    ]
+                    },
+                    {
+                        "fixId":  "F038",
+                        "revision":  0,
+                        "verdict":  "verified",
+                        "verifiedUtc":  "2026-10-02T10:01:27Z",
+                        "compile":  {
+                                        "ok":  true,
+                                        "diagnostics":  [
+
+                                                        ]
+                                    },
+                        "original":  {
+                                         "result":  "Pass",
+                                         "error":  null,
+                                         "durationMs":  97
+                                     },
+                        "mutants":  [
+                                        {
+                                            "mutantId":  1873,
+                                            "outcome":  "killed",
+                                            "error":  "Assert.IsTrue failed. No mappings should be created for a setup whose System Type is not BankSystem",
+                                            "durationMs":  90
+                                        },
+                                        {
+                                            "mutantId":  1874,
+                                            "outcome":  "killed",
+                                            "error":  "Assert.IsTrue failed. No mappings should be created for a setup whose System Type is not BankSystem",
+                                            "durationMs":  70
+                                        }
+                                    ]
+                    },
+                    {
+                        "fixId":  "F039",
+                        "revision":  0,
+                        "verdict":  "verified",
+                        "verifiedUtc":  "2026-10-02T10:01:47Z",
+                        "compile":  {
+                                        "ok":  true,
+                                        "diagnostics":  [
+
+                                                        ]
+                                    },
+                        "original":  {
+                                         "result":  "Pass",
+                                         "error":  null,
+                                         "durationMs":  90
+                                     },
+                        "mutants":  [
+                                        {
+                                            "mutantId":  1877,
+                                            "outcome":  "killed",
+                                            "error":  "Assert.IsTrue failed. No mappings should be created for an Account Statement setup",
+                                            "durationMs":  63
+                                        },
+                                        {
+                                            "mutantId":  1878,
+                                            "outcome":  "killed",
+                                            "error":  "Assert.IsTrue failed. No mappings should be created for an Account Statement setup",
+                                            "durationMs":  60
+                                        }
+                                    ]
+                    },
+                    {
+                        "fixId":  "F040",
+                        "revision":  0,
+                        "verdict":  "verified",
+                        "verifiedUtc":  "2026-10-02T10:01:57Z",
+                        "compile":  {
+                                        "ok":  true,
+                                        "diagnostics":  [
+
+                                                        ]
+                                    },
+                        "original":  {
+                                         "result":  "Pass",
+                                         "error":  null,
+                                         "durationMs":  90
+                                     },
+                        "mutants":  [
+                                        {
+                                            "mutantId":  1879,
+                                            "outcome":  "killed",
+                                            "error":  "Assert.IsTrue failed. No mappings should be created when the bank system has no payment methods",
+                                            "durationMs":  90
+                                        }
+                                    ]
+                    },
+                    {
+                        "fixId":  "F041",
+                        "revision":  0,
+                        "verdict":  "verified",
+                        "verifiedUtc":  "2026-10-02T10:02:06Z",
+                        "compile":  {
+                                        "ok":  true,
+                                        "diagnostics":  [
+
+                                                        ]
+                                    },
+                        "original":  {
+                                         "result":  "Pass",
+                                         "error":  null,
+                                         "durationMs":  103
                                      },
                         "mutants":  [
                                         {
                                             "mutantId":  1883,
                                             "outcome":  "killed",
                                             "error":  "Assert.AreEqual failed. Expected:\u003c1\u003e (Integer). Actual:\u003c0\u003e (Integer). An unknown payment method should be mapped with the setup transaction type.",
-                                            "durationMs":  70
+                                            "durationMs":  67
                                         }
+                                    ]
+                    },
+                    {
+                        "fixId":  "F042",
+                        "revision":  0,
+                        "verdict":  "verified",
+                        "verifiedUtc":  "2026-10-02T10:02:15Z",
+                        "compile":  {
+                                        "ok":  true,
+                                        "diagnostics":  [
+
+                                                        ]
+                                    },
+                        "original":  {
+                                         "result":  "Pass",
+                                         "error":  null,
+                                         "durationMs":  93
+                                     },
+                        "mutants":  [
+                                        {
+                                            "mutantId":  1885,
+                                            "outcome":  "killed",
+                                            "error":  "Assert.IsTrue failed. A Direct Debit payment method should not be mapped for a Payment setup",
+                                            "durationMs":  74
+                                        }
+                                    ]
+                    },
+                    {
+                        "fixId":  "F043",
+                        "revision":  0,
+                        "verdict":  "verified",
+                        "verifiedUtc":  "2026-10-02T10:02:36Z",
+                        "compile":  {
+                                        "ok":  true,
+                                        "diagnostics":  [
+
+                                                        ]
+                                    },
+                        "original":  {
+                                         "result":  "Pass",
+                                         "error":  null,
+                                         "durationMs":  114
+                                     },
+                        "mutants":  [
+                                        {
+                                            "mutantId":  1889,
+                                            "outcome":  "killed",
+                                            "error":  "Assert.AreEqual failed. Expected:\u003c1\u003e (Integer). Actual:\u003c2\u003e (Integer). No mapping should be propagated for a PM without CTS-CB Payment Method Code.",
+                                            "durationMs":  100
+                                        },
+                                        {
+                                            "mutantId":  1890,
+                                            "outcome":  "killed",
+                                            "error":  "Assert.AreEqual failed. Expected:\u003c1\u003e (Integer). Actual:\u003c2\u003e (Integer). No mapping should be propagated for a PM without CTS-CB Payment Method Code.",
+                                            "durationMs":  103
+                                        }
+                                    ]
+                    },
+                    {
+                        "fixId":  "F044",
+                        "revision":  0,
+                        "verdict":  "verified",
+                        "verifiedUtc":  "2026-10-02T10:02:45Z",
+                        "compile":  {
+                                        "ok":  true,
+                                        "diagnostics":  [
+
+                                                        ]
+                                    },
+                        "original":  {
+                                         "result":  "Pass",
+                                         "error":  null,
+                                         "durationMs":  70
+                                     },
+                        "mutants":  [
+                                        {
+                                            "mutantId":  1894,
+                                            "outcome":  "killed",
+                                            "error":  "Assert.AreEqual failed. Expected:\u003c1\u003e (Integer). Actual:\u003c2\u003e (Integer). No mapping should be propagated when the CTS-CB Payment Method does not exist.",
+                                            "durationMs":  77
+                                        }
+                                    ]
+                    },
+                    {
+                        "fixId":  "F045",
+                        "revision":  0,
+                        "verdict":  "verified",
+                        "verifiedUtc":  "2026-10-02T10:03:04Z",
+                        "compile":  {
+                                        "ok":  true,
+                                        "diagnostics":  [
+
+                                                        ]
+                                    },
+                        "original":  {
+                                         "result":  "Pass",
+                                         "error":  null,
+                                         "durationMs":  47
+                                     },
+                        "mutants":  [
+                                        {
+                                            "mutantId":  1897,
+                                            "outcome":  "killed",
+                                            "error":  "Assert.AreEqual failed. Expected:\u003c0\u003e (Integer). Actual:\u003c1\u003e (Integer). No mapping should be created when there are no existing mappings to propagate to.",
+                                            "durationMs":  50
+                                        },
+                                        {
+                                            "mutantId":  1898,
+                                            "outcome":  "killed",
+                                            "error":  "Assert.AreEqual failed. Expected:\u003c0\u003e (Integer). Actual:\u003c1\u003e (Integer). No mapping should be created when there are no existing mappings to propagate to.",
+                                            "durationMs":  46
+                                        }
+                                    ]
+                    },
+                    {
+                        "fixId":  "F046",
+                        "revision":  0,
+                        "verdict":  "verified",
+                        "verifiedUtc":  "2026-10-02T10:04:03Z",
+                        "compile":  {
+                                        "ok":  true,
+                                        "diagnostics":  [
+
+                                                        ]
+                                    },
+                        "original":  {
+                                         "result":  "Pass",
+                                         "error":  null,
+                                         "durationMs":  140
+                                     },
+                        "mutants":  [
+                                        {
+                                            "mutantId":  1899,
+                                            "outcome":  "killed",
+                                            "error":  "Assert.IsFalse failed. Skipping the conflict check should populate the payment methods",
+                                            "durationMs":  63
+                                        },
+                                        {
+                                            "mutantId":  1900,
+                                            "outcome":  "killed",
+                                            "error":  "Assert.IsFalse failed. Skipping the conflict check should populate the payment methods",
+                                            "durationMs":  63
+                                        },
+                                        {
+                                            "mutantId":  1903,
+                                            "outcome":  "killed",
+                                            "error":  "Assert.IsTrue failed. A detected conflict should stop the population of payment methods",
+                                            "durationMs":  100
+                                        },
+                                        {
+                                            "mutantId":  1904,
+                                            "outcome":  "killed",
+                                            "error":  "Assert.IsFalse failed. Skipping the conflict check should populate the payment methods",
+                                            "durationMs":  86
+                                        },
+                                        {
+                                            "mutantId":  1905,
+                                            "outcome":  "killed",
+                                            "error":  "Assert.IsTrue failed. A detected conflict should stop the population of payment methods",
+                                            "durationMs":  67
+                                        },
+                                        {
+                                            "mutantId":  1906,
+                                            "outcome":  "killed",
+                                            "error":  "Assert.IsTrue failed. A detected conflict should stop the population of payment methods",
+                                            "durationMs":  66
+                                        }
+                                    ]
+                    },
+                    {
+                        "fixId":  "F047",
+                        "revision":  0,
+                        "verdict":  "verified",
+                        "verifiedUtc":  "2026-10-02T10:04:32Z",
+                        "compile":  {
+                                        "ok":  true,
+                                        "diagnostics":  [
+
+                                                        ]
+                                    },
+                        "original":  {
+                                         "result":  "Pass",
+                                         "error":  null,
+                                         "durationMs":  113
+                                     },
+                        "mutants":  [
+                                        {
+                                            "mutantId":  1911,
+                                            "outcome":  "killed",
+                                            "error":  "Assert.IsTrue failed. Mappings of the other system should be deleted",
+                                            "durationMs":  70
+                                        },
+                                        {
+                                            "mutantId":  1913,
+                                            "outcome":  "killed",
+                                            "error":  "Assert.IsTrue failed. Mappings of the other system should be deleted",
+                                            "durationMs":  60
+                                        },
+                                        {
+                                            "mutantId":  1914,
+                                            "outcome":  "killed",
+                                            "error":  "Assert.IsTrue failed. Mappings of the other system should be deleted",
+                                            "durationMs":  84
+                                        }
+                                    ]
+                    },
+                    {
+                        "fixId":  "F048",
+                        "revision":  0,
+                        "verdict":  "verified",
+                        "verifiedUtc":  "2026-10-02T10:04:43Z",
+                        "compile":  {
+                                        "ok":  true,
+                                        "diagnostics":  [
+
+                                                        ]
+                                    },
+                        "original":  {
+                                         "result":  "Pass",
+                                         "error":  null,
+                                         "durationMs":  114
+                                     },
+                        "mutants":  [
+                                        {
+                                            "mutantId":  1921,
+                                            "outcome":  "killed",
+                                            "error":  "Assert.AreEqual failed. Expected:\u003c1\u003e (Integer). Actual:\u003c2\u003e (Integer). An existing mapping should prevent a duplicate when the Short PM Code is blank.",
+                                            "durationMs":  93
+                                        }
+                                    ]
+                    },
+                    {
+                        "fixId":  "F049",
+                        "revision":  0,
+                        "verdict":  "verified",
+                        "verifiedUtc":  "2026-10-02T10:04:52Z",
+                        "compile":  {
+                                        "ok":  true,
+                                        "diagnostics":  [
+
+                                                        ]
+                                    },
+                        "original":  {
+                                         "result":  "Pass",
+                                         "error":  null,
+                                         "durationMs":  93
+                                     },
+                        "mutants":  [
+                                        {
+                                            "mutantId":  1928,
+                                            "outcome":  "killed",
+                                            "error":  "Microsoft.Dynamics.Nav.Types.Exceptions.NavNCLAssertErrorException: An error was expected inside an ASSERTERROR statement.\\   at Microsoft.Dynamics.Nav.Runtime.NavMethodScope.AssertErrorAsync(Func`1 body)\\   at Microsoft.Dynamics.Nav.BusinessApplication.Codeunit95110.TestPropagatePaymentMethodToMappings_UnsupportedExistingMapping_RaisesInsertValidation()\\   at Microsoft.Dynamics.Nav.Runtime.NavTestCodeunit.ExecuteTestMethodAsync(MethodInfo method, TestTransactionModel transactionModel, Boolean isAsync, Object[] methodArgs)",
+                                            "durationMs":  67
+                                        }
+                                    ]
+                    },
+                    {
+                        "fixId":  "F050",
+                        "revision":  0,
+                        "verdict":  "skipped-equivalent",
+                        "verifiedUtc":  "2026-10-02T08:24:56Z",
+                        "compile":  null,
+                        "original":  null,
+                        "mutants":  [
+
+                                    ]
+                    },
+                    {
+                        "fixId":  "F051",
+                        "revision":  0,
+                        "verdict":  "skipped-equivalent",
+                        "verifiedUtc":  "2026-10-02T08:24:56Z",
+                        "compile":  null,
+                        "original":  null,
+                        "mutants":  [
+
+                                    ]
+                    },
+                    {
+                        "fixId":  "F052",
+                        "revision":  0,
+                        "verdict":  "skipped-equivalent",
+                        "verifiedUtc":  "2026-10-02T08:24:56Z",
+                        "compile":  null,
+                        "original":  null,
+                        "mutants":  [
+
+                                    ]
+                    },
+                    {
+                        "fixId":  "F053",
+                        "revision":  0,
+                        "verdict":  "skipped-equivalent",
+                        "verifiedUtc":  "2026-10-02T08:24:56Z",
+                        "compile":  null,
+                        "original":  null,
+                        "mutants":  [
+
+                                    ]
+                    },
+                    {
+                        "fixId":  "F054",
+                        "revision":  0,
+                        "verdict":  "verified",
+                        "verifiedUtc":  "2026-10-02T10:05:01Z",
+                        "compile":  {
+                                        "ok":  true,
+                                        "diagnostics":  [
+
+                                                        ]
+                                    },
+                        "original":  {
+                                         "result":  "Pass",
+                                         "error":  null,
+                                         "durationMs":  14
+                                     },
+                        "mutants":  [
+                                        {
+                                            "mutantId":  4508,
+                                            "outcome":  "killed",
+                                            "error":  "Assert.IsTrue failed. Output should be empty for empty input",
+                                            "durationMs":  16
+                                        }
+                                    ]
+                    },
+                    {
+                        "fixId":  "F055",
+                        "revision":  0,
+                        "verdict":  "compile-failed",
+                        "verifiedUtc":  "2026-10-02T08:26:30Z",
+                        "compile":  {
+                                        "ok":  false,
+                                        "diagnostics":  [
+                                                            "Yapily\\IntBatchDispTests.Codeunit.al(655): AL0185 Codeunit \u0027CTS-CB Fake Batch Strategy\u0027 is missing"
+                                                        ]
+                                    },
+                        "original":  null,
+                        "mutants":  [
+
+                                    ]
+                    },
+                    {
+                        "fixId":  "F056",
+                        "revision":  0,
+                        "verdict":  "verified",
+                        "verifiedUtc":  "2026-10-02T10:05:10Z",
+                        "compile":  {
+                                        "ok":  true,
+                                        "diagnostics":  [
+
+                                                        ]
+                                    },
+                        "original":  {
+                                         "result":  "Pass",
+                                         "error":  null,
+                                         "durationMs":  16
+                                     },
+                        "mutants":  [
+                                        {
+                                            "mutantId":  4516,
+                                            "outcome":  "killed",
+                                            "error":  "Assert.IsTrue failed. Should return empty for line record",
+                                            "durationMs":  20
+                                        }
+                                    ]
+                    },
+                    {
+                        "fixId":  "F057",
+                        "revision":  0,
+                        "verdict":  "verified",
+                        "verifiedUtc":  "2026-10-02T10:05:28Z",
+                        "compile":  {
+                                        "ok":  true,
+                                        "diagnostics":  [
+
+                                                        ]
+                                    },
+                        "original":  {
+                                         "result":  "Pass",
+                                         "error":  null,
+                                         "durationMs":  20
+                                     },
+                        "mutants":  [
+                                        {
+                                            "mutantId":  4519,
+                                            "outcome":  "killed",
+                                            "error":  "Assert.IsTrue failed. Should return empty for a non-header record even if lines exist for its ID",
+                                            "durationMs":  20
+                                        },
+                                        {
+                                            "mutantId":  4520,
+                                            "outcome":  "killed",
+                                            "error":  "Assert.IsTrue failed. Should return empty for a non-header record even if lines exist for its ID",
+                                            "durationMs":  17
+                                        }
+                                    ]
+                    },
+                    {
+                        "fixId":  "F058",
+                        "revision":  0,
+                        "verdict":  "verified",
+                        "verifiedUtc":  "2026-10-02T10:05:47Z",
+                        "compile":  {
+                                        "ok":  true,
+                                        "diagnostics":  [
+
+                                                        ]
+                                    },
+                        "original":  {
+                                         "result":  "Pass",
+                                         "error":  null,
+                                         "durationMs":  16
+                                     },
+                        "mutants":  [
+                                        {
+                                            "mutantId":  4523,
+                                            "outcome":  "killed",
+                                            "error":  "Assert.IsTrue failed. Should return empty for a header without lines",
+                                            "durationMs":  16
+                                        },
+                                        {
+                                            "mutantId":  4524,
+                                            "outcome":  "killed",
+                                            "error":  "Assert.IsTrue failed. Should return empty for a header without lines",
+                                            "durationMs":  23
+                                        }
+                                    ]
+                    },
+                    {
+                        "fixId":  "F059",
+                        "revision":  0,
+                        "verdict":  "skipped-equivalent",
+                        "verifiedUtc":  "2026-10-02T08:24:56Z",
+                        "compile":  null,
+                        "original":  null,
+                        "mutants":  [
+
+                                    ]
+                    },
+                    {
+                        "fixId":  "F060",
+                        "revision":  0,
+                        "verdict":  "verified",
+                        "verifiedUtc":  "2026-10-02T10:06:24Z",
+                        "compile":  {
+                                        "ok":  true,
+                                        "diagnostics":  [
+
+                                                        ]
+                                    },
+                        "original":  {
+                                         "result":  "Pass",
+                                         "error":  null,
+                                         "durationMs":  23
+                                     },
+                        "mutants":  [
+                                        {
+                                            "mutantId":  4532,
+                                            "outcome":  "killed",
+                                            "error":  "Assert.AreEqual failed. Expected:\u003cSingle Payment\u003e (Integer). Actual:\u003cBulk Payment\u003e (Integer). A one-line batch should have SinglePayment token type.",
+                                            "durationMs":  24
+                                        },
+                                        {
+                                            "mutantId":  4537,
+                                            "outcome":  "killed",
+                                            "error":  "Assert.AreEqual failed. Expected:\u003cTest Creditor 1\u003e (Text). Actual:\u003c1 payments\u003e (Text). A one-line batch header should show the creditor name.",
+                                            "durationMs":  20
+                                        },
+                                        {
+                                            "mutantId":  4542,
+                                            "outcome":  "killed",
+                                            "error":  "Assert.AreEqual failed. Expected:\u003cTest Creditor 1\u003e (Text). Actual:\u003c\u003e (Text). A one-line batch header should show the creditor name.",
+                                            "durationMs":  20
+                                        },
+                                        {
+                                            "mutantId":  4543,
+                                            "outcome":  "killed",
+                                            "error":  "Assert.AreEqual failed. Expected:\u003cTest Creditor 1\u003e (Text). Actual:\u003c\u003e (Text). A one-line batch header should show the creditor name.",
+                                            "durationMs":  23
+                                        }
+                                    ]
+                    },
+                    {
+                        "fixId":  "F061",
+                        "revision":  0,
+                        "verdict":  "verified",
+                        "verifiedUtc":  "2026-10-02T10:07:12Z",
+                        "compile":  {
+                                        "ok":  true,
+                                        "diagnostics":  [
+
+                                                        ]
+                                    },
+                        "original":  {
+                                         "result":  "Pass",
+                                         "error":  null,
+                                         "durationMs":  27
+                                     },
+                        "mutants":  [
+                                        {
+                                            "mutantId":  4533,
+                                            "outcome":  "killed",
+                                            "error":  "Assert.AreEqual failed. Expected:\u003cEUR\u003e (Text). Actual:\u003cUSD\u003e (Text). Header currency should come from the first entry.",
+                                            "durationMs":  27
+                                        },
+                                        {
+                                            "mutantId":  4534,
+                                            "outcome":  "killed",
+                                            "error":  "Assert.AreEqual failed. Expected:\u003cEUR\u003e (Text). Actual:\u003c\u003e (Text). Header currency should come from the first entry.",
+                                            "durationMs":  47
+                                        },
+                                        {
+                                            "mutantId":  4535,
+                                            "outcome":  "killed",
+                                            "error":  "Assert.AreEqual failed. Expected:\u003c3 payments\u003e (Text). Actual:\u003cTest Creditor 1\u003e (Text). A multi-line batch header should show the payment count.",
+                                            "durationMs":  20
+                                        },
+                                        {
+                                            "mutantId":  4536,
+                                            "outcome":  "killed",
+                                            "error":  "Assert.AreEqual failed. Expected:\u003c3 payments\u003e (Text). Actual:\u003cTest Creditor 1\u003e (Text). A multi-line batch header should show the payment count.",
+                                            "durationMs":  30
+                                        },
+                                        {
+                                            "mutantId":  4544,
+                                            "outcome":  "killed",
+                                            "error":  "Assert.AreEqual failed. Expected:\u003c3 payments\u003e (Text). Actual:\u003c\u003e (Text). A multi-line batch header should show the payment count.",
+                                            "durationMs":  30
+                                        }
+                                    ]
+                    },
+                    {
+                        "fixId":  "F062",
+                        "revision":  0,
+                        "verdict":  "skipped-equivalent",
+                        "verifiedUtc":  "2026-10-02T08:24:56Z",
+                        "compile":  null,
+                        "original":  null,
+                        "mutants":  [
+
+                                    ]
+                    },
+                    {
+                        "fixId":  "F063",
+                        "revision":  0,
+                        "verdict":  "verified",
+                        "verifiedUtc":  "2026-10-02T10:07:21Z",
+                        "compile":  {
+                                        "ok":  true,
+                                        "diagnostics":  [
+
+                                                        ]
+                                    },
+                        "original":  {
+                                         "result":  "Pass",
+                                         "error":  null,
+                                         "durationMs":  13
+                                     },
+                        "mutants":  [
+                                        {
+                                            "mutantId":  16474,
+                                            "outcome":  "killed",
+                                            "error":  "Assert.AreEqual failed. Expected:\u003c\u003e (Text). Actual:\u003c689B2FB2AF\u003e (Text). Bank system code should be empty for level 3.",
+                                            "durationMs":  20
+                                        }
+                                    ]
+                    },
+                    {
+                        "fixId":  "F064",
+                        "revision":  0,
+                        "verdict":  "verified",
+                        "verifiedUtc":  "2026-10-02T10:07:29Z",
+                        "compile":  {
+                                        "ok":  true,
+                                        "diagnostics":  [
+
+                                                        ]
+                                    },
+                        "original":  {
+                                         "result":  "Pass",
+                                         "error":  null,
+                                         "durationMs":  10
+                                     },
+                        "mutants":  [
+                                        {
+                                            "mutantId":  16477,
+                                            "outcome":  "killed",
+                                            "error":  "Assert.AreEqual failed. Expected:\u003c2EADB78F53\u003e (Text). Actual:\u003c\u003e (Text). Bank system code should be returned for level 1.",
+                                            "durationMs":  10
+                                        }
+                                    ]
+                    },
+                    {
+                        "fixId":  "F065",
+                        "revision":  0,
+                        "verdict":  "verified",
+                        "verifiedUtc":  "2026-10-02T10:07:38Z",
+                        "compile":  {
+                                        "ok":  true,
+                                        "diagnostics":  [
+
+                                                        ]
+                                    },
+                        "original":  {
+                                         "result":  "Pass",
+                                         "error":  null,
+                                         "durationMs":  10
+                                     },
+                        "mutants":  [
+                                        {
+                                            "mutantId":  16481,
+                                            "outcome":  "killed",
+                                            "error":  "Assert.AreEqual failed. Expected:\u003c37787A3367\u003e (Text). Actual:\u003c\u003e (Text). Payment method code should be returned for level 1.",
+                                            "durationMs":  17
+                                        }
+                                    ]
+                    },
+                    {
+                        "fixId":  "F066",
+                        "revision":  0,
+                        "verdict":  "skipped-equivalent",
+                        "verifiedUtc":  "2026-10-02T08:24:56Z",
+                        "compile":  null,
+                        "original":  null,
+                        "mutants":  [
+
                                     ]
                     }
                 ],

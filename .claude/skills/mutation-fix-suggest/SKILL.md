@@ -83,7 +83,12 @@ Check these before calling a mutant equivalent or designing a test.
   `out/runs/<N>/gen/aut-schemata/` to see how a mutant actually compiles.
 - AL `and`/`or` do not short-circuit: both operands always run, including calls with var parameters and side effects.
 - Test sessions run in restricted permission mode, not SUPER. Permission guards (`WritePermission()`) are testable by
-  lowering permissions with the test library. Note that a codeunit `Permissions` property is added to the user's rights.
+  lowering permissions with the test library. A codeunit's `Permissions` property only turns the user's indirect
+  permission into success; it does not give a read-only user write rights. `WritePermission()` means Insert, Modify and
+  Delete together. Before lowering permissions, find every other write on the path (caches, logs) and seed or avoid it,
+  or the test fails on the original.
+- The build runs CodeCop as errors. Declare `var` sections in type order (AA0021: Record, Report, Codeunit, XmlPort,
+  Page, Query, Notification, ... then any order), with no unused variables (AA0137) and one statement per line.
 - A test that silently `exit`s on a missing precondition (for example only one company) kills nothing: make it fail with
   an explicit error and state the environment requirement in the rationale.
 - "Equivalent" needs proof that no input can tell the two versions apart. Public interfaces and test fakes widen what is

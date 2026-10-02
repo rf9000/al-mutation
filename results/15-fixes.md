@@ -4,7 +4,7 @@
 - Survivors: 146
 - Fix entries: 65
 - Verdicts: fix 4, new-test 42, equivalent 19
-- Confidence: high 32, medium 24, low 9
+- Confidence: high 32, medium 25, low 8
 
 ## Test codeunit 95058 CTS-CB Val. Level Mgt. UT
 
@@ -1189,7 +1189,7 @@ File: Authentication/TestAuthShareDetect.Codeunit.al
 - Change: new-test
 - Target procedure: MutA_DetectInCompany_SourceBankCodeBlank_LeavesPlaceholderUntouched
 - Confidence: high
-- Rationale: Lines 85-86 (`if SourceBank.Code = '' then exit`) are never reached with an empty source bank: the only DetectInCompany test seeds a valid source bank, so the early exit is never taken.
+- Rationale: Lines 85-86 (`if SourceBank.Code = '' then exit`) are never reached with an empty source bank: the only DetectInCompany test seeds a valid source bank, so the early exit is never taken. [rev 1: reordered var declarations for AA0021]
 - Expected effect: Fails on mutant 151 (condition forced false) and mutant 152 (exit deleted) because detection continues with an empty source bank, calls the fake HTTP client and turns the placeholder into a SystemNotMapped row; passes on the original, which exits at line 86 leaving the NeedsDetection placeholder and making no HTTP call.
 
 ```al
@@ -1197,13 +1197,13 @@ File: Authentication/TestAuthShareDetect.Codeunit.al
     procedure MutA_DetectInCompany_SourceBankCodeBlank_LeavesPlaceholderUntouched()
     var
         TempAuthShareTarget: Record "CTS-CB Auth Share Target" temporary;
+        AuthenticationEntry: Record "CTS-CB Authentication Entry";
         AuthShareDetection: Codeunit "CTS-CB Auth Share Detection";
         AuthShareHttpFixture: Codeunit "CTS-CB Auth Share Http Fixture";
         IHttpFactory: Codeunit "CTS-CB Http Factory";
         FakeHTTPClient: Codeunit "CTS-CB Fake HTTP Client";
         FakeIHttpResponse: Codeunit "CTS-CB FakeIHttpResponse";
         LibraryPermissions: Codeunit "CTS-CB Library Permissions";
-        AuthenticationEntry: Record "CTS-CB Authentication Entry";
         SourceEntryNo: Integer;
         CurrentCo: Text[30];
     begin
@@ -1241,7 +1241,7 @@ File: Authentication/TestAuthShareDetect.Codeunit.al
 - Change: new-test
 - Target procedure: MutA_DetectInCompany_NoUnboundAccounts_BecomesNoMatchingAccounts
 - Confidence: high
-- Rationale: Line 94 (`if BankAccount.FindSet() then`) is only ever true in the existing test, which always seeds one unbound account, so the no-accounts path is not covered.
+- Rationale: Line 94 (`if BankAccount.FindSet() then`) is only ever true in the existing test, which always seeds one unbound account, so the no-accounts path is not covered. [rev 1: reordered var declarations for AA0021]
 - Expected effect: Fails on mutant 153 (FindSet forced true) because the loop body then runs once on an empty Bank Account record (blank IBAN and branch), counts it as a missing-info failure and the placeholder becomes DetectionFailed; passes on the original, where the placeholder becomes NoMatchingAccounts with Account Count 0.
 
 ```al
@@ -1249,13 +1249,13 @@ File: Authentication/TestAuthShareDetect.Codeunit.al
     procedure MutA_DetectInCompany_NoUnboundAccounts_BecomesNoMatchingAccounts()
     var
         TempAuthShareTarget: Record "CTS-CB Auth Share Target" temporary;
+        BankAccount: Record "Bank Account";
         AuthShareDetection: Codeunit "CTS-CB Auth Share Detection";
         AuthShareHttpFixture: Codeunit "CTS-CB Auth Share Http Fixture";
         IHttpFactory: Codeunit "CTS-CB Http Factory";
         FakeHTTPClient: Codeunit "CTS-CB Fake HTTP Client";
         FakeIHttpResponse: Codeunit "CTS-CB FakeIHttpResponse";
         LibraryPermissions: Codeunit "CTS-CB Library Permissions";
-        BankAccount: Record "Bank Account";
         SourceEntryNo: Integer;
         CurrentCo: Text[30];
     begin
@@ -1293,41 +1293,50 @@ File: Authentication/TestAuthShareDetect.Codeunit.al
 - Change: new-test
 - Target procedure: MutA_DetectInCompany_FailedAccounts_SplitHttpAndMissingInfoCounts
 - Confidence: medium
-- Rationale: Line 113 (`if MissingInfo then`) and line 204 (the blank IBAN and blank branch test in ResolveBankCodeForAccount) are never exercised with a failing account: the existing test only has one account that resolves, so neither failure counter is ever incremented and no DetectionFailed message is checked.
-- Expected effect: Fails on mutant 157 (MissingInfo forced true) because the lookup-failure account is counted as missing info (message reads 0 lookup / 2 missing); fails on mutant 158 (forced false) because the blank account is counted as a lookup failure (2 lookup / 0 missing); fails on mutants 173 and 176 because the blank-IBAN/blank-branch account no longer sets MissingInfo (2 lookup / 0 missing); passes on the original (1 lookup / 1 missing).
+- Rationale: Line 113 (`if MissingInfo then`) and line 204 (the blank IBAN and blank branch test in ResolveBankCodeForAccount) are never exercised with a failing account: the existing test only has one account that resolves, so neither failure counter is ever incremented and no DetectionFailed message is checked. [rev 1: reordered var declarations for AA0021] [rev 2: answers "Account Count mismatch. Expected 2, Actual 1" on the original. Root cause: FakeHTTPClient.SetShouldFail is a no-op on this path, because BankInformation.TryGetBankInfoFromIBAN ignores the GetUtility return value and parses the canned (success) response, and the DK IBAN can also be served from the Bank Information cache or the DK branch fallback; so BA-DETECT-POC resolved and only the missing-info account failed. Fix: the canned response is now unparseable ('not-json', so TryReadSuccessResponse fails), the seeded account gets a non-DK IBAN (DE89370400440532013000, country DE) that is never cached and has no branch fallback, and SetShouldFail was removed. Original now yields 1 lookup failure + 1 missing-info = 2; mutants 157/158/173/176 still change the split in the message.]
+- Expected effect: Passes on the original: BA-DETECT-POC (DE IBAN, unparseable response) fails the lookup with MissingInfo false and BA-DETECT-MISS (no IBAN, no branch) sets MissingInfo, giving 2 of 2 failed, 1 lookup / 1 missing. Fails on mutant 157 (MissingInfo forced true: 0 lookup / 2 missing); on mutant 158 (forced false: 2 lookup / 0 missing); on mutants 173 and 176 because the blank account no longer sets MissingInfo, goes to GetBankAccInfo, fails LookupInfoPresent and counts as a lookup failure (2 lookup / 0 missing). Account Count stays 2 in every case; the Outcome Message assertion kills.
 
 ```al
     [Test]
     procedure MutA_DetectInCompany_FailedAccounts_SplitHttpAndMissingInfoCounts()
     var
         TempAuthShareTarget: Record "CTS-CB Auth Share Target" temporary;
+        BankAccount: Record "Bank Account";
         AuthShareDetection: Codeunit "CTS-CB Auth Share Detection";
         AuthShareHttpFixture: Codeunit "CTS-CB Auth Share Http Fixture";
         IHttpFactory: Codeunit "CTS-CB Http Factory";
         FakeHTTPClient: Codeunit "CTS-CB Fake HTTP Client";
         FakeIHttpResponse: Codeunit "CTS-CB FakeIHttpResponse";
         LibraryPermissions: Codeunit "CTS-CB Library Permissions";
-        BankAccount: Record "Bank Account";
         MissingInfoAccountNoTok: Label 'BA-DETECT-MISS', Locked = true;
+        LookupFailAccountNoTok: Label 'BA-DETECT-POC', Locked = true;
+        LookupFailIbanTok: Label 'DE89370400440532013000', Locked = true;
+        UnparseableBodyTok: Label 'not-json', Locked = true;
         ExpectedMessage: Text;
         SourceEntryNo: Integer;
         CurrentCo: Text[30];
     begin
         // [Scenario] One unbound account has no IBAN/branch (missing info) and one fails on the
-        // lookup (HTTP failure). The DetectionFailed message reports the two counts separately.
+        // lookup (unparseable response). The DetectionFailed message reports the two counts separately.
 
         LibraryPermissions.SetSuperPermissions();
         CleanupDetectionTables();
         CurrentCo := CopyStr(CompanyName(), 1, 30);
         SourceEntryNo := SeedDetectionPocFixture();
-        AuthShareHttpFixture.Setup(IHttpFactory, FakeHTTPClient, FakeIHttpResponse, '{"name":"DetectPocBank","country-code":"DK"}');
+        AuthShareHttpFixture.Setup(IHttpFactory, FakeHTTPClient, FakeIHttpResponse, UnparseableBodyTok);
         InitPlaceholderInCurrentCompany(TempAuthShareTarget, CurrentCo);
 
-        // [Given] A second unbound account without IBAN and branch, and an HTTP client that fails.
+        // [Given] The seeded account gets a non-DK IBAN that is in no Bank Information cache, so the IBAN
+        // lookup has to parse the unparseable response and fails, and no DK branch fallback applies.
+        BankAccount.Get(LookupFailAccountNoTok);
+        BankAccount.IBAN := LookupFailIbanTok;
+        BankAccount."Country/Region Code" := 'DE';
+        BankAccount.Modify();
+
+        // [Given] A second unbound account without IBAN and branch.
         BankAccount.Init();
         BankAccount."No." := MissingInfoAccountNoTok;
         BankAccount.Insert();
-        FakeHTTPClient.SetShouldFail(true);
 
         // [When]
         AuthShareDetection.DetectInCompany(SourceEntryNo, CurrentCo, TempAuthShareTarget, IHttpFactory);
@@ -1350,7 +1359,7 @@ File: Authentication/TestAuthShareDetect.Codeunit.al
 - Change: new-test
 - Target procedure: MutA_DetectInCompany_TwoAccountsSameOtherBank_AccountsAccumulate
 - Confidence: high
-- Rationale: Line 179 (`if ResolvedOtherAccountsByBank.ContainsKey(BankCode)`) is only ever false: the existing DetectInCompany test resolves exactly one account, so the append-to-existing-list branch is never taken.
+- Rationale: Line 179 (`if ResolvedOtherAccountsByBank.ContainsKey(BankCode)`) is only ever false: the existing DetectInCompany test resolves exactly one account, so the append-to-existing-list branch is never taken. [rev 1: reordered var declarations for AA0021]
 - Expected effect: Fails on mutant 171 (ContainsKey forced false) because the second account starts a fresh list and overwrites the first, giving Account Count 1 and only the last account in Resolved Account Nos; passes on the original, which appends and yields Account Count 2 with both accounts.
 
 ```al
@@ -1358,13 +1367,13 @@ File: Authentication/TestAuthShareDetect.Codeunit.al
     procedure MutA_DetectInCompany_TwoAccountsSameOtherBank_AccountsAccumulate()
     var
         TempAuthShareTarget: Record "CTS-CB Auth Share Target" temporary;
+        BankAccount: Record "Bank Account";
         AuthShareDetection: Codeunit "CTS-CB Auth Share Detection";
         AuthShareHttpFixture: Codeunit "CTS-CB Auth Share Http Fixture";
         IHttpFactory: Codeunit "CTS-CB Http Factory";
         FakeHTTPClient: Codeunit "CTS-CB Fake HTTP Client";
         FakeIHttpResponse: Codeunit "CTS-CB FakeIHttpResponse";
         LibraryPermissions: Codeunit "CTS-CB Library Permissions";
-        BankAccount: Record "Bank Account";
         FirstAccountNoTok: Label 'BA-DETECT-POC', Locked = true;
         SecondAccountNoTok: Label 'BA-DETECT-ALT', Locked = true;
         SourceEntryNo: Integer;
@@ -1413,7 +1422,7 @@ File: Authentication/TestAuthShareDetect.Codeunit.al
 - Change: new-test
 - Target procedure: MutA_DetectInCompany_ExactCommTypeMapping_BecomesReadyAndLinksAccount
 - Confidence: medium
-- Rationale: The existing DetectInCompany test never has a Bank System Mapping2 row for the resolved bank, so IsSourceCommTypeSupportedByBank (lines 249-254) always returns false, the exact-match branch (MatchingAccounts.Add, then the line 120 block with EnsureTargetBankFromSource/LinkBankAccountsToBank) is never run and nothing asserts the Ready outcome or the account link.
+- Rationale: The existing DetectInCompany test never has a Bank System Mapping2 row for the resolved bank, so IsSourceCommTypeSupportedByBank (lines 249-254) always returns false, the exact-match branch (MatchingAccounts.Add, then the line 120 block with EnsureTargetBankFromSource/LinkBankAccountsToBank) is never run and nothing asserts the Ready outcome or the account link. [rev 1: reordered var declarations for AA0021]
 - Expected effect: Fails on mutants 193, 194 and 196 because the guard on line 249 now exits false for a non-blank bank and system, so the account is no longer an exact match (CommTypeMismatch instead of Ready); fails on mutant 199 (final exit deleted, function returns false) for the same reason; fails on mutant 161 (Count() > 0 forced false) because LinkBankAccountsToBank is skipped and the Bank Account keeps a blank CTS-CB Bank Code; passes on the original (Ready, account linked to DETECT-SRC).
 
 ```al
@@ -1421,15 +1430,15 @@ File: Authentication/TestAuthShareDetect.Codeunit.al
     procedure MutA_DetectInCompany_ExactCommTypeMapping_BecomesReadyAndLinksAccount()
     var
         TempAuthShareTarget: Record "CTS-CB Auth Share Target" temporary;
+        BankAccount: Record "Bank Account";
+        BankSystemMapping2: Record "CTS-CB Bank System Mapping2";
+        TempBank: Record "CTS-CB Bank" temporary;
         AuthShareDetection: Codeunit "CTS-CB Auth Share Detection";
         AuthShareHttpFixture: Codeunit "CTS-CB Auth Share Http Fixture";
         IHttpFactory: Codeunit "CTS-CB Http Factory";
         FakeHTTPClient: Codeunit "CTS-CB Fake HTTP Client";
         FakeIHttpResponse: Codeunit "CTS-CB FakeIHttpResponse";
         LibraryPermissions: Codeunit "CTS-CB Library Permissions";
-        BankAccount: Record "Bank Account";
-        BankSystemMapping2: Record "CTS-CB Bank System Mapping2";
-        TempBank: Record "CTS-CB Bank" temporary;
         SourceBankTok: Label 'DETECT-SRC', Locked = true;
         SourceSystemTok: Label 'DETECT-SYS', Locked = true;
         AccountNoTok: Label 'BA-DETECT-POC', Locked = true;
@@ -1484,7 +1493,7 @@ File: Authentication/TestAuthShareDetect.Codeunit.al
 - Change: new-test
 - Target procedure: MutA_DetectInCompany_SystemMappedWithOtherCommType_BecomesCommTypeMismatch
 - Confidence: medium
-- Rationale: IsSourceSystemMappedToBank (lines 232-236) is never given a Mapping2 row for the resolved bank, so its guard always passes and its final `exit(not IsEmpty())` always returns false; the CommTypeMismatch outcome of DetectInCompany is not covered end to end.
+- Rationale: IsSourceSystemMappedToBank (lines 232-236) is never given a Mapping2 row for the resolved bank, so its guard always passes and its final `exit(not IsEmpty())` always returns false; the CommTypeMismatch outcome of DetectInCompany is not covered end to end. [rev 1: reordered var declarations for AA0021]
 - Expected effect: Fails on mutants 186, 187 and 189 because the guard on line 232 wrongly exits false for a non-blank bank and system, so the account falls through to SystemNotMapped; fails on mutant 192 (final exit deleted, function returns false) for the same reason; passes on the original, which finds the Mapping2 row and reports CommTypeMismatch.
 
 ```al
@@ -1492,14 +1501,14 @@ File: Authentication/TestAuthShareDetect.Codeunit.al
     procedure MutA_DetectInCompany_SystemMappedWithOtherCommType_BecomesCommTypeMismatch()
     var
         TempAuthShareTarget: Record "CTS-CB Auth Share Target" temporary;
+        BankSystemMapping2: Record "CTS-CB Bank System Mapping2";
+        TempBank: Record "CTS-CB Bank" temporary;
         AuthShareDetection: Codeunit "CTS-CB Auth Share Detection";
         AuthShareHttpFixture: Codeunit "CTS-CB Auth Share Http Fixture";
         IHttpFactory: Codeunit "CTS-CB Http Factory";
         FakeHTTPClient: Codeunit "CTS-CB Fake HTTP Client";
         FakeIHttpResponse: Codeunit "CTS-CB FakeIHttpResponse";
         LibraryPermissions: Codeunit "CTS-CB Library Permissions";
-        BankSystemMapping2: Record "CTS-CB Bank System Mapping2";
-        TempBank: Record "CTS-CB Bank" temporary;
         SourceBankTok: Label 'DETECT-SRC', Locked = true;
         SourceSystemTok: Label 'DETECT-SYS', Locked = true;
         ResolvedBankNameTok: Label 'DetectPocBank', Locked = true;
@@ -1552,7 +1561,7 @@ File: Authentication/TestAuthShareDetect.Codeunit.al
 - Change: new-test
 - Target procedure: MutA_DetectInCompany_BlankSourceBankSystem_IgnoresMappingRows
 - Confidence: medium
-- Rationale: The blank-source-system guards on lines 232-233 and 249-250 never fire in the existing test, because the source entry always has a bank system code; the guard conditions and their `exit(false)` are therefore unobserved.
+- Rationale: The blank-source-system guards on lines 232-233 and 249-250 never fire in the existing test, because the source entry always has a bank system code; the guard conditions and their `exit(false)` are therefore unobserved. [rev 1: reordered var declarations for AA0021]
 - Expected effect: Fails on mutants 188, 190, 191 (system-mapped guard weakened or its exit deleted) and 195, 197, 198 (comm-type guard weakened or its exit deleted) because, without the guard, SetRange on a blank system code matches the blank Mapping2 row, so the account is classified CommTypeMismatch or Ready instead of SystemNotMapped; passes on the original, where both helpers return false for a blank system code.
 
 ```al
@@ -1560,15 +1569,15 @@ File: Authentication/TestAuthShareDetect.Codeunit.al
     procedure MutA_DetectInCompany_BlankSourceBankSystem_IgnoresMappingRows()
     var
         TempAuthShareTarget: Record "CTS-CB Auth Share Target" temporary;
+        AuthenticationEntry: Record "CTS-CB Authentication Entry";
+        BankSystemMapping2: Record "CTS-CB Bank System Mapping2";
+        TempBank: Record "CTS-CB Bank" temporary;
         AuthShareDetection: Codeunit "CTS-CB Auth Share Detection";
         AuthShareHttpFixture: Codeunit "CTS-CB Auth Share Http Fixture";
         IHttpFactory: Codeunit "CTS-CB Http Factory";
         FakeHTTPClient: Codeunit "CTS-CB Fake HTTP Client";
         FakeIHttpResponse: Codeunit "CTS-CB FakeIHttpResponse";
         LibraryPermissions: Codeunit "CTS-CB Library Permissions";
-        AuthenticationEntry: Record "CTS-CB Authentication Entry";
-        BankSystemMapping2: Record "CTS-CB Bank System Mapping2";
-        TempBank: Record "CTS-CB Bank" temporary;
         AccountNoTok: Label 'BA-DETECT-POC', Locked = true;
         ResolvedBankNameTok: Label 'DetectPocBank', Locked = true;
         ResolvedBankCode: Code[30];
@@ -1622,50 +1631,48 @@ File: Authentication/TestAuthShareDetect.Codeunit.al
 - Change: new-test
 - Target procedure: MutA_DetectInCompany_OriginatingCompanyBank_UsesOriginatingCompanyBank
 - Confidence: low
-- Rationale: The existing test never sets AuthenticationEntry."Originating Company", so line 79 always takes the else branch (current company) and the preferred-company read on lines 271-272 is the same company as the fallback; nothing distinguishes reading the bank from the originating company from reading it from the current one. Environment requirement: two or more companies and WritePermission() true. A silent exit on a missing precondition would pass on every mutant and kill nothing, so the precondition now fails the test.
-- Expected effect: Fails on mutants 146 and 148 (line 79 picks the current company instead of the originating one) and on mutants 201 and 202 (the originating company's bank is skipped, so the current company's copy is read) because the source comm type becomes Direct and the Manual Mapping2 row yields CommTypeMismatch instead of Ready; passes on the original, which reads the Manual bank from the originating company and reports Ready. The test raises an explicit error when the database has only one company, so it can never pass without exercising the mutated line.
+- Rationale: The existing test never sets AuthenticationEntry."Originating Company", so line 79 always takes the else branch (current company) and the preferred-company read on lines 271-272 is the same company as the fallback; nothing distinguishes reading the bank from the originating company from reading it from the current one. Environment requirement: two or more companies and WritePermission() true. A silent exit on a missing precondition would pass on every mutant and kill nothing, so the precondition now fails the test. [rev 1: reordered var declarations for AA0021] [rev 2: answers "Test needs a second company" on the original (the environment has one company). The test no longer requires one: like F021 it creates company MUTA-ORIGIN itself (Company.Insert(true), reused if left over) and deletes it (Company.Delete(true)) right after DetectInCompany, before the asserts. No CSC Subscription copy is needed because the target company is the current one; only the source bank is read from MUTA-ORIGIN. A leftover MUTA-ORIG bank there is deleted instead of failing the test.]
+- Expected effect: Passes on the original: Originating Company = MUTA-ORIGIN holds MUTA-ORIG with Manual, so SourceCommType = Manual and the Manual Mapping2 row of the resolved bank gives Ready (Account Count 1). Fails on mutants 146 and 148 (line 79 picks the current company), 201 (TryGetSourceBank on the originating company never runs, fallback to current company) and 202 (exit removed, falls through to the current-company read): in each the Direct copy in the current company is used, so the row becomes CommTypeMismatch instead of Ready.
 
 ```al
     [Test]
     procedure MutA_DetectInCompany_OriginatingCompanyBank_UsesOriginatingCompanyBank()
     var
         TempAuthShareTarget: Record "CTS-CB Auth Share Target" temporary;
+        TempBank: Record "CTS-CB Bank" temporary;
+        AuthenticationEntry: Record "CTS-CB Authentication Entry";
+        BankSystemMapping2: Record "CTS-CB Bank System Mapping2";
+        Company: Record Company;
+        OriginBank: Record "CTS-CB Bank";
         AuthShareDetection: Codeunit "CTS-CB Auth Share Detection";
         AuthShareHttpFixture: Codeunit "CTS-CB Auth Share Http Fixture";
         IHttpFactory: Codeunit "CTS-CB Http Factory";
         FakeHTTPClient: Codeunit "CTS-CB Fake HTTP Client";
         FakeIHttpResponse: Codeunit "CTS-CB FakeIHttpResponse";
         LibraryPermissions: Codeunit "CTS-CB Library Permissions";
-        Company: Record Company;
-        AuthenticationEntry: Record "CTS-CB Authentication Entry";
-        OriginBank: Record "CTS-CB Bank";
-        BankSystemMapping2: Record "CTS-CB Bank System Mapping2";
-        TempBank: Record "CTS-CB Bank" temporary;
         OriginBankTok: Label 'MUTA-ORIG', Locked = true;
-        SecondCompanyRequiredErr: Label 'Test needs a second company', Locked = true;
-        LeftoverOriginBankErr: Label 'Test needs a second company without a leftover MUTA-ORIG bank', Locked = true;
+        MutAOriginCompanyTok: Label 'MUTA-ORIGIN', Locked = true;
         SourceSystemTok: Label 'DETECT-SYS', Locked = true;
         ResolvedBankNameTok: Label 'DetectPocBank', Locked = true;
         ResolvedBankCode: Code[30];
-        OriginatingCo: Text[30];
         SourceEntryNo: Integer;
         CurrentCo: Text[30];
     begin
         // [Scenario] The source entry originates in another company that holds the source bank with a
         // different default comm type than the copy in the current company. Detection must read the
-        // bank from the originating company first. Fails (does not silently pass) when the database has a single company.
-        LibraryPermissions.SetSuperPermissions();
-        Company.SetFilter(Name, '<>%1', CompanyName());
-        if not Company.FindFirst() then
-            Error(SecondCompanyRequiredErr);
-        OriginatingCo := CopyStr(Company.Name, 1, 30);
-        OriginBank.ChangeCompany(OriginatingCo);
-        if OriginBank.Get(OriginBankTok) then
-            Error(LeftoverOriginBankErr);
-
+        // bank from the originating company first. The test creates and deletes that company itself.
         LibraryPermissions.SetSuperPermissions();
         CleanupDetectionTables();
         CurrentCo := CopyStr(CompanyName(), 1, 30);
+
+        // [Given] a second company that is the originating company of the source entry.
+        if not Company.Get(MutAOriginCompanyTok) then begin
+            Company.Init();
+            Company.Name := MutAOriginCompanyTok;
+            Company."Display Name" := MutAOriginCompanyTok;
+            Company.Insert(true);
+        end;
+
         SourceEntryNo := SeedDetectionPocFixture();
         AuthShareHttpFixture.Setup(IHttpFactory, FakeHTTPClient, FakeIHttpResponse, '{"name":"DetectPocBank","country-code":"DK"}');
         InitPlaceholderInCurrentCompany(TempAuthShareTarget, CurrentCo);
@@ -1676,6 +1683,9 @@ File: Authentication/TestAuthShareDetect.Codeunit.al
 
         // [Given] Source bank copy in the current company is Direct, the originating company's copy is Manual.
         CreateBank(OriginBankTok, 'Originating Source Bank', "CTS-CB Import/Export Comm Type"::Direct);
+        OriginBank.ChangeCompany(MutAOriginCompanyTok);
+        if OriginBank.Get(OriginBankTok) then
+            OriginBank.Delete();
         OriginBank.Init();
         OriginBank.Code := OriginBankTok;
         OriginBank.Name := 'Originating Source Bank';
@@ -1683,7 +1693,7 @@ File: Authentication/TestAuthShareDetect.Codeunit.al
         OriginBank.Insert();
         AuthenticationEntry.Get(SourceEntryNo);
         AuthenticationEntry."Bank Code" := OriginBankTok;
-        AuthenticationEntry."Originating Company" := OriginatingCo;
+        AuthenticationEntry."Originating Company" := MutAOriginCompanyTok;
         AuthenticationEntry.Modify();
 
         BankSystemMapping2.Init();
@@ -1696,9 +1706,9 @@ File: Authentication/TestAuthShareDetect.Codeunit.al
         // [When]
         AuthShareDetection.DetectInCompany(SourceEntryNo, CurrentCo, TempAuthShareTarget, IHttpFactory);
 
-        // Remove the row written into the originating company before asserting.
-        OriginBank.Get(OriginBankTok);
-        OriginBank.Delete();
+        // Cleanup of the second company before asserting.
+        if Company.Get(MutAOriginCompanyTok) then
+            Company.Delete(true);
 
         // [Then] The Manual comm type of the originating company's bank is used, so the account is an exact match.
         Assert.AreEqual(1, CountRows(TempAuthShareTarget), 'Expected exactly one row');
@@ -1715,51 +1725,52 @@ File: Authentication/TestAuthShareDetect.Codeunit.al
 - Change: new-test
 - Target procedure: MutA_DetectInCompany_NoMatchingAccounts_DoesNotCopySourceBankToTarget
 - Confidence: low
-- Rationale: Line 120 (`if MatchingAccounts.Count() > 0`) guards EnsureTargetBankFromSource, which is a no-op whenever the target company already holds the source bank. In the existing single-company test the source bank is always in the target company, so the guard being false, or `>= 0`, makes no observable difference. Environment requirement: two or more companies and WritePermission() true. A silent exit on a missing precondition would pass on every mutant and kill nothing, so the precondition now fails the test.
-- Expected effect: Fails on mutants 159 (`>= 0`) and 160 (forced true) because EnsureTargetBankFromSource then inserts the originating company's source bank into the target company although no account matched; passes on the original, which skips the copy. The test raises an explicit error when the database has only one company, so it can never pass without exercising the mutated line.
+- Rationale: Line 120 (`if MatchingAccounts.Count() > 0`) guards EnsureTargetBankFromSource, which is a no-op whenever the target company already holds the source bank. In the existing single-company test the source bank is always in the target company, so the guard being false, or `>= 0`, makes no observable difference. Environment requirement: two or more companies and WritePermission() true. A silent exit on a missing precondition would pass on every mutant and kill nothing, so the precondition now fails the test. [rev 1: reordered var declarations for AA0021] [rev 2: answers "Test needs a second company" on the original (the environment has one company). The test no longer requires one: like F021 it creates company MUTA-ORIGIN itself (Company.Insert(true), reused if left over) and deletes it (Company.Delete(true)) right after DetectInCompany, before the asserts. No CSC Subscription copy is needed because the target company is the current one. A leftover MUTA-ORIG bank there is deleted instead of failing the test.]
+- Expected effect: Passes on the original: the source bank MUTA-ORIG exists only in MUTA-ORIGIN, the account resolves to DetectPocBank without a Mapping2 row (SystemNotMapped), MatchingAccounts is empty and EnsureTargetBankFromSource is skipped, so MUTA-ORIG is absent in the current company. Fails on mutants 159 (>= 0) and 160 (forced true) because EnsureTargetBankFromSource then inserts MUTA-ORIG into the current (target) company (or errors on the insert), so TargetBank.Get succeeds or the test errors.
 
 ```al
     [Test]
     procedure MutA_DetectInCompany_NoMatchingAccounts_DoesNotCopySourceBankToTarget()
     var
         TempAuthShareTarget: Record "CTS-CB Auth Share Target" temporary;
+        AuthenticationEntry: Record "CTS-CB Authentication Entry";
+        Company: Record Company;
+        OriginBank: Record "CTS-CB Bank";
+        TargetBank: Record "CTS-CB Bank";
         AuthShareDetection: Codeunit "CTS-CB Auth Share Detection";
         AuthShareHttpFixture: Codeunit "CTS-CB Auth Share Http Fixture";
         IHttpFactory: Codeunit "CTS-CB Http Factory";
         FakeHTTPClient: Codeunit "CTS-CB Fake HTTP Client";
         FakeIHttpResponse: Codeunit "CTS-CB FakeIHttpResponse";
         LibraryPermissions: Codeunit "CTS-CB Library Permissions";
-        Company: Record Company;
-        AuthenticationEntry: Record "CTS-CB Authentication Entry";
-        OriginBank: Record "CTS-CB Bank";
-        TargetBank: Record "CTS-CB Bank";
         OriginBankTok: Label 'MUTA-ORIG', Locked = true;
-        SecondCompanyRequiredErr: Label 'Test needs a second company', Locked = true;
-        LeftoverOriginBankErr: Label 'Test needs a second company without a leftover MUTA-ORIG bank', Locked = true;
-        OriginatingCo: Text[30];
+        MutAOriginCompanyTok: Label 'MUTA-ORIGIN', Locked = true;
         SourceEntryNo: Integer;
         CurrentCo: Text[30];
     begin
         // [Scenario] No account matches the source bank system, so the source bank must not be copied
         // into the target company. The source bank lives only in the originating company, so a copy into
-        // the current (target) company would be visible. Fails (does not silently pass) when the database has a single company.
-        LibraryPermissions.SetSuperPermissions();
-        Company.SetFilter(Name, '<>%1', CompanyName());
-        if not Company.FindFirst() then
-            Error(SecondCompanyRequiredErr);
-        OriginatingCo := CopyStr(Company.Name, 1, 30);
-        OriginBank.ChangeCompany(OriginatingCo);
-        if OriginBank.Get(OriginBankTok) then
-            Error(LeftoverOriginBankErr);
-
+        // the current (target) company would be visible. The test creates and deletes that company itself.
         LibraryPermissions.SetSuperPermissions();
         CleanupDetectionTables();
         CurrentCo := CopyStr(CompanyName(), 1, 30);
+
+        // [Given] a second company that is the originating company of the source entry.
+        if not Company.Get(MutAOriginCompanyTok) then begin
+            Company.Init();
+            Company.Name := MutAOriginCompanyTok;
+            Company."Display Name" := MutAOriginCompanyTok;
+            Company.Insert(true);
+        end;
+
         SourceEntryNo := SeedDetectionPocFixture();
         AuthShareHttpFixture.Setup(IHttpFactory, FakeHTTPClient, FakeIHttpResponse, '{"name":"DetectPocBank","country-code":"DK"}');
         InitPlaceholderInCurrentCompany(TempAuthShareTarget, CurrentCo);
 
         // [Given] The source bank exists only in the originating company; no Mapping2 rows exist.
+        OriginBank.ChangeCompany(MutAOriginCompanyTok);
+        if OriginBank.Get(OriginBankTok) then
+            OriginBank.Delete();
         OriginBank.Init();
         OriginBank.Code := OriginBankTok;
         OriginBank.Name := 'Originating Source Bank';
@@ -1767,15 +1778,15 @@ File: Authentication/TestAuthShareDetect.Codeunit.al
         OriginBank.Insert();
         AuthenticationEntry.Get(SourceEntryNo);
         AuthenticationEntry."Bank Code" := OriginBankTok;
-        AuthenticationEntry."Originating Company" := OriginatingCo;
+        AuthenticationEntry."Originating Company" := MutAOriginCompanyTok;
         AuthenticationEntry.Modify();
 
         // [When]
         AuthShareDetection.DetectInCompany(SourceEntryNo, CurrentCo, TempAuthShareTarget, IHttpFactory);
 
-        // Remove the row written into the originating company before asserting.
-        OriginBank.Get(OriginBankTok);
-        OriginBank.Delete();
+        // Cleanup of the second company before asserting.
+        if Company.Get(MutAOriginCompanyTok) then
+            Company.Delete(true);
 
         // [Then] The detection ran (SystemNotMapped) but the source bank was not copied into the target company.
         Assert.AreEqual(1, CountRows(TempAuthShareTarget), 'Expected exactly one row');
@@ -1795,7 +1806,7 @@ File: Authentication/TestAuthShareDetect.Codeunit.al
 - Change: new-test
 - Target procedure: MutA_DetectInCompany_OriginatingCompanyUnavailable_FallsBackToCurrentCompany
 - Confidence: low
-- Rationale: The fallback in ResolveAccessibleSourceCompany (lines 274-278) is never reached: the existing test always finds the bank in the preferred company, which is also the current company, so `(CurrentCompany <> PreferredCompany) and TryGetSourceBank(...)` is never evaluated to true and the returned company is never checked. Mutant 204 (and -> or) is analysed separately in F066.
+- Rationale: The fallback in ResolveAccessibleSourceCompany (lines 274-278) is never reached: the existing test always finds the bank in the preferred company, which is also the current company, so `(CurrentCompany <> PreferredCompany) and TryGetSourceBank(...)` is never evaluated to true and the returned company is never checked. Mutant 204 (and -> or) is analysed separately in F066. [rev 1: reordered var declarations for AA0021]
 - Expected effect: Fails on mutants 203, 205 and 206 because the fallback is skipped or taken without reading the bank, so the source bank is not loaded (detection aborts and the placeholder stays NeedsDetection, or the bank name is blank); fails on mutant 207 (exit(CurrentCompany) deleted) because the unreadable company name is returned and the active map is read there, losing the Manual active comm type (error, or CommTypeMismatch); passes on the original (Ready, bank read from the current company).
 
 ```al
@@ -1803,16 +1814,16 @@ File: Authentication/TestAuthShareDetect.Codeunit.al
     procedure MutA_DetectInCompany_OriginatingCompanyUnavailable_FallsBackToCurrentCompany()
     var
         TempAuthShareTarget: Record "CTS-CB Auth Share Target" temporary;
+        AuthenticationEntry: Record "CTS-CB Authentication Entry";
+        BankSystemActiveMap: Record "CTS-CB Bank System Active Map";
+        BankSystemMapping2: Record "CTS-CB Bank System Mapping2";
+        TempBank: Record "CTS-CB Bank" temporary;
         AuthShareDetection: Codeunit "CTS-CB Auth Share Detection";
         AuthShareHttpFixture: Codeunit "CTS-CB Auth Share Http Fixture";
         IHttpFactory: Codeunit "CTS-CB Http Factory";
         FakeHTTPClient: Codeunit "CTS-CB Fake HTTP Client";
         FakeIHttpResponse: Codeunit "CTS-CB FakeIHttpResponse";
         LibraryPermissions: Codeunit "CTS-CB Library Permissions";
-        AuthenticationEntry: Record "CTS-CB Authentication Entry";
-        BankSystemActiveMap: Record "CTS-CB Bank System Active Map";
-        BankSystemMapping2: Record "CTS-CB Bank System Mapping2";
-        TempBank: Record "CTS-CB Bank" temporary;
         SourceBankTok: Label 'DETECT-SRC', Locked = true;
         SourceSystemTok: Label 'DETECT-SYS', Locked = true;
         UnreadableCompanyTok: Label 'MUTA NO SUCH CO', Locked = true;
@@ -2057,9 +2068,9 @@ File: Authentication/TestAuthShareDetect.Codeunit.al
 - Verdict: new-test
 - Change: new-test
 - Target procedure: MutB_DetectInCompany_ExactMatchWithReadOnlyPermissions_DoesNotCopyBankOrLinkAccount
-- Confidence: low
-- Rationale: Mutants 215/216 (EnsureTargetBankFromSource) and 229/230 (LinkBankAccountsToBank) remove or neutralise the WritePermission() guard. The earlier 'equivalent' verdict assumed every test session runs as SUPER. That premise is wrong: DemoPortal test sessions run in restricted permission mode, and the test app has a permission-lowering library (codeunit 95001 CTS-CB Library Permissions wraps 'Library - Lower Permissions'; that library has SetRead/AddPermissionSet). So the guards are testable by lowering permissions to read-only on CTS-CB Bank / Bank Account, running an exact-match detection against a target company that lacks the bank, and asserting no bank copy, no account link and no error. Caveat (hence low confidence): AuthShareDetection declares Permissions = tabledata "CTS-CB Bank" = RIM, "Bank Account" = RM, and effective permissions are the union, so WritePermission() may still be true. APPLIER: run F020 first; its outcome shows whether WritePermission() is true in these sessions. If it is true here even with lowered user permissions, this test fails on the original too, and 215/216/229/230 are equivalent in practice: drop this test and revert F022 to equivalent.
-- Expected effect: Fails on mutants 215/216 because the guard no longer exits, so the source bank is inserted into the target company and TargetBank.Get succeeds; fails on mutants 229/230 because the guard no longer exits, so the Bank Account is modified and linked to the bank (or a permission error is raised); passes on the original, where WritePermission() is false for the read-only session, both procedures exit early, no bank is copied and the account stays unlinked.
+- Confidence: medium
+- Rationale: Mutants 215/216 (EnsureTargetBankFromSource) and 229/230 (LinkBankAccountsToBank) remove or neutralise the WritePermission() guard. The earlier 'equivalent' verdict assumed every test session runs as SUPER. That premise is wrong: DemoPortal test sessions run in restricted permission mode, and the test app has a permission-lowering library (codeunit 95001 CTS-CB Library Permissions wraps 'Library - Lower Permissions'; that library has SetRead/AddPermissionSet). So the guards are testable by lowering permissions to read-only on CTS-CB Bank / Bank Account, running an exact-match detection against a target company that lacks the bank, and asserting no bank copy, no account link and no error. Caveat (hence low confidence): AuthShareDetection declares Permissions = tabledata "CTS-CB Bank" = RIM, "Bank Account" = RM, and effective permissions are the union, so WritePermission() may still be true. APPLIER: run F020 first; its outcome shows whether WritePermission() is true in these sessions. If it is true here even with lowered user permissions, this test fails on the original too, and 215/216/229/230 are equivalent in practice: drop this test and revert F022 to equivalent. [rev 1: answers fails-on-original 'Sorry, the current permissions prevented the action. (TableData 71553585 CTS-CB Bank Information ... Insert)'. Cause: AUT code, not a fake. DetectInCompany -> ResolveBankCodeForAccount -> BankInfoLookup.GetBankInfo -> UpdateAccountInfo.GetBankAccInfo -> BankInformation codeunit TryGetBankInfoFromIBAN caches every IBAN lookup with BankInformation.Insert(true) in the current company on a cache miss; that codeunit has no Permissions property and the lowered set ('CTS CB Base Read') grants Bank Information = R only. Fix: seed the cache row (IBAN, Name 'DetectPocBank', Country DK, Check Successful) under SUPER before lowering permissions, the same pattern as BankInfoLookupUT.SeedBankInformationCache; TryGetBankInfoFromIBAN then returns from BankInformation.FindFirst() with no write, RegisterUsage is skipped, ImportBank exits on the fake's empty ETag, and the rest of the path up to the guards is reads or temporary records. The target account gets its own IBAN (DK5000400440116243) so the seeded row cannot collide with other tests' cached IBAN DK1234567890123456; setup now deletes a leftover target bank/account first, and the test asserts the Ready row (proves the exact match reached the guards) and removes the cache row at the end. Guard observability: WritePermission() can be false here. Microsoft docs (Record.WritePermission) define write permission as Insert, Delete and Modify; the codeunit grants Bank RIM and Bank Account RM, never D. The Permissions-property docs ('Example - Indirect Permission' table) state that the property only lifts indirect user permissions to success: with no user permission it still gives a runtime error, so it does not add rights to a read-only user. With SetRead the user has R only on Bank and Bank Account, so both guards return false on the original, and under 215/216/229/230 the unguarded Insert/Modify raises a permission error (or links the account), failing the test. Residual risk (hence medium): another write on the lookup path that the first run did not reach because it stopped at the Bank Information insert.]
+- Expected effect: Passes on the original: the cached IBAN lookup makes detection write nothing before the guards, the exact match makes the placeholder Ready against DETECT-SRC with 1 account, WritePermission() is false for the read-only session so both procedures exit, no bank is copied into MUTB-NOWRITE and the account stays unlinked. Fails on 215/216: the guard no longer exits, ToBank.Get misses in the target company and ToBank.Insert(true) raises a permission error (or, if it were allowed, TargetBank.Get succeeds and the IsFalse assert fails). Fails on 229/230: the guard no longer exits and BankAccount.Modify raises a permission error (or links the account, failing the AreEqual assert).
 
 ```al
     [Test]
@@ -2068,6 +2079,7 @@ File: Authentication/TestAuthShareDetect.Codeunit.al
         TempAuthShareTarget: Record "CTS-CB Auth Share Target" temporary;
         TempResolvedBank: Record "CTS-CB Bank" temporary;
         AuthenticationEntry: Record "CTS-CB Authentication Entry";
+        BankInformation: Record "CTS-CB Bank Information";
         BankSystemMapping2: Record "CTS-CB Bank System Mapping2";
         Company: Record Company;
         CSCSubscription: Record "CSC Subscription";
@@ -2087,7 +2099,7 @@ File: Authentication/TestAuthShareDetect.Codeunit.al
         DetectPocSourceBankCodeTok: Label 'DETECT-SRC', Locked = true;
         DetectPocSourceSystemTok: Label 'DETECT-SYS', Locked = true;
         DetectPocBankAccountNoTok: Label 'BA-DETECT-POC', Locked = true;
-        DetectPocIbanTok: Label 'DK1234567890123456', Locked = true;
+        MutBNoWriteIbanTok: Label 'DK5000400440116243', Locked = true;
     begin
         // [Scenario] The session has only read permission on CTS-CB Bank and Bank Account. Detection must
         // skip the bank copy and the account link silently (WritePermission guards) instead of raising a
@@ -2095,7 +2107,8 @@ File: Authentication/TestAuthShareDetect.Codeunit.al
         LibraryPermissions.SetSuperPermissions();
         CleanupDetectionTables();
 
-        // [Given] a second company with Continia Banking activated and one unbound Bank Account, exactly as in the copy/link scenario.
+        // [Given] a second company with Continia Banking activated and one unbound Bank Account (own IBAN).
+        // Setup is idempotent: a failed earlier run may have left the company, account or a copied bank.
         if not Company.Get(MutBTargetCompanyTok) then begin
             Company.Init();
             Company.Name := MutBTargetCompanyTok;
@@ -2108,10 +2121,15 @@ File: Authentication/TestAuthShareDetect.Codeunit.al
         TargetCSCSubscription.ChangeCompany(MutBTargetCompanyTok);
         TargetCSCSubscription := CSCSubscription;
         if TargetCSCSubscription.Insert() then;
+        TargetBank.ChangeCompany(MutBTargetCompanyTok);
+        if TargetBank.Get(DetectPocSourceBankCodeTok) then
+            TargetBank.Delete();
         TargetBankAccount.ChangeCompany(MutBTargetCompanyTok);
+        if TargetBankAccount.Get(DetectPocBankAccountNoTok) then
+            TargetBankAccount.Delete();
         TargetBankAccount.Init();
         TargetBankAccount."No." := DetectPocBankAccountNoTok;
-        TargetBankAccount.IBAN := DetectPocIbanTok;
+        TargetBankAccount.IBAN := MutBNoWriteIbanTok;
         TargetBankAccount."Country/Region Code" := 'DK';
         TargetBankAccount.Insert();
 
@@ -2129,19 +2147,35 @@ File: Authentication/TestAuthShareDetect.Codeunit.al
         BankSystemMapping2.Insert(false);
         InitPlaceholderInCurrentCompany(TempAuthShareTarget, MutBTargetCompanyTok);
 
+        // [Given] the IBAN lookup is already cached in CTS-CB Bank Information, so detection makes no
+        // database write before the WritePermission guards (a cache miss inserts into Bank Information,
+        // which a read-only session may not do).
+        BankInformation.SetRange(IBAN, MutBNoWriteIbanTok);
+        if not BankInformation.IsEmpty() then
+            BankInformation.DeleteAll();
+        BankInformation.Reset();
+        BankInformation.Init();
+        BankInformation.IBAN := MutBNoWriteIbanTok;
+        BankInformation.Name := 'DetectPocBank';
+        BankInformation."Country/Region Code" := 'DK';
+        BankInformation."Check Successful" := true;
+        BankInformation.Insert(true);
+
         // [When] detection runs with read-only permissions (an exact match is found).
         LibraryLowerPermissions.SetRead();
         LibraryLowerPermissions.AddPermissionSet('CTS CB Base Read');
         AuthShareDetection.DetectInCompany(SourceEntryNo, MutBTargetCompanyTok, TempAuthShareTarget, IHttpFactory);
         LibraryPermissions.SetSuperPermissions();
 
-        // [Then] no error occurred (reaching this line), no bank was copied and the account was not linked.
-        TargetBank.ChangeCompany(MutBTargetCompanyTok);
+        // [Then] no error occurred (reaching this line), the exact match was found, no bank was copied and the account was not linked.
+        AssertRow(TempAuthShareTarget, DetectPocSourceBankCodeTok, Enum::"CTS-CB Share Target Annotation"::Ready, 1, '');
         Assert.IsFalse(TargetBank.Get(DetectPocSourceBankCodeTok), 'The source bank must not be copied without write permission.');
         TargetBankAccount.Get(DetectPocBankAccountNoTok);
         Assert.AreEqual('', TargetBankAccount."CTS-CB Bank Code", 'The Bank Account must not be linked without write permission.');
 
-        // Cleanup of the second company.
+        // Cleanup of the cached lookup and the second company.
+        BankInformation.SetRange(IBAN, MutBNoWriteIbanTok);
+        BankInformation.DeleteAll();
         if Company.Get(MutBTargetCompanyTok) then
             Company.Delete(true);
     end;
