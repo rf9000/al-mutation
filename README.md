@@ -60,8 +60,9 @@ The two skills run unattended when the prompt contains `HEADLESS RUN`. The promp
 mode (SPEC §6.9.6).
 
 `Invoke-MutationRun.ps1` and `Invoke-MutFixVerify.ps1` hold the lock file `<workDir>/.environment.lock` while they
-run. A second script on the same work directory fails with `environment locked by ...`. A lock left by a dead process
-is replaced with a warning.
+run. The lock is an open file handle, so Windows deletes the file when the holder ends, even when it is killed. A
+second script on the same work directory fails with `environment locked by ...`. A leftover file that nobody holds is
+replaced with a warning. Every config for one environment must use the same `workDir`.
 
 `Invoke-MutFixVerify.ps1` writes its rows under run number `-N`, so it cannot collide with a real run. Run numbers are
 any positive integer.
