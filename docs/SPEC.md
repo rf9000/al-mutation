@@ -93,7 +93,7 @@ Deferred from the v2 plan into `docs/issues.md`, with the reason:
 | F4 | `case` executes **the first matching value set** (Microsoft docs). | `case true of` is the only documented lazy construct. It is the **only guard template** used (§6.4.7). |
 | F5 | Test runner before/after hooks run in their own transaction. Microsoft's runner commits before raising `OnAfterTestMethodRun`. | Set the active id and write results from event subscribers, never from inside tests. Whether a subscriber's write survives a failed test is U4. |
 | F6 | SingleInstance codeunit state persists until the company is closed. | Set the active id explicitly in the before-method subscriber every time. |
-| F7 | DemoPortal runs one test codeunit per job (`continia test run <envId> <codeunitId> [functionName]`), jobs strictly sequential, no TestRunner codeunit id can be passed. | Targets are whole test codeunits (optionally one function). Never run two jobs concurrently. |
+| F7 | DemoPortal runs one test codeunit per job (`continia test run <envId> <codeunitId> [functionName]`), jobs strictly sequential, no TestRunner codeunit id can be passed. | Targets are whole test codeunits (optionally one function). Never run two jobs concurrently. **Amended 2026-10-04:** this limits the CLI only. A SOAP codeunit on the environment can run test codeunits itself (§6.10), so the per-mutant loop may bypass test jobs. |
 | F8 | DemoPortal returns coverage per job: `continia test coverage <envId> <jobId>` (CSV, or `--json` envelope `{ envId, jobId, csv }`). | Coverage granularity is per test codeunit. Format is observed in U9 and pinned as `fixtures/coverage/sample.csv`. |
 | F9 | No per-test timeout exists in the platform or the CLI; `--timeout` is a client-side wait. | Wall-clock kill lives in the orchestrator (§6.5.6). Server-side cancel is U5. |
 | F10 | The mutated AUT calls `MutationCore.Active()`, so schemata AUT depends on Mutation Core; the test app depends on the AUT. | Mutation Core never depends on the AUT and never ships to customers. |
@@ -189,7 +189,7 @@ mutation.fixture.config.json  Tier A config                          (§6.5.1)
 
 | App | App id | Publisher | Version | Id range |
 |---|---|---|---|---|
-| Mutation Core | `6f1d2c3a-8b4e-4d5f-9a6b-7c8d9e0f1a2b` | Continia Software | 1.0.0.0 | 50000–50199 |
+| Mutation Core | `6f1d2c3a-8b4e-4d5f-9a6b-7c8d9e0f1a2b` | Continia Software | 1.1.0.0 (1.0.0.0 before the SOAP runner, §6.10.2) | 50000–50199 |
 | Mutation Core Test | `7a2e3d4b-9c5f-4e6a-8b7c-8d9e0f1a2b3c` | Continia Software | 1.0.0.0 | 50400–50499 |
 | MUT Fixture AUT | `8b3f4e5c-ad6a-4f7b-9c8d-9e0f1a2b3c4d` | Continia Software | 1.0.0.1 (bumped from 1.0.0.0 by the U6 spike, T11) | 50200–50299 |
 | MUT Fixture Test | `9c4a5f6d-be7b-4a8c-8d9e-0f1a2b3c4d5e` | Continia Software | 1.0.0.0 | 50300–50399 |
@@ -263,7 +263,7 @@ These signatures are copied from `TestRunnerMgt.Codeunit.al` in BCApps (lines 26
 `Subtype = Install`. `OnInstallAppPerDatabase`: `if not EnvironmentInformation.IsSandbox() then Error(NotSandboxErr)` where `NotSandboxErr: Label 'Mutation Core can only be installed in a sandbox environment.'`. Then `Setup.GetOrCreate()`.
 
 #### 6.1.5b PermissionSet 50000 "MUT Core All"
-`Assignable = true; Caption = 'Mutation Core - all'`. Permissions: `tabledata` RIMD and `table` X for all four MUT tables; `codeunit` X for the three codeunits; `page` X for the four API pages.
+`Assignable = true; Caption = 'Mutation Core - all'`. Permissions: `tabledata` RIMD and `table` X for all five MUT tables (including 50004 "MUT Runner State", §6.10.2); `codeunit` X for all five codeunits (50000–50004); `page` X for all five API pages (50000–50004).
 **Why (amended — the original rationale was disproved live, T07):** DemoPortal test sessions run under a restricted user (§6.1.4).
 This set was specified on the theory that granting it to the environment users would let the hooks read the setup row. That theory is
 **false**: granting `MUT Core All` to all four enumerable users (all already SUPER) changed nothing, so the identity running a
@@ -276,6 +276,8 @@ mechanism that works (§6.1.4, U4). This permission set is retained for the API/
 A `SubType = TestRunner` codeunit that loops over mutants in one session would remove per-job overhead but cannot be used on DemoPortal (F7). Not built in v1; recorded in `docs/issues.md`.
 
 **Runner-nesting spike (2026-09-30, `spikes/runner-nesting/`): no workaround exists on DemoPortal.** F7 rules out passing a TestRunner codeunit id to the CLI. The spike asked whether an *ordinary* test codeunit could loop mutants from inside a running test job. BC refuses both paths with the same platform error: `You cannot nest the execution of test codeunits. Test codeunit 50600 MUT Spike Victim was called from another test codeunit.` (a) `Codeunit.Run` on a test codeunit raises it at the call site, and the boolean return value does not capture it. (b) Building and running a suite through `Codeunit "Test Suite Mgt."` (`CreateTestSuite` / `SelectTestMethodsByRange` / `RunSelectedTests`) raises it too. In neither case did `MUT Test Hooks` record a result for the inner test. So the in-job mutant loop is reachable only if the CLI gains a TestRunner option, or on a backend where the test runner is under our control (the Docker backend, §6.5.3).
+
+**Superseded 2026-10-04 by §6.10.** The refusal applies only when the caller is itself a test codeunit. A SOAP web-service call is not, so it can build and run a suite per mutant through `"Test Suite Mgt."`. That is the in-session mutant loop this section deferred; §6.10 specifies it. No `SubType = TestRunner` codeunit of our own is needed: the standard runner 130450 is used.
 
 #### 6.1.7 API pages (`APIPublisher = 'mutation'`, `APIGroup = 'core'`, `APIVersion = 'v1.0'`, `DelayedInsert = true`, `ODataKeyFields` = the PK)
 
@@ -618,6 +620,8 @@ Every backend module exports exactly these functions. `$Env` is the handle retur
 | `Get-MutCompanyId -Env` | GUID string | first company from `/api/v2.0/companies` |
 | `Grant-MutPermissionSet -Env -PermissionSetId -AppId` | `@{ Granted = [users]; AlreadyHad = [users] }` | Automation API: `GET <apiBase>/api/microsoft/automation/v2.0/companies({companyId})/users` → for every user, `GET users({userSecurityId})/userPermissions`; if no row has that `permissionSetId`, `POST users({userSecurityId})/userPermissions` with `{ "roleId": <id>, "appId": <AppId>, "scope": "System" }` (the Automation API field is `roleId`; verified live 2026-09-08). Idempotent. Used by `Publish-Baseline` for every entry of config `permissionSets`. |
 | `Invoke-MutApi -Env -Method -Path [-Body]` | parsed JSON | `Invoke-RestMethod` with Basic auth from `env users <id> --json` (cache credentials in the module for the session; never log them), `If-Match: *` on PATCH, path relative to `<apiBase>/api/mutation/core/v1.0/companies(<companyId>)/` |
+
+The SOAP-runner functions `Get-MutCompanyName`, `Get-MutRunnerState`, `Stop-MutRunnerBatch`, `Invoke-MutMutantBatch` and `Test-MutSoapRunner` are part of this interface too (§6.10.3).
 
 `Targets` is `@([pscustomobject]@{ CodeunitId = 95155; Function = $null })`. All CLI calls go through one private function `Invoke-Continia -Arguments <string[]> -TimeoutSec` in `DemoPortal.psm1` that runs `cliPath`, captures stdout, parses JSON, and is the single Pester mock point. `Docker.psm1` exports the same names and each throws `[System.NotImplementedException]'Docker backend is not implemented in v1'`.
 
@@ -1061,6 +1065,140 @@ are relative to the test-app root (`testApp.sourcePath`), as `a/<file>` and `b/<
 `git apply -p1 results/<N>-tests.patch` run in the test-app root, or with `git apply -p1 --directory=<test-app folder>`
 from the repository root that contains the test app (§6.8.1). Renaming a file or a field is a breaking change: tell the callers
 first. Optional fields may be added.
+
+### 6.10 SOAP test transport (mutant loop without DemoPortal test jobs)
+
+**Why.** A `continia test run` job costs a median of 10.5 s, while the tests one mutant needs run in a median of
+188 ms inside BC (run 15). The SOAP-runner spike (2026-10-04, `spikes/soap-runner/`, `docs/spike-baseline.md`
+"SOAP-runner spike") ran test codeunits from a SOAP web-service session through the standard runner chain.
+- **Speed:** 630 ms per call against 10.7 s per job.
+- **Batch:** all 157 mutants of 72918635 ran in one call at 285 ms each.
+- **Parity:** all 157 outcomes matched run 15, and `MUT Test Hooks` behaved the same.
+
+This section moves the **per-mutant loop** onto that route. Baseline, coverage, the settle probe and fix
+verification stay on `continia test run` (§6.5.3), because they run once per run, not once per mutant.
+
+#### 6.10.1 Facts the design rests on (spike, mut-spike-02)
+| # | Fact | Consequence |
+|---|---|---|
+| S1 | A SOAP call that runs `"Test Suite Mgt."` (`CreateTestSuite`, `SelectTestMethodsByRange`, `RunAllTests`) is not nested inside a test codeunit. It runs runner 130450 → `"Test Runner - Mgt"` (130454), including `StartStopPermissionMock`. | `MUT Test Hooks` (§6.1.4) work unchanged. The §6.1.6 nesting refusal does not apply. |
+| S2 | `"Test Suite Mgt.".RunAllTests` reads `"Test Suite"` from the record, not from the filter. | Call `FindFirst()` on the filtered `Test Method Line` first. |
+| S3 | `MUT Mutation Setup` mirrors to Isolated Storage only in its triggers. | The runner sets the mutant with `Modify(true)`. |
+| S4 | A SOAP session that hangs in a non-terminating mutant is **not listed in `Active Session`**, so `MUT Sessions API` cannot see or stop it. Inside the call, `SessionId()` returns an ordinary id, and `StopSession(<that id>)` from another SOAP call ends it within 5 s. | The runner records its own session id and current mutant, committed, before each mutant (§6.10.2). The client stops the session by id. |
+| S5 | A hung runner keeps its test transaction open. Other test runs then fail on its locks: `... a record in table 'Bank' is being updated in a transaction done by another session.` | A hung runner must be stopped before the next call. One runner at a time (§6.10.5). |
+| S6 | A timed-out SOAP call returns nothing to the client. In one probe the connection dropped by itself after 276 s; nothing may depend on that. | Each mutant's result is committed by the runner as it finishes, so a timed-out batch loses at most the hung mutant. |
+| S7 | `/WS/<company>/Codeunit/<service>` uses the same Basic credentials and base URL as the API (`Get-MutApiBase`). The company **name** goes in the path. | The backend resolves the company name once and caches it. |
+
+#### 6.10.2 Mutation Core additions (`core-app/`, version `1.1.0.0`)
+The configs' `coreApp.version` and §6.0.1 become `1.1.0.0`. The schemata AUT's dependency on Mutation Core
+`1.0.0.0` is a minimum version, so it stays valid. New objects:
+- table 50004 "MUT Runner State"
+- codeunit 50003 "MUT Runner"
+- codeunit 50004 "MUT Upgrade" (`Subtype = Upgrade`)
+
+All three are added to `MUT Core All` (§6.1.5b).
+
+**Table 50004 "MUT Runner State"** (`DataPerCompany = false`, `Access = Public`): `1 "Session Id" Integer`,
+`2 "Batch Id" Text[50]` (PK: `"Batch Id"`), `3 "Run No." Integer`, `4 "Mutant Id" Integer` (0 = not inside a mutant),
+`5 "Mutant Started At" DateTime`, `6 "Mutants Done" Integer`, `7 Finished Boolean`.
+
+**Codeunit 50003 "MUT Runner"** (`Access = Public`) is published as the SOAP service `MUTRunner`. Registration:
+`"Web Service Management".CreateTenantWebService(TenantWebService."Object Type"::Codeunit, Codeunit::"MUT Runner",
+'MUTRunner', true)`, called from `MUT Install`'s `OnInstallAppPerDatabase` (after the sandbox check) and from
+`MUT Upgrade`'s `OnUpgradePerDatabase` (for environments that already have 1.0.0.0).
+
+The codeunit's `Permissions` cover `AL Test Suite`, `Test Method Line`, `MUT Mutation Setup`, `MUT Mutant Result` and
+`MUT Runner State`. Each call builds its own test suite named `CopyStr('MR' + Format(Abs(SessionId()), 0, 9), 1, 10)`.
+It deletes the suite (if present) before building it and again when the call ends. Every procedure below that sets
+the active mutant does so with `Modify(true)` on `MUT Mutation Setup` (S3) followed by `Commit()`.
+
+| Procedure | Behaviour |
+|---|---|
+| `RunMutants(BatchId: Text; CodeunitIds: Text; MutantIds: Text; RunNo: Integer): Text` | `BatchId` is a client GUID. `CodeunitIds` is a `SelectTestMethodsByRange` filter such as `95155\|95110` (the mutant's covering set). First insert the state row (`Batch Id`, `Session Id` = `SessionId()`, `Run No.`, `Mutant Id` = 0) and commit. Then build the suite and commit. For each id in the comma list `MutantIds`, in order: (1) set the state row's `Mutant Id` and `Mutant Started At` = now, and commit; (2) set the active mutant (id, RunNo) and commit; (3) filter the suite, `FindFirst()` (S2), `RunAllTests`, timing the call for `Duration Ms`; (4) read the suite's `Function` lines with `Run = true`. `passed`/`failed` count `Result::Success`/`Result::Failure`. (5) If `passed + failed = 0`, insert no row; the entry's `status` is `Empty`. Otherwise, if no `MUT Mutant Result` exists for (RunNo, mutant), insert one: `Killed` when `failed > 0`, with `Killing Test` = `CopyStr(<Name of the suite's Codeunit line with the same "Test Codeunit"> + ':' + <"Function">, 1, 250)` of the first failed line in `"Line No."` order, else `Survived`. Set `Duration Ms` and `Recorded At`. The entry's `status`/`killingTest` are those of the persisted row after this step, so a row the hook wrote first wins. (6) Increment `Mutants Done` and commit. After the loop: set the active mutant to 0 and commit; set the state row's `Mutant Id` = 0 and `Finished` = true; delete the suite; commit. Returns `[ { mutantId, status, killingTest, durationMs, passed, failed } ]`. |
+| `RunTests(CodeunitIds: Text): Text` | **First** sets the active mutant to 0 and `Current Run No.` to 0, and commits. Then it runs the suite as above, with no state row and no result rows. Returns `{ passed, failed, durationMs, tests: [ { codeunit, name, result, durationMs, error } ] }`. |
+| `GetRunnerState(): Text` | Returns `{ serverNowUtc, rows: [ { batchId, sessionId, runNo, mutantId, mutantStartedAt, mutantsDone, finished } ] }`, with datetimes as ISO-8601 UTC strings (`Format(<DateTime>, 0, 9)`). |
+| `StopRunner(BatchId: Text): Text` | Refuses (`Error`) unless a row with that `Batch Id` exists with `Finished = false` and a `Session Id` other than `SessionId()`. Otherwise calls `StopSession(<row's Session Id>, '<reason>')`. It does not delete the row. |
+| `DeleteRunnerState(BatchId: Text): Text` | Deletes that row and the suite named after its session. Called by the client only after a confirmed stop or a `Finished` row. |
+
+The runner inserts the result row itself because, unlike the test session, it runs outside the restricted test
+session and may write Mutation Core's tables. The killing-test format is the hook's (§6.1.4), so export and resume
+read the same text whichever of the two wrote the row.
+
+#### 6.10.3 Backend functions (`backends/DemoPortal.psm1`; `Docker.psm1` stubs throw `NotImplemented`)
+§6.5.3's list of exported functions is extended by these. The SOAP envelope, namespace
+`urn:microsoft-dynamics-schemas/codeunit/MUTRunner`, camelCase parameter names (`batchId`, `codeunitIds`, …),
+`return_value` XPath and `[uri]::EscapeDataString(<company name>)` are those of `spikes/soap-runner/Invoke-SoapRunnerSpike.ps1`.
+
+| Function | Returns | Implementation |
+|---|---|---|
+| `Get-MutCompanyName -Env` | string | The first company's `name` from `/api/v2.0/companies`, cached per environment id. `Get-MutCompanyId` is cached the same way. Today it re-queries on every `Invoke-MutApi` call. |
+| `Invoke-MutSoap -Env -Operation -Arguments [-TimeoutSec]` | `@{ Ok; Value; Fault; TimedOut; Dropped; DurationMs }` | Private, and the single Pester mock point for SOAP. `POST <apiBase>/WS/<escaped company name>/Codeunit/MUTRunner` with `SOAPAction: <namespace>:<Operation>`, Basic auth and XML-escaped arguments. `Value` is the `return_value` text. On a SOAP fault, `Fault` is the `faultstring`. A client timeout sets `TimedOut`. A connection closed before a response sets `Dropped`. Throws only on HTTP 503, DNS or connect failure (no connection at all), so §6.5.6's outage wait handles those. |
+| `Get-MutRunnerState -Env` | `@{ ServerNowUtc; Rows }` | `GetRunnerState`, parsed. |
+| `Stop-MutRunnerBatch -Env -BatchId` | `@{ Confirmed }` | Calls `StopRunner`, then polls every 5 s for up to 120 s. Each poll runs `RunTests` of a **health codeunit**, the first codeunit of the batch's covering set. `Confirmed` is true when that `RunTests` returns `failed = 0` within 30 s; `RunTests` clears the active mutant first. On confirmation it calls `DeleteRunnerState`. |
+| `Invoke-MutMutantBatch -Env -CodeunitIds -MutantIds -RunNo -MutantBudgetSec` | `@{ Results; HungMutantId; FaultMutantId; Fault; Stopped }` | Generates a `BatchId` and starts `RunMutants` on a background runspace (the §6.5.6 runspace pattern), with client timeout `MutantIds.Count × MutantBudgetSec + 60`. It polls `Get-MutRunnerState` every 5 s; the poll interval is injectable for tests. Two rules declare a **hang**: (1) the row for this `BatchId` has a non-zero `Mutant Id` for more than `MutantBudgetSec` on the server clock (`ServerNowUtc − MutantStartedAt`); (2) no row appears within 60 s, or the batch exceeds its client timeout. On a hang it calls `Stop-MutRunnerBatch`; an unconfirmed stop throws `RunnerStopFailed`. **The batch has ended only when its row shows `Finished = true` or its stop was confirmed.** A `TimedOut` or `Dropped` call is not an outage: polling continues until one of those holds. A `Fault` with the row still unfinished and its `Mutant Id` not advancing for 10 s is treated like a hang, but reported as `FaultMutantId`. `Results` come from the return value when the call finished, otherwise from GET `mutantResults` for the batch's mutant ids (rows committed before the hang, S6). **`HungMutantId`/`FaultMutantId` are never included in `Results`**; whether a row already exists for them is reported in `Results` only through the loop's own GET (§6.10.4). |
+| `Test-MutSoapRunner -Env` | `$true`/`$false` | `GetRunnerState` answers without a fault. False when Mutation Core is older than 1.1.0.0 or the service is missing. |
+
+#### 6.10.4 Loop changes (`lib/MutantLoop.psm1`) and config
+Config key `testTransport`: `"cli"` (default, today's behaviour) or `"soap"`. `Get-MutConfig` validates it. Optional
+`soap.batchSize`, a positive integer with default 50. When `testTransport` is `"soap"`, `Test-MutSoapRunner` is
+checked right after `Publish-Baseline` (§6.5.4 step 3) and again at loop start; false throws before any further work.
+
+With `"soap"`:
+1. **Orphans first.** At loop start, before reading recorded results: run `Get-MutRunnerState`. For every row with
+   `Finished = false`, run `Stop-MutRunnerBatch`; such a row counts as a row of this loop (§6.10.5). Then PATCH
+   `activeMutantId = 0`, and `DeleteRunnerState` every remaining row. An orphan whose stop is not confirmed goes to the
+   recovery path in step 5.
+2. **Batches.** Take the pending mutants (resume rules unchanged), in id order. Group runs of consecutive mutants with
+   the same covering set (§6.5.5) into batches. A batch holds at most `batchSize` mutants, and is capped further so
+   that the sum of their covering sets' baseline durations stays ≤ 120 s. `Uncovered` handling is unchanged.
+   `MutantBudgetSec` is the §6.5.6 budget for one mutant of that covering set.
+3. **Results.** Each entry of `Results` is appended to `results.jsonl`; the runner already wrote the API row, so
+   nothing is POSTed. An entry with `status = Empty` is the CLI's empty result: one retry, alone, after
+   `Confirm-MutEnvironmentServing` (§6.5.6 environment recovery, with the PATCH to 0 first), then `Error`.
+4. **Hang.** For `HungMutantId` X, GET `mutantResults` for (RunNo, X):
+   - If a row exists (the hook recorded a failing test before the hang), it stands.
+   - Otherwise apply the run-14 confirmation (§6.5.6 "Confirming a Timeout"): re-run X alone. If it hangs again,
+     POST `{ status: 'Timeout' }` for X, so resume skips it. Otherwise the re-run's result stands.
+
+   The mutants after X continue as a new batch. 5 consecutive `Timeout` mutants abort the run, as today.
+5. **Fault, or a stop that fails.**
+   - **Fault:** `FaultMutantId` is the culprit. Mutants before it keep their rows. The culprit is re-run alone under
+     §6.5.6's per-mutant rules (the outage wait, up to 2 re-runs, then `Error`, which is not POSTed). The mutants
+     after it continue as a new batch.
+   - **`RunnerStopFailed`:** PATCH 0, then `Reset-MutEnvironment` under the §6.5.6 recovery cap. A failed reset keeps
+     its slot spent. A confirmed stop spends no slot. The consecutive-`Error` breaker counts per mutant.
+6. **No per-mutant PATCH.** The PATCH of `mutationSetup` around each mutant is gone: the runner sets and clears the
+   mutant itself. The loop still PATCHes `activeMutantId = 0` before any probe, reset or outage wait (F3b BLOCKER 1).
+
+`Invoke-MutationRun.ps1` and `lib/*.psm1` stay free of backend names (guardrail 6): the loop calls only the
+functions of §6.10.3.
+
+#### 6.10.5 Guardrails
+- One runner at a time per environment, as for test jobs (guardrail 8). The environment lock (§6.9.5) serializes
+  runs. A batch never starts while a runner row from an earlier batch is unfinished (S5).
+- `StopRunner` takes a `BatchId`, never a raw session id. AL refuses finished rows and the calling session, so a
+  session id reused after a restart cannot be hit.
+- Any exit of `RunMutants` that does not reach `Finished = true` leaves the row unfinished, for the client to stop
+  and clean up. The active mutant is cleared by `RunTests`, by the loop's PATCH before any probe, or by the next
+  `RunMutants`. Clearing happens before anything else runs tests.
+
+#### 6.10.6 Acceptance
+1. Pester, with `Invoke-MutSoap` mocked, covering each path:
+   - a finished batch
+   - a hang mid-batch with partial results
+   - a hung mutant that already has a row (no re-run)
+   - a re-run that hangs again (`Timeout` POSTed)
+   - a re-run that passes
+   - `Empty` handling
+   - a fault mid-batch (culprit isolated, the rest continue)
+   - a `Dropped` call that later shows `Finished`
+   - an orphan at loop start
+   - `RunnerStopFailed` going to a reset
+   - resume after a crash
+2. Live, on `mut-spike-02` with `mutation.u2.config.json` and `testTransport = "soap"`: every one of the 265 mutants
+   has the same status as run 15, including the 3 `Timeout` mutants of 72918630. Record the wall-clock time and the
+   seconds per mutant in `docs/spike-baseline.md`.
+3. With `testTransport = "cli"`, the Pester suite and behaviour are unchanged.
 
 ---
 

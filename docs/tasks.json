@@ -894,5 +894,117 @@
     "acceptance": ["Both skills state the HEADLESS RUN rules without weakening any hard rule.", "README lists exit codes for all four scripts."],
     "commit": "docs(skill): headless runs and exit codes",
     "guardrails": ["Docs only."]
+  },
+  {
+    "id": "T40",
+    "title": "Mutation Core 1.1.0.0: SOAP runner codeunit, runner state table, web-service registration",
+    "wave": 16,
+    "dependsOn": [],
+    "model": "sonnet",
+    "specSections": ["§6.10.1", "§6.10.2", "§6.10.5", "§6.0.1", "§6.1.2", "§6.1.4", "§6.1.5", "§6.1.5b", "§9.2"],
+    "files": {
+      "create": ["core-app/src/MUTRunner.Codeunit.al", "core-app/src/MUTRunnerState.Table.al", "core-app/src/MUTUpgrade.Codeunit.al", "spikes/soap-runner/Test-MutRunnerLive.ps1"],
+      "modify": ["core-app/app.json", "core-app/src/MUTInstall.Codeunit.al", "core-app/src/MUTCoreAll.PermissionSet.al", "mutation.config.json", "mutation.fixture.config.json", "mutation.u2.config.json"],
+      "readOnly": ["docs/SPEC.md", "spikes/soap-runner/app/src", "spikes/soap-runner/Invoke-SoapRunnerSpike.ps1", "spikes/soap-runner/Invoke-SoapTimeoutSpike.ps1"]
+    },
+    "interfaces": {
+      "consumes": ["Codeunit \"Test Suite Mgt.\" (CreateTestSuite, SelectTestMethodsByRange, RunAllTests)", "Table \"MUT Mutation Setup\" (Modify(true) mirrors to Isolated Storage)"],
+      "produces": ["SOAP service MUTRunner: RunMutants(BatchId, CodeunitIds, MutantIds, RunNo), RunTests(CodeunitIds), GetRunnerState(), StopRunner(BatchId), DeleteRunnerState(BatchId)", "Table 50004 \"MUT Runner State\" (PK Batch Id)"]
+    },
+    "steps": [
+      { "n": 1, "do": "Implement table 50004 and codeunit 50003 exactly per §6.10.2, starting from the spike app's MUTSpikeWSRunner (keep what it already got right: FindFirst before RunAllTests, Modify(true), per-session suite name). Add: BatchId-keyed state row inserted first, the result-row insert of step 5 with the hook's killing-test format (§6.1.4), Empty status when no test ran, RunTests clearing the active mutant first, GetRunnerState's { serverNowUtc, rows } shape, StopRunner refusing finished/own rows and not deleting the row." },
+      { "n": 2, "do": "Register the SOAP service in MUT Install (OnInstallAppPerDatabase, after the sandbox check) and in a new upgrade codeunit 50004 \"MUT Upgrade\" (OnUpgradePerDatabase). Extend MUT Core All per §6.1.5b. Bump app.json to 1.1.0.0 and coreApp.version in the three configs." },
+      { "n": 3, "do": "Compile with zero errors.", "run": ".tools/continia.exe compile core-app --json --no-raw-output", "expect": "success true, 0 errors" },
+      { "n": 4, "do": "Write spikes/soap-runner/Test-MutRunnerLive.ps1 by adapting Invoke-SoapRunnerSpike.ps1 and Invoke-SoapTimeoutSpike.ps1 to the MUTRunner service: (a) RunMutants over the 157 run-15 mutants of 95155 and compare with out/runs/15/results.jsonl; (b) RunMutants for 5 run-15 mutants whose covering set has 2 or more codeunits (filter 'a|b'), compared with run 15; (c) mutant 4515 on 95121 with a 30 s client timeout, GetRunnerState, StopRunner(BatchId), then RunTests 95155 with failed = 0 within 30 s, then DeleteRunnerState. Clean up result rows of the run number it uses (99200) and leave activeMutantId 0." },
+      { "n": 5, "do": "Deploy Mutation Core to mut-spike-02 and run the live script. Run 15's schemata app must be the installed AUT (Publish-MutAppFile out/runs/15/gen/aut-schemata/*.app if not).", "run": ".tools/continia.exe deploy 65eb4296-df3c-4ceb-a189-c3d029d701d0 core-app --json; powershell -NoProfile -Command \"& .\\spikes\\soap-runner\\Test-MutRunnerLive.ps1\"", "expect": "157/157 match; hung session stopped; health clean" },
+      { "n": 6, "do": "Commit.", "run": "git add core-app mutation.config.json mutation.fixture.config.json mutation.u2.config.json spikes/soap-runner/Test-MutRunnerLive.ps1; git commit -m \"feat(core): SOAP runner service for in-session mutant batches (§6.10.2)\"" }
+    ],
+    "acceptance": ["core-app compiles with zero errors.", "Live: 157/157 and the multi-codeunit sample match run 15; the hung runner is stopped by BatchId and the next RunTests has failed = 0.", "MUTRunner WSDL lists RunMutants, RunTests, GetRunnerState, StopRunner, DeleteRunnerState."],
+    "commit": "feat(core): SOAP runner service for in-session mutant batches (§6.10.2)",
+    "guardrails": ["Only mut-spike-02.", "Never write the AUT or test-app repo.", "Leave activeMutantId 0 on every exit path of the live script."]
+  },
+  {
+    "id": "T41",
+    "title": "DemoPortal backend: SOAP calls, mutant batches with a hang watchdog, cached company lookups",
+    "wave": 16,
+    "dependsOn": ["T40"],
+    "model": "sonnet",
+    "specSections": ["§6.10.1", "§6.10.2", "§6.10.3", "§6.10.4", "§6.10.5", "§6.5.3", "§6.5.6", "§9.3"],
+    "files": {
+      "create": ["orchestrator/tests/DemoPortal.Soap.Tests.ps1"],
+      "modify": ["orchestrator/backends/DemoPortal.psm1", "orchestrator/backends/Docker.psm1", "orchestrator/tests/DemoPortal.Api.Tests.ps1"],
+      "readOnly": ["docs/SPEC.md", "orchestrator/lib/MutantLoop.psm1", "spikes/soap-runner/Invoke-SoapRunnerSpike.ps1", "spikes/soap-runner/Invoke-SoapTimeoutSpike.ps1"]
+    },
+    "interfaces": {
+      "consumes": ["MUTRunner SOAP service (T40)", "Get-MutApiBase, Get-MutCredential, Get-MutBasicAuthHeader"],
+      "produces": ["Get-MutCompanyName -Env", "Invoke-MutSoap -Env -Operation -Arguments [-TimeoutSec] (private) -> @{Ok; Value; Fault; TimedOut; Dropped; DurationMs}", "Get-MutRunnerState -Env -> @{ServerNowUtc; Rows}", "Stop-MutRunnerBatch -Env -BatchId -> @{Confirmed}", "Invoke-MutMutantBatch -Env -CodeunitIds -MutantIds -RunNo -MutantBudgetSec -> @{Results; HungMutantId; FaultMutantId; Fault; Stopped}", "Test-MutSoapRunner -Env -> bool"]
+    },
+    "steps": [
+      { "n": 1, "do": "TDD: Get-MutCompanyId and Get-MutCompanyName cache per environment id (one /api/v2.0/companies GET per session). Existing Invoke-MutApi tests still pass." },
+      { "n": 2, "do": "TDD Invoke-MutSoap per §6.10.3 with Invoke-WebRequest mocked: envelope, SOAPAction, escaped arguments, return_value parsing, faultstring parsing, TimedOut on a client timeout, Dropped on a closed connection, throw only on 503 / no connection." },
+      { "n": 3, "do": "TDD Get-MutRunnerState and Stop-MutRunnerBatch: confirmation requires RunTests failed = 0 within 30 s; DeleteRunnerState only after confirmation; unconfirmed after 120 s -> Confirmed false." },
+      { "n": 4, "do": "TDD Invoke-MutMutantBatch with Invoke-MutSoap mocked: finished batch; hang on the server clock -> Stop-MutRunnerBatch with this BatchId; no row within 60 s -> hang; Dropped/TimedOut call that later shows Finished -> normal end; fault -> FaultMutantId; partial results from mutantResults excluding the hung/fault mutant; unconfirmed stop -> throws RunnerStopFailed. Use the runspace pattern of Invoke-MutTestsWithBudget (§6.5.6); keep the poll interval injectable for tests." },
+      { "n": 5, "do": "Add Test-MutSoapRunner. Export the new public functions; add NotImplemented stubs to Docker.psm1." },
+      { "n": 6, "do": "Run all Pester tests.", "run": "powershell -NoProfile -Command \"Import-Module Pester -MinimumVersion 5.0 -MaximumVersion 5.99; Invoke-Pester orchestrator/tests -Output Detailed\"" },
+      { "n": 7, "do": "Commit.", "run": "git add orchestrator; git commit -m \"feat(orchestrator): SOAP mutant batches with a hang watchdog (§6.10.3)\"" }
+    ],
+    "acceptance": ["All orchestrator Pester tests pass.", "No unit test touches the network.", "Credentials never appear in output, errors or files."],
+    "commit": "feat(orchestrator): SOAP mutant batches with a hang watchdog (§6.10.3)",
+    "guardrails": ["No environment calls.", "No AL changes.", "Backend names stay out of orchestrator/lib (guardrail 6)."]
+  },
+  {
+    "id": "T42",
+    "title": "Mutant loop: testTransport soap, batching by covering set, Timeout confirmation and recovery",
+    "wave": 17,
+    "dependsOn": ["T41"],
+    "model": "sonnet",
+    "specSections": ["§6.10.3", "§6.10.4", "§6.10.5", "§6.10.6", "§6.5.1", "§6.5.4", "§6.5.5", "§6.5.6", "§4", "§7.3"],
+    "files": {
+      "create": [],
+      "modify": ["orchestrator/lib/MutantLoop.psm1", "orchestrator/tests/MutantLoop.Tests.ps1", "orchestrator/lib/Config.psm1", "orchestrator/tests/Config.Tests.ps1", "orchestrator/lib/Run.psm1", "orchestrator/tests/Run.Tests.ps1"],
+      "readOnly": ["docs/SPEC.md", "orchestrator/backends/DemoPortal.psm1"]
+    },
+    "interfaces": {
+      "consumes": ["Invoke-MutMutantBatch", "Get-MutRunnerState", "Stop-MutRunnerBatch", "Test-MutSoapRunner"],
+      "produces": ["config testTransport (cli|soap, default cli), soap.batchSize (default 50)"]
+    },
+    "steps": [
+      { "n": 1, "do": "TDD Get-MutConfig: testTransport validated, default cli; soap.batchSize default 50, positive integer. No shipped config changes its transport in this task." },
+      { "n": 2, "do": "TDD: with testTransport soap, Test-MutSoapRunner is checked right after Publish-Baseline (Run.psm1) and at loop start; false throws." },
+      { "n": 3, "do": "TDD loop with testTransport soap and the backend mocked, one test per §6.10.6 item 1 path: orphan rows stopped at loop start; batching (same covering set, consecutive, max batchSize, baseline sum <= 120 s); results appended to results.jsonl with no POST; Empty -> environment check, one retry, Error; hung mutant with an existing row -> row stands, no re-run; hung without a row -> one re-run -> Timeout POSTed, or the re-run result; remainder continues as a new batch; FaultMutantId -> culprit alone under the per-mutant rules, rest continues; RunnerStopFailed -> PATCH 0 then Reset-MutEnvironment under the recovery cap; 5 consecutive Timeouts abort; resume skips recorded mutants." },
+      { "n": 4, "do": "Keep the cli path unchanged in behaviour: every existing MutantLoop and Run test passes unchanged." },
+      { "n": 5, "do": "Run all Pester tests and the isolation lint.", "run": "powershell -NoProfile -Command \"Import-Module Pester -MinimumVersion 5.0 -MaximumVersion 5.99; Invoke-Pester orchestrator/tests -Output Detailed\"" },
+      { "n": 6, "do": "Commit.", "run": "git add orchestrator; git commit -m \"feat(orchestrator): soap test transport for the mutant loop (§6.10.4)\"" }
+    ],
+    "acceptance": ["All orchestrator Pester tests pass, old and new.", "The isolation lint (§8 item 3) still returns nothing."],
+    "commit": "feat(orchestrator): soap test transport for the mutant loop (§6.10.4)",
+    "guardrails": ["No environment calls.", "No AL changes.", "testTransport defaults to cli; do not change the default."]
+  },
+  {
+    "id": "T43",
+    "title": "Live acceptance: U2 scope over SOAP on mut-spike-02, parity with run 15",
+    "wave": 17,
+    "dependsOn": ["T42"],
+    "model": "sonnet",
+    "specSections": ["§6.10.6", "§6.9.3"],
+    "files": {
+      "create": [],
+      "modify": ["docs/spike-baseline.md", "results/<N>.json", "results/<N>-summary.md"],
+      "readOnly": ["docs/SPEC.md", "results/15.json"]
+    },
+    "interfaces": {
+      "consumes": ["Invoke-MutationRun.ps1 with testTransport soap"],
+      "produces": ["results/<N>.json for the SOAP run", "spike-baseline section with wall clock and s/mutant"]
+    },
+    "steps": [
+      { "n": 1, "do": "Copy mutation.u2.config.json to out/soap-acceptance.config.json with testTransport soap. Pick a run number with no results/<N>.json and no out/runs/<N> (e.g. 16)." },
+      { "n": 2, "do": "Run it.", "run": "powershell -NoProfile -File orchestrator/Invoke-MutationRun.ps1 -ConfigPath out/soap-acceptance.config.json -RunNo <N>", "expect": "exit 0, aborted false" },
+      { "n": 3, "do": "Compare results/<N>.json with results/15.json by stable key: every status equal, including the 3 Timeouts of 72918630. Any difference is investigated and reported, not explained away." },
+      { "n": 4, "do": "Record wall clock, seconds per mutant, batches, hangs stopped, and the comparison in docs/spike-baseline.md." },
+      { "n": 5, "do": "Commit.", "run": "git add docs/spike-baseline.md results; git commit -m \"results: SOAP transport acceptance run (§6.10.6)\"" }
+    ],
+    "acceptance": ["265/265 statuses equal to run 15.", "Wall clock and s/mutant recorded."],
+    "commit": "results: SOAP transport acceptance run (§6.10.6)",
+    "guardrails": ["Only mut-spike-02.", "Targeted scope only (no full AUT).", "Never write the AUT or test-app repo."]
   }
 ]

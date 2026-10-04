@@ -57,6 +57,7 @@ $body = "<s:Envelope xmlns:s=`"http://schemas.xmlsoap.org/soap/envelope/`" xmlns
 $reference = $null
 $batches = 0
 $failures = 0
+$apiErrors = 0
 $deadline = (Get-Date).AddMinutes($Minutes)
 try {
     while ((Get-Date) -lt $deadline) {
@@ -83,14 +84,22 @@ try {
         ($record | ConvertTo-Json -Compress) | Add-Content -Path $logPath -Encoding utf8
         Write-Output ('batch {0}: ok={1} killed={2} same={3} {4:n0} ms {5}' -f $batches, $record.ok, $record['killed'], $record['sameAsFirst'], $record.ms, $record['error'])
 
-        # Leave the 62 hook rows of each batch from piling up.
-        $existing = Invoke-MutApi -Env $envHandle -Method 'GET' -Path "mutantResults?`$filter=runNo eq $RunNo"
-        foreach ($row in @($existing.value)) {
-            Invoke-MutApi -Env $envHandle -Method 'DELETE' -Path "mutantResults(runNo=$RunNo,mutantId=$($row.mutantId))" | Out-Null
+        # Leave the 62 hook rows of each batch from piling up. An API error here is counted, not
+        # fatal: the first soak (2026-10-04) died after 11 minutes on one dropped API connection.
+        try {
+            $existing = Invoke-MutApi -Env $envHandle -Method 'GET' -Path "mutantResults?`$filter=runNo eq $RunNo"
+            foreach ($row in @($existing.value)) {
+                Invoke-MutApi -Env $envHandle -Method 'DELETE' -Path "mutantResults(runNo=$RunNo,mutantId=$($row.mutantId))" | Out-Null
+            }
+        }
+        catch {
+            $apiErrors++
+            Write-Output "  API cleanup error ($apiErrors): $($_.Exception.Message)"
+            ([ordered]@{ batch = $batches; at = (Get-Date).ToString('o'); apiError = $_.Exception.Message } | ConvertTo-Json -Compress) | Add-Content -Path $logPath -Encoding utf8
         }
     }
 }
 finally {
     Invoke-MutApi -Env $envHandle -Method 'PATCH' -Path 'mutationSetup(0)' -Body @{ activeMutantId = 0; currentRunNo = 0 } | Out-Null
-    Write-Output "SOAK DONE: $batches batches, $($batches * $MutantIds.Count) mutant runs, $failures failures. Log: $logPath"
+    Write-Output "SOAK DONE: $batches batches, $($batches * $MutantIds.Count) mutant runs, $failures failures, $apiErrors API cleanup errors. Log: $logPath"
 }
