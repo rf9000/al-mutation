@@ -196,6 +196,61 @@ Describe 'Invoke-MutSoap' {
         { Invoke-InModule { param($e) Invoke-MutSoap -Env $e -Operation 'GetRunnerState' -Arguments @{} } @($envHandle) } | Should -Throw "*$status*"
     }
 
+    It 'maps a 5xx without a faultstring (<code> from a gateway) to Dropped, never to Fault' -ForEach @(
+        @{ code = 500 }
+        @{ code = 502 }
+        @{ code = 504 }
+    ) {
+        $thrown = New-WebException -Status ProtocolError
+        Mock -ModuleName DemoPortal Invoke-WebRequest ({ throw $thrown }.GetNewClosure())
+        $code2 = $code
+        Mock -ModuleName DemoPortal Get-MutWebFailure ({ [pscustomobject]@{ IsWebError = $true; Status = 'ProtocolError'; StatusCode = $code2; Body = '<html>Bad Gateway</html>' } }.GetNewClosure())
+
+        $r = Invoke-InModule { param($e) Invoke-MutSoap -Env $e -Operation 'RunMutants' -Arguments @{ batchId = 'b' } } @($envHandle)
+
+        $r.Ok | Should -BeFalse
+        $r.Dropped | Should -BeTrue
+        $r.Fault | Should -BeNullOrEmpty
+        $r.TimedOut | Should -BeFalse
+    }
+
+    It 'a 500 WITH a faultstring is still a Fault' {
+        $thrown = New-WebException -Status ProtocolError
+        Mock -ModuleName DemoPortal Invoke-WebRequest ({ throw $thrown }.GetNewClosure())
+        Mock -ModuleName DemoPortal Get-MutWebFailure { [pscustomobject]@{ IsWebError = $true; Status = 'ProtocolError'; StatusCode = 500; Body = '<faultstring>Error in codeunit</faultstring>' } }
+
+        $r = Invoke-InModule { param($e) Invoke-MutSoap -Env $e -Operation 'RunMutants' -Arguments @{ batchId = 'b' } } @($envHandle)
+
+        $r.Fault | Should -Be 'Error in codeunit'
+        $r.Dropped | Should -BeFalse
+    }
+
+    It 'a 404 (service missing) is neither Ok, Fault nor Dropped, and carries HttpStatus' {
+        $thrown = New-WebException -Status ProtocolError
+        Mock -ModuleName DemoPortal Invoke-WebRequest ({ throw $thrown }.GetNewClosure())
+        Mock -ModuleName DemoPortal Get-MutWebFailure { [pscustomobject]@{ IsWebError = $true; Status = 'ProtocolError'; StatusCode = 404; Body = '' } }
+
+        $r = Invoke-InModule { param($e) Invoke-MutSoap -Env $e -Operation 'GetRunnerState' -Arguments @{} } @($envHandle)
+
+        $r.Ok | Should -BeFalse
+        $r.Fault | Should -BeNullOrEmpty
+        $r.Dropped | Should -BeFalse
+        $r.TimedOut | Should -BeFalse
+        $r.HttpStatus | Should -Be 404
+    }
+
+    It 'throws on HTTP <code> (a credential problem is not "service missing")' -ForEach @(
+        @{ code = 401 }
+        @{ code = 403 }
+    ) {
+        $thrown = New-WebException -Status ProtocolError
+        Mock -ModuleName DemoPortal Invoke-WebRequest ({ throw $thrown }.GetNewClosure())
+        $code2 = $code
+        Mock -ModuleName DemoPortal Get-MutWebFailure ({ [pscustomobject]@{ IsWebError = $true; Status = 'ProtocolError'; StatusCode = $code2; Body = '' } }.GetNewClosure())
+
+        { Invoke-InModule { param($e) Invoke-MutSoap -Env $e -Operation 'GetRunnerState' -Arguments @{} } @($envHandle) } | Should -Throw "*HTTP $code*"
+    }
+
     It 'throws on an unexpected non-web exception' {
         Mock -ModuleName DemoPortal Invoke-WebRequest { throw 'something else' }
 
@@ -361,8 +416,32 @@ Describe 'Stop-MutRunnerBatch' {
         $ops | Should -Be @('StopRunner', 'RunTests', 'DeleteRunnerState')
         $script:soapCalls[0].Arguments['batchId'] | Should -Be 'B1'
         $script:soapCalls[1].Arguments['codeunitIds'] | Should -Be '95155'
-        $script:soapCalls[1].TimeoutSec | Should -Be 30
+        $script:soapCalls[1].TimeoutSec | Should -Be 2
         $script:soapCalls[2].Arguments['batchId'] | Should -Be 'B1'
+    }
+
+    It 'gives each health call min(HealthTimeoutSec, remaining window) so the last call cannot overrun the window' {
+        $script:healthResults = @((New-SoapResult -Value '{"passed":1,"failed":1,"durationMs":1,"tests":[]}'))
+
+        Stop-MutRunnerBatch -Env $envHandle -BatchId 'B1' -CodeunitIds '95155' -PollIntervalSec 0.01 -ConfirmWindowSec 1.5 -HealthTimeoutSec 30 | Out-Null
+        $first = @($script:soapCalls | Where-Object Operation -eq 'RunTests')[0]
+        $first.TimeoutSec | Should -BeLessOrEqual 2
+        @($script:soapCalls | Where-Object Operation -eq 'RunTests' | ForEach-Object { $_.TimeoutSec }) | ForEach-Object { $_ | Should -BeLessOrEqual 2 }
+
+        $script:soapCalls.Clear()
+        Stop-MutRunnerBatch -Env $envHandle -BatchId 'B1' -CodeunitIds '95155' -PollIntervalSec 0.01 -ConfirmWindowSec 0.3 -HealthTimeoutSec 30 | Out-Null
+        @($script:soapCalls | Where-Object Operation -eq 'RunTests' | ForEach-Object { $_.TimeoutSec }) | ForEach-Object { $_ | Should -Be 1 }
+    }
+
+    It 'an outage on StopRunner or a health call carries the BatchId on the original exception' {
+        Mock -ModuleName DemoPortal Invoke-MutSoap { throw 'Invoke-MutSoap: RunTests failed: HTTP 503 (service unavailable).' }
+
+        $caught = $null
+        try { Stop-MutRunnerBatch -Env $envHandle -BatchId 'B7' -CodeunitIds '95155' -PollIntervalSec 0.01 -ConfirmWindowSec 1 }
+        catch { $caught = $_ }
+
+        $caught.Exception.Message | Should -BeLike '*503*'
+        $caught.Exception.Data['BatchId'] | Should -Be 'B7'
     }
 
     It 'keeps polling while RunTests reports failures, times out or faults, and confirms later' {
@@ -434,8 +513,19 @@ Describe 'Invoke-MutMutantBatch' {
             $script:batchId = $Arguments['batchId']
             [pscustomobject]@{ Fake = $true }
         }
+        $script:received = $false
+        $script:waitCalls = 0
+        $script:waitAfterReceive = 0
+        $script:waitMs = @()
+        $script:stateThrowFrom = -1
         Mock -ModuleName DemoPortal Test-MutSoapRunspaceDone { $script:pollNo -ge $script:doneAtPoll }
-        Mock -ModuleName DemoPortal Receive-MutSoapRunspace { $script:callResult }
+        Mock -ModuleName DemoPortal Receive-MutSoapRunspace { $script:received = $true; $script:callResult }
+        Mock -ModuleName DemoPortal Wait-MutSoapRunspace {
+            $script:waitCalls++
+            $script:waitMs += $TimeoutMs
+            if ($script:received) { $script:waitAfterReceive++ }
+            Start-Sleep -Milliseconds $TimeoutMs
+        }
         Mock -ModuleName DemoPortal Stop-MutSoapRunspace { $script:runspaceStopped++ }
         Mock -ModuleName DemoPortal Invoke-MutSoap {
             $script:soapCalls.Add([pscustomobject]@{ Operation = $Operation; Arguments = $Arguments; TimeoutSec = $TimeoutSec })
@@ -443,6 +533,7 @@ Describe 'Invoke-MutMutantBatch' {
                 'GetRunnerState' {
                     $script:pollNo++
                     if ($script:pollNo -eq $script:stateThrowAtPoll) { throw 'transient state poll failure' }
+                    if ($script:stateThrowFrom -gt 0 -and $script:pollNo -ge $script:stateThrowFrom) { throw 'state poll outage' }
                     $json = & $script:stateFn $script:pollNo $script:batchId
                     return [pscustomobject]@{ Ok = $true; Value = $json; Fault = $null; TimedOut = $false; Dropped = $false; DurationMs = 1 }
                 }
@@ -707,15 +798,139 @@ Describe 'Invoke-MutMutantBatch' {
         $script:doneAtPoll = 1
         Mock -ModuleName DemoPortal Receive-MutSoapRunspace { throw 'Invoke-MutSoap: RunMutants failed: HTTP 503 (service unavailable).' }
 
-        { Invoke-MutMutantBatch -Env $envHandle -CodeunitIds 95155 -MutantIds 11 -RunNo 5 -MutantBudgetSec 30 @fast } | Should -Throw '*503*'
+        $caught = $null
+        try { Invoke-MutMutantBatch -Env $envHandle -CodeunitIds 95155 -MutantIds 11 -RunNo 5 -MutantBudgetSec 30 @fast }
+        catch { $caught = $_ }
 
+        $caught | Should -Not -BeNullOrEmpty
+        $caught.Exception.Message | Should -BeLike '*503*'
+        $caught.Exception.Data['BatchId'] | Should -Be $script:batchId
         $script:runspaceStopped | Should -Be 1
+    }
+
+    It 'a failed state poll after the no-row window is not a hang once a row has been seen (no rule runs on a failed poll)' {
+        $script:stateThrowAtPoll = 2
+        $script:stateFn = {
+            param($poll, $batchId)
+            if ($poll -lt 3) { return New-RunnerStateJson -Rows @((New-StateRow -BatchId $batchId -MutantId 12 -StartedAt '2026-10-04T20:43:42.0000000Z' -Done 1)) }
+            New-RunnerStateJson -Rows @((New-StateRow -BatchId $batchId -Done 2 -Finished $true))
+        }
+        $script:doneAtPoll = 3
+        $script:callResult = New-SoapResult -Value '[]'
+        $s = $script:fast.Clone(); $s['PollIntervalSec'] = 0.15; $s['NoRowWindowSec'] = 0.05
+
+        $r = Invoke-MutMutantBatch -Env $envHandle -CodeunitIds 95155 -MutantIds 11, 12 -RunNo 5 -MutantBudgetSec 30 @s
+
+        $r.HungMutantId | Should -BeNullOrEmpty
+        $r.Stopped | Should -BeFalse
+        Get-Ops | Should -Not -Contain 'StopRunner'
+    }
+
+    It 'a state-poll outage while the call is still running is retried, not swallowed forever: once the call has ended it is rethrown with the BatchId' {
+        $script:stateThrowFrom = 2
+        $script:stateFn = { param($poll, $batchId) New-RunnerStateJson -Rows @((New-StateRow -BatchId $batchId -MutantId 12 -StartedAt '2026-10-04T20:43:42.0000000Z' -Done 1)) }
+        $script:doneAtPoll = 4
+        $script:callResult = New-SoapResult -Dropped
+
+        $caught = $null
+        try { Invoke-MutMutantBatch -Env $envHandle -CodeunitIds 95155 -MutantIds 11, 12 -RunNo 5 -MutantBudgetSec 30 @fast }
+        catch { $caught = $_ }
+
+        $caught | Should -Not -BeNullOrEmpty
+        $caught.Exception.Message | Should -BeLike '*state poll outage*'
+        $caught.Exception.Data['BatchId'] | Should -Be $script:batchId
+        $script:pollNo | Should -BeGreaterOrEqual 4
+        Get-Ops | Should -Not -Contain 'StopRunner'
+        $script:runspaceStopped | Should -Be 1
+    }
+
+    It 'an outage during the stop carries the BatchId on the original exception' {
+        $script:stateFn = { param($poll, $batchId) New-RunnerStateJson -ServerNow '2026-10-04T20:44:11.0000000Z' -Rows @((New-StateRow -BatchId $batchId -MutantId 12 -StartedAt '2026-10-04T20:43:40.0000000Z')) }
+        $script:stopResult = $null
+        Mock -ModuleName DemoPortal Invoke-MutSoap {
+            if ($Operation -eq 'GetRunnerState') {
+                $json = & $script:stateFn 1 $script:batchId
+                return [pscustomobject]@{ Ok = $true; Value = $json; Fault = $null; TimedOut = $false; Dropped = $false; DurationMs = 1 }
+            }
+            throw 'Invoke-MutSoap: StopRunner failed: HTTP 503 (service unavailable).'
+        }
+
+        $caught = $null
+        try { Invoke-MutMutantBatch -Env $envHandle -CodeunitIds 95155 -MutantIds 12 -RunNo 5 -MutantBudgetSec 30 @fast }
+        catch { $caught = $_ }
+
+        $caught.Exception.Message | Should -BeLike '*503*'
+        $caught.Exception.Data['BatchId'] | Should -Be $script:batchId
+    }
+
+    It 'waits on the runspace seam (not a blind sleep) while the call is running, and never after the call has been received' {
+        $script:stateFn = {
+            param($poll, $batchId)
+            if ($poll -lt 4) { return New-RunnerStateJson -Rows @((New-StateRow -BatchId $batchId -MutantId 12 -StartedAt '2026-10-04T20:43:42.0000000Z')) }
+            New-RunnerStateJson -Rows @((New-StateRow -BatchId $batchId -Done 1 -Finished $true))
+        }
+        $script:doneAtPoll = 2
+        $script:callResult = New-SoapResult -Dropped
+
+        Invoke-MutMutantBatch -Env $envHandle -CodeunitIds 95155 -MutantIds 12 -RunNo 5 -MutantBudgetSec 30 @fast | Out-Null
+
+        $script:waitCalls | Should -BeGreaterThan 0
+        $script:waitMs | ForEach-Object { $_ | Should -Be 10 }
+        $script:waitAfterReceive | Should -Be 0
     }
 
     It 'refuses an environment not named mut-*' {
         $bad = [pscustomobject]@{ Id = 'E1'; Name = 'fix-auth'; Url = 'https://x'; Backend = 'DemoPortal'; Shared = $false }
         { Invoke-MutMutantBatch -Env $bad -CodeunitIds 95155 -MutantIds 11 -RunNo 5 -MutantBudgetSec 30 } | Should -Throw "*does not match '^mut-'*"
         Should -Invoke -ModuleName DemoPortal Start-MutSoapRunspace -Times 0
+    }
+}
+
+Describe 'Stop-MutSoapRunspace' {
+    BeforeAll {
+        function script:New-FakeHandle {
+            param([bool]$Completed, [bool]$StopCompletes = $true)
+            $h = [pscustomobject]@{
+                Async      = [pscustomobject]@{ IsCompleted = $Completed }
+                PowerShell = [pscustomobject]@{ Disposed = 0; BeginStopCalls = 0; StopCompletes = $StopCompletes }
+                Runspace   = [pscustomobject]@{ Disposed = 0; CloseAsyncCalls = 0 }
+            }
+            $h.PowerShell | Add-Member ScriptMethod Dispose { $this.Disposed++ }
+            $h.PowerShell | Add-Member ScriptMethod BeginStop {
+                param($cb, $state)
+                $this.BeginStopCalls++
+                $w = [pscustomobject]@{ Result = $this.StopCompletes }
+                $w | Add-Member ScriptMethod WaitOne { param($ms) $this.Result }
+                [pscustomobject]@{ AsyncWaitHandle = $w }
+            }
+            $h.Runspace | Add-Member ScriptMethod Dispose { $this.Disposed++ }
+            $h.Runspace | Add-Member ScriptMethod CloseAsync { $this.CloseAsyncCalls++ }
+            $h
+        }
+    }
+
+    It 'disposes the PowerShell instance and the runspace of a completed call, without stopping it' {
+        $h = New-FakeHandle -Completed $true
+        Invoke-InModule { param($x) Stop-MutSoapRunspace -Handle $x } @($h)
+        $h.PowerShell.Disposed | Should -Be 1
+        $h.Runspace.Disposed | Should -Be 1
+        $h.PowerShell.BeginStopCalls | Should -Be 0
+    }
+
+    It 'stops a still-running call asynchronously and disposes both once the stop completed' {
+        $h = New-FakeHandle -Completed $false -StopCompletes $true
+        Invoke-InModule { param($x) Stop-MutSoapRunspace -Handle $x -DisposeWaitSec 0.1 } @($h)
+        $h.PowerShell.BeginStopCalls | Should -Be 1
+        $h.PowerShell.Disposed | Should -Be 1
+        $h.Runspace.Disposed | Should -Be 1
+    }
+
+    It 'does not dispose (Dispose would block) when the stop has not completed, and closes the runspace asynchronously' {
+        $h = New-FakeHandle -Completed $false -StopCompletes $false
+        Invoke-InModule { param($x) Stop-MutSoapRunspace -Handle $x -DisposeWaitSec 0.1 } @($h)
+        $h.PowerShell.Disposed | Should -Be 0
+        $h.Runspace.Disposed | Should -Be 0
+        $h.Runspace.CloseAsyncCalls | Should -Be 1
     }
 }
 
