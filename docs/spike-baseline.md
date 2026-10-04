@@ -810,9 +810,16 @@ timed-out call returns nothing.
 **Coverage does not need to move.** Baseline coverage is one `--raw` job per test codeunit per run (4 jobs
 in the U2 scope), so it can stay on the CLI. Only the per-mutant loop needs SOAP.
 
+**Stability (soak, `Invoke-SoapSoak.ps1`, 2026-10-04 23:02 to 2026-10-05 00:01).** The test repeated one batch of
+all 157 mutants on 95155 back to back for 60 minutes, deleting the hook rows between batches.
+- **Result:** 61 batches and 9,577 mutant runs, with 0 SOAP failures, 0 API errors and 0 outcome changes. Every
+  batch killed the same 62 mutants, in 48–62 s per batch.
+- **Window covered:** this is the 45–60 minute window in which the job path failed with 503s (503 bisect), and the
+  SOAP route stayed healthy through it.
+- **Earlier attempt:** an earlier soak died after 11 minutes on a single dropped connection to the Mutation Core
+  REST API (not SOAP), so the loop must keep treating API connection drops as retryable (§6.5.6 outage wait).
+
 **Still open before this replaces the CLI path:**
-- Stability: about 330 SOAP calls ran without error, but none over the 45–60 minute window in which the job
-  path failed with 503s.
 - Only 95155 (outcome parity) and 95121 (timeouts) have been tested. Other codeunits may use handlers or
   `TestPermissions` differently.
 - Concurrency: `MUT Mutation Setup` is one global row, so only one runner may run at a time, the same as
