@@ -1146,10 +1146,13 @@ checked right after `Publish-Baseline` (§6.5.4 step 3) and again at loop start;
 With `"soap"`:
 1. **Orphans first.** At loop start, before reading recorded results: run `Get-MutRunnerState`. For every row with
    `Finished = false`, run `Stop-MutRunnerBatch`; such a row counts as a row of this loop (§6.10.5). Then PATCH
-   `activeMutantId = 0`, and `DeleteRunnerState` every remaining row. An orphan whose stop is not confirmed goes to the
-   recovery path in step 5.
+   `activeMutantId = 0`. A confirmed stop deletes its row (`Stop-MutRunnerBatch`). Finished rows stay: they are keyed
+   by a unique `BatchId`, and nothing reads them. An orphan whose stop is not confirmed goes to the recovery path in
+   step 5. The sweep runs again before the next batch after **every** outage wait, and after any batch call that ended
+   in an outage, because a runner from that batch may still be alive.
 2. **Batches.** Take the pending mutants (resume rules unchanged), in id order. Group runs of consecutive mutants with
-   the same covering set (§6.5.5) into batches. A batch holds at most `batchSize` mutants, and is capped further so
+   the same covering set (§6.5.5) into batches. "Same" means set equality: the grouping key is the sorted ids, while
+   `CodeunitIds` keeps the §6.5.5 order, so the health codeunit is the first covering codeunit. A batch holds at most `batchSize` mutants, and is capped further so
    that the sum of their covering sets' baseline durations stays ≤ 120 s. `Uncovered` handling is unchanged.
    `MutantBudgetSec` is the §6.5.6 budget for one mutant of that covering set.
 3. **Results.** Each entry of `Results` is appended to `results.jsonl`; the runner already wrote the API row, so
@@ -1166,7 +1169,16 @@ With `"soap"`:
      §6.5.6's per-mutant rules (the outage wait, up to 2 re-runs, then `Error`, which is not POSTed). The mutants
      after it continue as a new batch.
    - **`RunnerStopFailed`:** PATCH 0, then `Reset-MutEnvironment` under the §6.5.6 recovery cap. A failed reset keeps
-     its slot spent. A confirmed stop spends no slot. The consecutive-`Error` breaker counts per mutant.
+     its slot spent. A confirmed stop spends no slot. The culprit is treated as in §6.5.6 for the CLI: after a
+     successful reset it goes through the step-4 hang handling (existing row stands, otherwise a re-run alone). After a
+     failed reset it is recorded as `Timeout`, POSTed once the environment serves again, and not re-run. The
+     consecutive-`Error` breaker counts per mutant.
+   - **Re-run counts:** "up to 2 re-runs" means the §6.5.6 outage rule: a mutant whose attempt **throws** is re-run
+     after the outage wait, at most twice. A culprit whose re-run faults again without throwing is recorded as
+     `Error` after that one re-run. A hang re-run that returns `Empty` goes through step 3.
+   - **Outage waits apply everywhere:** every Mutation Core API call the loop makes for a mutant (PATCH, GET, the
+     `Timeout` POST, `Confirm-MutEnvironmentServing`) is covered by the same outage wait and per-mutant retry as the
+     CLI body. A `Timeout` verdict already reached retries its POST after the wait instead of becoming `Error`.
 6. **No per-mutant PATCH.** The PATCH of `mutationSetup` around each mutant is gone: the runner sets and clears the
    mutant itself. The loop still PATCHes `activeMutantId = 0` before any probe, reset or outage wait (F3b BLOCKER 1).
 
