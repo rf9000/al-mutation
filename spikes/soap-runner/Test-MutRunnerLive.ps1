@@ -120,15 +120,27 @@ function Get-RunnerState {
 }
 
 function Clear-RunnerState {
+    # Returns the number of unfinished rows whose stop was not confirmed (those rows are left in place).
+    $unconfirmed = 0
     foreach ($row in @((Get-RunnerState).rows)) {
+        if (-not $row.finished) {
+            Write-Host "  cleanup: stopping unfinished batch $($row.batchId) (session $($row.sessionId), mutant $($row.mutantId))"
+            $stop = Invoke-Soap 'StopRunner' @{ batchId = $row.batchId } 60
+            $confirmed = $false
+            for ($i = 1; $i -le 24; $i++) {
+                Start-Sleep -Seconds 5
+                $h = Invoke-Soap 'RunTests' @{ codeunitIds = "$CodeunitId" } 120
+                if ($h.Ok -and (($h.Value | ConvertFrom-Json).failed -eq 0)) { $confirmed = $true; break }
+            }
+            if (-not $confirmed) {
+                $unconfirmed++
+                Write-Host "  cleanup: stop of batch $($row.batchId) NOT confirmed (StopRunner: $($stop.Value) $($stop.Fault)); row left in place"
+                continue
+            }
+        }
         Invoke-Soap 'DeleteRunnerState' @{ batchId = $row.batchId } 60 | Out-Null
     }
-}
-
-function Get-Verdict($Result) {
-    if ($Result.failed -gt 0) { return 'Killed' }
-    if ($Result.passed -gt 0) { return 'Survived' }
-    return 'Error'
+    return $unconfirmed
 }
 
 $checks = New-Object System.Collections.Generic.List[object]
@@ -148,7 +160,7 @@ Write-Output "Run $ReferenceRun reference: $($ownMutants.Count) decided mutants 
 $runspace = $null
 try {
     Set-ActiveMutantZero
-    Clear-RunnerState
+    if ((Clear-RunnerState) -gt 0) { throw 'An earlier unfinished runner row could not be stopped; refusing to start.' }
     Remove-ResultRows | Out-Null
 
     # --- W ------------------------------------------------------------------------------------
@@ -252,7 +264,7 @@ try {
     $stopSw = [Diagnostics.Stopwatch]::StartNew()
     $stop = Invoke-Soap 'StopRunner' @{ batchId = $batchC } 60
     Write-Output "  StopRunner: ok=$($stop.Ok) $($stop.Value) $($stop.Fault) ($($stop.Ms) ms)"
-    Add-Check 'C StopRunner by BatchId' $stop.Ok "$($stop.Value) $($stop.Fault)"
+    Add-Check 'C StopRunner by BatchId' ($stop.Ok -and ($stop.Value -eq 'stopped')) "$($stop.Value) $($stop.Fault)"
 
     $healthy = $false
     $stoppedAfterSec = $null
@@ -272,6 +284,8 @@ try {
 
     $rowAfter = @((Get-RunnerState).rows | Where-Object { $_.batchId -eq $batchC })
     Add-Check 'C stop keeps the row' (($rowAfter.Count -eq 1) -and (-not $rowAfter[0].finished)) "row present=$($rowAfter.Count -eq 1)"
+    $stop2 = Invoke-Soap 'StopRunner' @{ batchId = $batchC } 60
+    Add-Check 'C StopRunner on an ended session' ($stop2.Ok -and (($stop2.Value -eq 'stopped') -or ($stop2.Value -like 'not stopped:*'))) "ok=$($stop2.Ok) value=$($stop2.Value) fault=$($stop2.Fault)"
     $del = Invoke-Soap 'DeleteRunnerState' @{ batchId = $batchC } 60
     $rowGone = @((Get-RunnerState).rows | Where-Object { $_.batchId -eq $batchC }).Count -eq 0
     Add-Check 'C DeleteRunnerState' ($del.Ok -and $rowGone) "$($del.Value)"
@@ -280,7 +294,11 @@ finally {
     if ($runspace) { $runspace.Dispose() }
     try { Set-ActiveMutantZero } catch { Write-Output "cleanup: PATCH activeMutantId=0 failed: $($_.Exception.Message)" }
     try { Remove-ResultRows | Out-Null } catch { Write-Output "cleanup: deleting result rows failed: $($_.Exception.Message)" }
-    try { Clear-RunnerState } catch { Write-Output "cleanup: clearing runner state failed: $($_.Exception.Message)" }
+    try {
+        $unconfirmed = Clear-RunnerState
+        Add-Check 'cleanup: unfinished rows stopped before delete' ($unconfirmed -eq 0) "$unconfirmed unconfirmed"
+    }
+    catch { Write-Output "cleanup: clearing runner state failed: $($_.Exception.Message)" }
     try {
         $setup = Invoke-MutApi -Env $envHandle -Method 'GET' -Path 'mutationSetup(0)'
         Add-Check 'health: activeMutantId' ($setup.activeMutantId -eq 0) "activeMutantId=$($setup.activeMutantId) currentRunNo=$($setup.currentRunNo)"

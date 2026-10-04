@@ -8,7 +8,7 @@ codeunit 50003 "MUT Runner"
     Permissions = tabledata "AL Test Suite" = rimd,
                   tabledata "Test Method Line" = rimd,
                   tabledata "MUT Mutation Setup" = rim,
-                  tabledata "MUT Mutant Result" = rimd,
+                  tabledata "MUT Mutant Result" = rim,
                   tabledata "MUT Runner State" = rimd;
 
     var
@@ -17,6 +17,9 @@ codeunit 50003 "MUT Runner"
         BatchNotFoundErr: Label 'No runner state row exists for batch %1.', Comment = '%1 = batch id';
         BatchFinishedErr: Label 'Batch %1 has already finished.', Comment = '%1 = batch id';
         OwnSessionErr: Label 'Refusing to stop the calling session %1.', Comment = '%1 = session id';
+        BatchIdErr: Label 'The batch id must be 1 to 50 characters.';
+        MutantIdErr: Label 'Mutant id "%1" is not a positive integer.', Comment = '%1 = the offending list entry';
+        StopFailedTxt: Label 'not stopped: %1', Comment = '%1 = error text';
 
     procedure RunMutants(BatchId: Text; CodeunitIds: Text; MutantIds: Text; RunNo: Integer): Text
     var
@@ -24,8 +27,7 @@ codeunit 50003 "MUT Runner"
         MutantResult: Record "MUT Mutant Result";
         Results: JsonArray;
         Entry: JsonObject;
-        MutantIdList: List of [Text];
-        MutantIdText: Text;
+        MutantIdList: List of [Integer];
         MutantId: Integer;
         Tests: JsonArray;
         Passed: Integer;
@@ -34,6 +36,9 @@ codeunit 50003 "MUT Runner"
         DurationMs: BigInteger;
         ResultText: Text;
     begin
+        CheckBatchId(BatchId);
+        ParseMutantIds(MutantIds, MutantIdList);
+
         State.Init();
         State."Batch Id" := CopyStr(BatchId, 1, MaxStrLen(State."Batch Id"));
         State."Session Id" := SessionId();
@@ -44,52 +49,48 @@ codeunit 50003 "MUT Runner"
 
         PrepareSuite(CodeunitIds);
 
-        MutantIdList := MutantIds.Split(',');
-        foreach MutantIdText in MutantIdList do
-            if MutantIdText.Trim() <> '' then begin
-                Evaluate(MutantId, MutantIdText.Trim());
+        foreach MutantId in MutantIdList do begin
+            State."Mutant Id" := MutantId;
+            State."Mutant Started At" := CurrentDateTime();
+            State.Modify();
+            Commit();
 
-                State."Mutant Id" := MutantId;
-                State."Mutant Started At" := CurrentDateTime();
-                State.Modify();
-                Commit();
+            SetActiveMutant(MutantId, RunNo);
 
-                SetActiveMutant(MutantId, RunNo);
+            Clear(Tests);
+            RunSuite(Tests, Passed, Failed, KillingTest, DurationMs);
 
-                Clear(Tests);
-                RunSuite(Tests, Passed, Failed, KillingTest, DurationMs);
-
-                Clear(Entry);
-                Entry.Add('mutantId', MutantId);
-                if Passed + Failed = 0 then begin
-                    Entry.Add('status', 'Empty');
-                    Entry.Add('killingTest', '');
-                end else begin
-                    if not MutantResult.Get(RunNo, MutantId) then begin
-                        MutantResult.Init();
-                        MutantResult."Run No." := RunNo;
-                        MutantResult."Mutant Id" := MutantId;
-                        if Failed > 0 then begin
-                            MutantResult.Status := MutantResult.Status::Killed;
-                            MutantResult."Killing Test" := CopyStr(KillingTest, 1, MaxStrLen(MutantResult."Killing Test"));
-                        end else
-                            MutantResult.Status := MutantResult.Status::Survived;
-                        MutantResult."Duration Ms" := DurationMs;
-                        MutantResult."Recorded At" := CurrentDateTime();
-                        MutantResult.Insert();
-                    end;
-                    Entry.Add('status', Format(MutantResult.Status));
-                    Entry.Add('killingTest', MutantResult."Killing Test");
+            Clear(Entry);
+            Entry.Add('mutantId', MutantId);
+            if Passed + Failed = 0 then begin
+                Entry.Add('status', 'Empty');
+                Entry.Add('killingTest', '');
+            end else begin
+                if not MutantResult.Get(RunNo, MutantId) then begin
+                    MutantResult.Init();
+                    MutantResult."Run No." := RunNo;
+                    MutantResult."Mutant Id" := MutantId;
+                    if Failed > 0 then begin
+                        MutantResult.Status := MutantResult.Status::Killed;
+                        MutantResult."Killing Test" := CopyStr(KillingTest, 1, MaxStrLen(MutantResult."Killing Test"));
+                    end else
+                        MutantResult.Status := MutantResult.Status::Survived;
+                    MutantResult."Duration Ms" := DurationMs;
+                    MutantResult."Recorded At" := CurrentDateTime();
+                    MutantResult.Insert();
                 end;
-                Entry.Add('durationMs', DurationMs);
-                Entry.Add('passed', Passed);
-                Entry.Add('failed', Failed);
-                Results.Add(Entry);
-
-                State."Mutants Done" += 1;
-                State.Modify();
-                Commit();
+                Entry.Add('status', Format(MutantResult.Status));
+                Entry.Add('killingTest', MutantResult."Killing Test");
             end;
+            Entry.Add('durationMs', DurationMs);
+            Entry.Add('passed', Passed);
+            Entry.Add('failed', Failed);
+            Results.Add(Entry);
+
+            State."Mutants Done" += 1;
+            State.Modify();
+            Commit();
+        end;
 
         SetActiveMutant(0, 0);
         State."Mutant Id" := 0;
@@ -154,14 +155,17 @@ codeunit 50003 "MUT Runner"
     var
         State: Record "MUT Runner State";
     begin
+        CheckBatchId(BatchId);
         if not State.Get(CopyStr(BatchId, 1, MaxStrLen(State."Batch Id"))) then
             Error(BatchNotFoundErr, BatchId);
         if State.Finished then
             Error(BatchFinishedErr, BatchId);
         if State."Session Id" = SessionId() then
             Error(OwnSessionErr, State."Session Id");
-        StopSession(State."Session Id", StopReasonTxt);
-        exit('stop requested');
+        ClearLastError();
+        if TryStopSession(State."Session Id") then
+            exit('stopped');
+        exit(StrSubstNo(StopFailedTxt, GetLastErrorText()));
     end;
 
     procedure DeleteRunnerState(BatchId: Text): Text
@@ -169,6 +173,7 @@ codeunit 50003 "MUT Runner"
         State: Record "MUT Runner State";
         ALTestSuite: Record "AL Test Suite";
     begin
+        CheckBatchId(BatchId);
         if not State.Get(CopyStr(BatchId, 1, MaxStrLen(State."Batch Id"))) then
             exit('not found');
         if ALTestSuite.Get(GetSuiteName(State."Session Id")) then
@@ -176,6 +181,31 @@ codeunit 50003 "MUT Runner"
         State.Delete();
         Commit();
         exit('deleted');
+    end;
+
+    [TryFunction]
+    local procedure TryStopSession(RunnerSessionId: Integer)
+    begin
+        StopSession(RunnerSessionId, StopReasonTxt);
+    end;
+
+    local procedure CheckBatchId(BatchId: Text)
+    begin
+        if (BatchId = '') or (StrLen(BatchId) > 50) then
+            Error(BatchIdErr);
+    end;
+
+    local procedure ParseMutantIds(MutantIds: Text; var MutantIdList: List of [Integer])
+    var
+        MutantIdText: Text;
+        MutantId: Integer;
+    begin
+        foreach MutantIdText in MutantIds.Split(',') do
+            if MutantIdText.Trim() <> '' then begin
+                if not Evaluate(MutantId, MutantIdText.Trim()) or (MutantId <= 0) then
+                    Error(MutantIdErr, MutantIdText);
+                MutantIdList.Add(MutantId);
+            end;
     end;
 
     local procedure GetSuiteName(RunnerSessionId: Integer): Code[10]
@@ -210,7 +240,11 @@ codeunit 50003 "MUT Runner"
     var
         Setup: Record "MUT Mutation Setup";
     begin
-        Setup.GetOrCreate();
+        if not Setup.Get(0) then begin
+            Setup.Init();
+            Setup."Primary Key" := 0;
+            Setup.Insert();
+        end;
         Setup."Active Mutant Id" := MutantId;
         Setup."Current Run No." := RunNo;
         // RunTrigger = true: OnModify mirrors the values to the isolated storage the hooks read (S3).
@@ -232,7 +266,8 @@ codeunit 50003 "MUT Runner"
 
         StartedAt := CurrentDateTime();
         TestMethodLine.SetRange("Test Suite", SuiteName);
-        TestMethodLine.FindFirst(); // S2: RunAllTests reads "Test Suite" from the record
+        if not TestMethodLine.FindFirst() then // S2: RunAllTests reads "Test Suite" from the record
+            exit;
         TestSuiteMgt.RunAllTests(TestMethodLine);
         DurationMs := CurrentDateTime() - StartedAt;
 
