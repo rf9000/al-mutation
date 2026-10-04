@@ -1078,7 +1078,15 @@ function Invoke-MutRunPipeline {
         $baselineResult = Publish-MutBaseline -Config $Config -Env $env -RunDir $runDir
     }
 
-    $schemata = Build-MutSchemataStep -Config $Config -Env $env -RunDir $runDir -RunNo $runNo
+    # §6.10.4: with the soap test transport the MUTRunner service (Mutation Core 1.1.0.0+) must
+    # answer right after the baseline, before any further work.
+    if ((Test-MutHasProperty $Config 'testTransport') -and ([string]$Config.testTransport -eq 'soap')) {
+        if (-not (Test-MutSoapRunner -Env $env)) {
+            throw "Invoke-MutRunPipeline: testTransport is soap but the MUTRunner service does not answer (Mutation Core older than 1.1.0.0, or the service is missing)."
+        }
+    }
+
+    $schemata =Build-MutSchemataStep -Config $Config -Env $env -RunDir $runDir -RunNo $runNo
 
     Publish-MutSchemata -Config $Config -Env $env -Schemata $schemata -RunDir $runDir -RunNo $runNo
 

@@ -1804,3 +1804,454 @@ Describe 'Invoke-MutMutantLoop: non-terminating mutants (run 10, 2026-09-30)' {
         $script:MutStopRequests.Count | Should -Be 10
     }
 }
+
+# ---------------------------------------------------------------------------------------------
+# T42 (§6.10.4/§6.10.6 item 1): testTransport 'soap'. The backend (Invoke-MutMutantBatch,
+# Get-MutRunnerState, Stop-MutRunnerBatch, Test-MutSoapRunner) and every recovery helper are
+# mocked at ModuleName MutantLoop; Invoke-MutMutantBatch follows a script of per-call responses.
+# ---------------------------------------------------------------------------------------------
+Describe 'Invoke-MutMutantLoop (testTransport soap)' {
+    BeforeAll {
+        function script:New-MutBatchRes {
+            param($Results = @(), $Hung = $null, $Fault = $null, $FaultText = $null)
+            [pscustomobject]@{ Results = @($Results); HungMutantId = $Hung; FaultMutantId = $Fault; Fault = $FaultText; Stopped = ($null -ne $Hung -or $null -ne $Fault) }
+        }
+        function script:New-MutBatchEntry {
+            param([int]$Id, [string]$Status = 'Survived', [string]$Killing = '', [int]$Ms = 100)
+            [pscustomobject]@{ MutantId = $Id; Status = $Status; KillingTest = $Killing; DurationMs = $Ms; Passed = 1; Failed = 0 }
+        }
+    }
+
+    BeforeEach {
+        $global:SoapLog = New-Object System.Collections.ArrayList
+        $global:SoapCalls = New-Object System.Collections.ArrayList
+        $global:SoapScript = New-Object System.Collections.ArrayList
+        $global:SoapDefault = $null
+        $global:SoapPosts = New-Object System.Collections.ArrayList
+        $global:SoapExisting = @{}
+        $global:SoapResumeRows = @()
+        $global:SoapStateRows = @()
+        $global:SoapRunnerOk = $true
+        $global:SoapStopConfirmed = $true
+        $global:SoapStopCalls = New-Object System.Collections.ArrayList
+        $global:SoapResetThrows = $false
+
+        Mock -ModuleName MutantLoop Invoke-MutApi {
+            if ($Method -eq 'PATCH') {
+                [void]$global:SoapLog.Add("PATCH:$($Body.activeMutantId)")
+                return $null
+            }
+            if ($Method -eq 'POST') {
+                [void]$global:SoapLog.Add("POST:$($Body.status)")
+                [void]$global:SoapPosts.Add($Body)
+                return $null
+            }
+            if ($Path -match 'mutantId eq (\d+)') {
+                $id = [int]$Matches[1]
+                [void]$global:SoapLog.Add("GET-ROW:$id")
+                if ($global:SoapExisting.ContainsKey($id)) {
+                    return [pscustomobject]@{ value = @($global:SoapExisting[$id]) }
+                }
+                return [pscustomobject]@{ value = @() }
+            }
+            [void]$global:SoapLog.Add('GET-RESUME')
+            return [pscustomobject]@{ value = @($global:SoapResumeRows) }
+        }
+        Mock -ModuleName MutantLoop Test-MutSoapRunner { [void]$global:SoapLog.Add('PROBE'); return $global:SoapRunnerOk }
+        Mock -ModuleName MutantLoop Get-MutRunnerState {
+            [void]$global:SoapLog.Add('STATE')
+            return [pscustomobject]@{ ServerNowUtc = [datetime]::UtcNow; Rows = @($global:SoapStateRows) }
+        }
+        Mock -ModuleName MutantLoop Stop-MutRunnerBatch {
+            [void]$global:SoapLog.Add("STOP:$BatchId")
+            [void]$global:SoapStopCalls.Add([pscustomobject]@{ BatchId = $BatchId; CodeunitIds = $CodeunitIds })
+            return [pscustomobject]@{ Confirmed = $global:SoapStopConfirmed }
+        }
+        Mock -ModuleName MutantLoop Invoke-MutMutantBatch {
+            [void]$global:SoapLog.Add("BATCH:$(@($MutantIds) -join ',')")
+            [void]$global:SoapCalls.Add([pscustomobject]@{ CodeunitIds = @($CodeunitIds); MutantIds = @($MutantIds); RunNo = $RunNo; Budget = $MutantBudgetSec })
+            $sb = $null
+            if ($global:SoapScript.Count -gt 0) {
+                $sb = $global:SoapScript[0]
+                $global:SoapScript.RemoveAt(0)
+            }
+            elseif ($null -ne $global:SoapDefault) {
+                $sb = $global:SoapDefault
+            }
+            if ($null -ne $sb) { return (& $sb @($MutantIds)) }
+            return [pscustomobject]@{
+                Results      = @($MutantIds | ForEach-Object { [pscustomobject]@{ MutantId = $_; Status = 'Survived'; KillingTest = ''; DurationMs = 10; Passed = 1; Failed = 0 } })
+                HungMutantId = $null; FaultMutantId = $null; Fault = $null; Stopped = $false
+            }
+        }
+        Mock -ModuleName MutantLoop Confirm-MutEnvironmentServing { [void]$global:SoapLog.Add('CONFIRM'); return $Env }
+        Mock -ModuleName MutantLoop Reset-MutEnvironment {
+            [void]$global:SoapLog.Add('RESET')
+            if ($global:SoapResetThrows) { throw 'reset failed' }
+            return [pscustomobject]@{ DurationSec = 1 }
+        }
+        Mock -ModuleName MutantLoop Start-MutPostResetSettle { }
+        Mock -ModuleName MutantLoop Wait-MutOutageRecovery { [void]$global:SoapLog.Add('OUTAGE-WAIT'); return $Env }
+        Mock -ModuleName MutantLoop Start-Sleep { }
+        Mock -ModuleName MutantLoop Invoke-MutTestsWithBudget { throw 'the cli runner must not be used with testTransport soap' }
+
+        $script:Config = New-MutTestConfig -PerTestFactor 1 -MinSeconds 5 -JobOverheadSeconds 0
+        $script:Config | Add-Member -NotePropertyName testTransport -NotePropertyValue 'soap'
+        $script:Config | Add-Member -NotePropertyName soap -NotePropertyValue ([pscustomobject]@{ batchSize = 50 })
+        $script:Baseline = [pscustomobject]@{ Tests = @(); DurationsByCodeunit = @{ '95155' = 1000; '95913' = 1000 } }
+        # 50000/50003 -> 95155; 50001 -> 95155+95913; 50002 -> 95913; 60000 -> uncovered.
+        $script:References = @{ 50000 = @(95155); 50001 = @(95155, 95913); 50002 = @(95913); 50003 = @(95155) }
+        $script:Coverage = @{ byTestCodeunit = @{} }
+        $script:RunDir = "$TestDrive/soap-$([guid]::NewGuid().ToString('N'))"
+        New-Item -ItemType Directory -Path $script:RunDir -Force | Out-Null
+
+        function script:Invoke-SoapLoop {
+            param($Mutants, [int]$RunNo = 1)
+            Invoke-MutMutantLoop -Config $script:Config -Env $script:EnvHandle -Mutants $Mutants `
+                -Baseline $script:Baseline -Coverage $script:Coverage -References $script:References `
+                -RunNo $RunNo -RunDir $script:RunDir -BackendModulePath 'unused.psm1' -WarningAction SilentlyContinue
+        }
+        function script:New-SoapMutants {
+            param([int[]]$Ids, [int]$ObjectId = 50000)
+            , @($Ids | ForEach-Object { [pscustomobject]@{ id = $_; objectId = $ObjectId; line = 1 } })
+        }
+    }
+
+    AfterEach {
+        foreach ($name in 'SoapLog', 'SoapCalls', 'SoapScript', 'SoapDefault', 'SoapPosts', 'SoapExisting', 'SoapResumeRows', 'SoapStateRows', 'SoapRunnerOk', 'SoapStopConfirmed', 'SoapStopCalls', 'SoapResetThrows') {
+            Remove-Variable -Name $name -Scope Global -ErrorAction SilentlyContinue
+        }
+    }
+
+    It 'throws before any further work when Test-MutSoapRunner is false' {
+        $global:SoapRunnerOk = $false
+        { Invoke-SoapLoop -Mutants (New-SoapMutants -Ids 1) } | Should -Throw '*MUTRunner*'
+        $global:SoapLog | Should -Not -Contain 'STATE'
+        $global:SoapCalls.Count | Should -Be 0
+    }
+
+    It 'does not use the soap backend when testTransport is cli' {
+        $script:Config.testTransport = 'cli'
+        Mock -ModuleName MutantLoop Invoke-MutTestsWithBudget {
+            [pscustomobject]@{ TimedOut = $false; ErrorMessage = $null; Result = [pscustomobject]@{ Passed = 1; Failed = 0; DurationMs = 5; Tests = @([pscustomobject]@{ Codeunit = 'C'; Function = 'F'; Result = 'Pass' }) } }
+        }
+        $rows = Invoke-SoapLoop -Mutants (New-SoapMutants -Ids 1)
+        $rows[0].Status | Should -Be 'Survived'
+        $global:SoapCalls.Count | Should -Be 0
+        $global:SoapLog | Should -Not -Contain 'PROBE'
+    }
+
+    It 'stops unfinished orphan rows with the testApp codeunits as health set, then PATCHes 0, all before resume data and the first batch' {
+        $global:SoapStateRows = @(
+            [pscustomobject]@{ BatchId = 'orphan-1'; Finished = $false }
+            [pscustomobject]@{ BatchId = 'done-1'; Finished = $true }
+        )
+        Invoke-SoapLoop -Mutants (New-SoapMutants -Ids 1) | Out-Null
+
+        $global:SoapStopCalls.Count | Should -Be 1
+        $global:SoapStopCalls[0].BatchId | Should -Be 'orphan-1'
+        $global:SoapStopCalls[0].CodeunitIds | Should -Be '95155|95913'
+        $log = @($global:SoapLog)
+        $log.IndexOf('PROBE') | Should -BeLessThan $log.IndexOf('STATE')
+        $log.IndexOf('STOP:orphan-1') | Should -BeLessThan $log.IndexOf('PATCH:0')
+        $log.IndexOf('PATCH:0') | Should -BeLessThan $log.IndexOf('GET-RESUME')
+        $log.IndexOf('GET-RESUME') | Should -BeLessThan $log.IndexOf('BATCH:1')
+    }
+
+    It 'sends an orphan whose stop is not confirmed to PATCH 0 then Reset-MutEnvironment' {
+        $global:SoapStateRows = @([pscustomobject]@{ BatchId = 'orphan-1'; Finished = $false })
+        $global:SoapStopConfirmed = $false
+        Invoke-SoapLoop -Mutants (New-SoapMutants -Ids 1) | Out-Null
+        $log = @($global:SoapLog)
+        $log.IndexOf('RESET') | Should -BeGreaterThan $log.IndexOf('STOP:orphan-1')
+        $log[($log.IndexOf('RESET') - 1)] | Should -Be 'PATCH:0'
+        $log.IndexOf('RESET') | Should -BeLessThan $log.IndexOf('BATCH:1')
+    }
+
+    It 'batches consecutive mutants with an identical covering set, capped by soap.batchSize' {
+        $script:Config.soap.batchSize = 2
+        $mutants = (New-SoapMutants -Ids 1, 2, 3, 4, 5) + (New-SoapMutants -Ids 6 -ObjectId 50001) + (New-SoapMutants -Ids 7 -ObjectId 50000)
+        Invoke-SoapLoop -Mutants $mutants | Out-Null
+
+        @($global:SoapCalls | ForEach-Object { $_.MutantIds -join ',' }) | Should -Be @('1,2', '3,4', '5', '6', '7')
+        $global:SoapCalls[0].CodeunitIds | Should -Be @(95155)
+        $global:SoapCalls[3].CodeunitIds | Should -Be @(95155, 95913)
+        $global:SoapCalls[0].RunNo | Should -Be 1
+    }
+
+    It 'does not batch mutants whose covering sets differ only in order' {
+        $script:References[50002] = @(95913, 95155)
+        $mutants = (New-SoapMutants -Ids 1 -ObjectId 50001) + (New-SoapMutants -Ids 2 -ObjectId 50002)
+        Invoke-SoapLoop -Mutants $mutants | Out-Null
+        @($global:SoapCalls | ForEach-Object { $_.MutantIds -join ',' }) | Should -Be @('1', '2')
+    }
+
+    It 'caps a batch at 120 s of summed covering-set baseline duration, and a single mutant always forms a batch' {
+        $script:Baseline.DurationsByCodeunit['95155'] = 50000
+        $script:Baseline.DurationsByCodeunit['95913'] = 130000
+        $mutants = (New-SoapMutants -Ids 1, 2, 3) + (New-SoapMutants -Ids 4, 5 -ObjectId 50002)
+        Invoke-SoapLoop -Mutants $mutants | Out-Null
+        # 50 + 50 = 100 <= 120, a third would make 150; each 130 s mutant stands alone.
+        @($global:SoapCalls | ForEach-Object { $_.MutantIds -join ',' }) | Should -Be @('1,2', '3', '4', '5')
+    }
+
+    It 'uses the §6.5.6 per-mutant budget of the covering set as MutantBudgetSec' {
+        $script:Config.timeouts.minSeconds = 5
+        $script:Config.timeouts.perTestFactor = 3
+        $script:Baseline.DurationsByCodeunit['95155'] = 4000
+        Invoke-SoapLoop -Mutants (New-SoapMutants -Ids 1, 2) | Out-Null
+        $global:SoapCalls[0].Budget | Should -Be (Get-MutTimeoutBudget -Config $script:Config -CoveringTests @(95155) -Baseline $script:Baseline)
+        $global:SoapCalls[0].Budget | Should -Be 12
+    }
+
+    It 'appends batch results to results.jsonl in the cli row shape with no POST and no per-mutant PATCH' {
+        $global:SoapScript.Add({ param($ids) New-MutBatchRes -Results @(
+                    (New-MutBatchEntry -Id 1 -Status 'Killed' -Killing 'T:F' -Ms 42)
+                    (New-MutBatchEntry -Id 2 -Status 'Survived' -Ms 7)) }) | Out-Null
+
+        $rows = Invoke-SoapLoop -Mutants (New-SoapMutants -Ids 1, 2)
+
+        $rows.Count | Should -Be 2
+        $rows[0].Id | Should -Be 1
+        $rows[0].Status | Should -Be 'Killed'
+        $rows[0].KillingTest | Should -Be 'T:F'
+        $rows[0].DurationMs | Should -Be 42
+        @($rows[0].CoveringTests) | Should -Be @(95155)
+        $rows[1].Status | Should -Be 'Survived'
+        $rows[1].KillingTest | Should -BeNullOrEmpty
+
+        $lines = @(Get-Content -Path (Join-Path $script:RunDir 'results.jsonl') | ForEach-Object { $_ | ConvertFrom-Json })
+        $lines.Count | Should -Be 2
+        $lines[0].Id | Should -Be 1
+        $lines[0].Status | Should -Be 'Killed'
+        $lines[0].KillingTest | Should -Be 'T:F'
+        $lines[0].DurationMs | Should -Be 42
+        @($lines[0].CoveringTests) | Should -Be @(95155)
+
+        $global:SoapPosts.Count | Should -Be 0
+        # Only the loop-start PATCH 0 (after the orphan sweep).
+        @($global:SoapLog | Where-Object { $_ -like 'PATCH:*' }).Count | Should -Be 1
+    }
+
+    It 'marks an uncovered mutant Uncovered without a backend call and keeps id order' {
+        $mutants = (New-SoapMutants -Ids 1) + (New-SoapMutants -Ids 2 -ObjectId 60000) + (New-SoapMutants -Ids 3)
+        $rows = Invoke-SoapLoop -Mutants $mutants
+        @($rows | ForEach-Object { $_.Status }) | Should -Be @('Survived', 'Uncovered', 'Survived')
+        @($global:SoapCalls | ForEach-Object { $_.MutantIds -join ',' }) | Should -Be @('1', '3')
+    }
+
+    It 'on an Empty entry: PATCH 0, environment check, one retry alone, and the retry result stands' {
+        $global:SoapScript.Add({ param($ids) New-MutBatchRes -Results @((New-MutBatchEntry -Id 1), (New-MutBatchEntry -Id 2 -Status 'Empty')) }) | Out-Null
+        $global:SoapScript.Add({ param($ids) New-MutBatchRes -Results @((New-MutBatchEntry -Id 2 -Status 'Killed' -Killing 'T:G')) }) | Out-Null
+
+        $rows = Invoke-SoapLoop -Mutants (New-SoapMutants -Ids 1, 2)
+
+        @($global:SoapCalls | ForEach-Object { $_.MutantIds -join ',' }) | Should -Be @('1,2', '2')
+        $log = @($global:SoapLog)
+        $log[($log.IndexOf('CONFIRM') - 1)] | Should -Be 'PATCH:0'
+        $log.IndexOf('CONFIRM') | Should -BeLessThan ([array]::LastIndexOf($log, 'BATCH:2'))
+        $rows[1].Status | Should -Be 'Killed'
+        $rows[1].KillingTest | Should -Be 'T:G'
+    }
+
+    It 'records Error (not POSTed) when the Empty retry is Empty again' {
+        $global:SoapDefault = { param($ids) New-MutBatchRes -Results @($ids | ForEach-Object { New-MutBatchEntry -Id $_ -Status 'Empty' }) }
+        $rows = Invoke-SoapLoop -Mutants (New-SoapMutants -Ids 1)
+        $rows[0].Status | Should -Be 'Error'
+        $rows[0].Error | Should -Be 'no tests discovered'
+        $global:SoapCalls.Count | Should -Be 2
+        $global:SoapPosts.Count | Should -Be 0
+    }
+
+    It 'treats a mutant with neither a result nor a hung/fault id like Empty' {
+        $global:SoapScript.Add({ param($ids) New-MutBatchRes -Results @((New-MutBatchEntry -Id 1)) }) | Out-Null
+        $rows = Invoke-SoapLoop -Mutants (New-SoapMutants -Ids 1, 2)
+        @($global:SoapCalls | ForEach-Object { $_.MutantIds -join ',' }) | Should -Be @('1,2', '2')
+        $rows[1].Status | Should -Be 'Survived'
+        $global:SoapLog | Should -Contain 'CONFIRM'
+    }
+
+    It 'lets an existing row of a hung mutant stand with no re-run, and continues the rest as a new batch' {
+        $global:SoapExisting[2] = [pscustomobject]@{ status = 'Killed'; killingTest = 'T:H'; durationMs = 55 }
+        $global:SoapScript.Add({ param($ids) New-MutBatchRes -Results @((New-MutBatchEntry -Id 1)) -Hung 2 }) | Out-Null
+
+        $rows = Invoke-SoapLoop -Mutants (New-SoapMutants -Ids 1, 2, 3)
+
+        @($global:SoapCalls | ForEach-Object { $_.MutantIds -join ',' }) | Should -Be @('1,2,3', '3')
+        @($rows | ForEach-Object { $_.Status }) | Should -Be @('Survived', 'Killed', 'Survived')
+        $rows[1].KillingTest | Should -Be 'T:H'
+        $global:SoapPosts.Count | Should -Be 0
+    }
+
+    It 're-runs a hung mutant without a row once; a re-run that passes stands' {
+        $global:SoapScript.Add({ param($ids) New-MutBatchRes -Results @((New-MutBatchEntry -Id 1)) -Hung 2 }) | Out-Null
+        $global:SoapScript.Add({ param($ids) New-MutBatchRes -Results @((New-MutBatchEntry -Id 2 -Status 'Survived' -Ms 186)) }) | Out-Null
+
+        $rows = Invoke-SoapLoop -Mutants (New-SoapMutants -Ids 1, 2, 3)
+
+        @($global:SoapCalls | ForEach-Object { $_.MutantIds -join ',' }) | Should -Be @('1,2,3', '2', '3')
+        $rows[1].Status | Should -Be 'Survived'
+        $rows[1].DurationMs | Should -Be 186
+        $global:SoapPosts.Count | Should -Be 0
+    }
+
+    It 'POSTs Timeout when the re-run hangs again, so resume skips the mutant' {
+        $global:SoapScript.Add({ param($ids) New-MutBatchRes -Results @((New-MutBatchEntry -Id 1)) -Hung 2 }) | Out-Null
+        $global:SoapScript.Add({ param($ids) New-MutBatchRes -Hung 2 }) | Out-Null
+
+        $rows = Invoke-SoapLoop -Mutants (New-SoapMutants -Ids 1, 2, 3)
+
+        @($global:SoapCalls | ForEach-Object { $_.MutantIds -join ',' }) | Should -Be @('1,2,3', '2', '3')
+        $rows[1].Status | Should -Be 'Timeout'
+        $global:SoapPosts.Count | Should -Be 1
+        $global:SoapPosts[0].status | Should -Be 'Timeout'
+        $global:SoapPosts[0].mutantId | Should -Be 2
+        $global:SoapPosts[0].runNo | Should -Be 1
+        $rows[2].Status | Should -Be 'Survived'
+    }
+
+    It 'isolates a fault culprit: earlier mutants keep their results, the culprit re-runs alone, the rest continue as a new batch' {
+        $global:SoapScript.Add({ param($ids) New-MutBatchRes -Results @((New-MutBatchEntry -Id 1)) -Fault 2 -FaultText 'boom' }) | Out-Null
+        $global:SoapScript.Add({ param($ids) New-MutBatchRes -Results @((New-MutBatchEntry -Id 2 -Status 'Killed' -Killing 'T:K')) }) | Out-Null
+
+        $rows = Invoke-SoapLoop -Mutants (New-SoapMutants -Ids 1, 2, 3)
+
+        @($global:SoapCalls | ForEach-Object { $_.MutantIds -join ',' }) | Should -Be @('1,2,3', '2', '3')
+        @($rows | ForEach-Object { $_.Status }) | Should -Be @('Survived', 'Killed', 'Survived')
+        $global:SoapPosts.Count | Should -Be 0
+    }
+
+    It 'records Error (not POSTed) for a fault culprit that faults again alone' {
+        $global:SoapScript.Add({ param($ids) New-MutBatchRes -Fault 1 -FaultText 'boom' }) | Out-Null
+        $global:SoapScript.Add({ param($ids) New-MutBatchRes -Fault 1 -FaultText 'boom again' }) | Out-Null
+        $rows = Invoke-SoapLoop -Mutants (New-SoapMutants -Ids 1, 2)
+        $rows[0].Status | Should -Be 'Error'
+        $rows[0].Error | Should -BeLike '*boom again*'
+        $rows[1].Status | Should -Be 'Survived'
+        @($global:SoapCalls | ForEach-Object { $_.MutantIds -join ',' }) | Should -Be @('1,2', '1', '2')
+        $global:SoapPosts.Count | Should -Be 0
+    }
+
+    It 'waits out an outage thrown by a batch, re-runs the orphan sweep (stopping its runner), then retries the batch' {
+        $global:SoapScript.Add({
+                param($ids)
+                $e = [System.Net.WebException]::new('(503) Server Unavailable')
+                $e.Data['BatchId'] = 'live-batch'
+                throw $e
+            }) | Out-Null
+        Mock -ModuleName MutantLoop Get-MutRunnerState {
+            [void]$global:SoapLog.Add('STATE')
+            $rows = @()
+            # The sweep after the outage wait sees the live runner of the failed batch.
+            if (@($global:SoapLog | Where-Object { $_ -eq 'OUTAGE-WAIT' }).Count -gt 0) {
+                $rows = @([pscustomobject]@{ BatchId = 'live-batch'; Finished = $false })
+            }
+            return [pscustomobject]@{ ServerNowUtc = [datetime]::UtcNow; Rows = $rows }
+        }
+
+        $rows = Invoke-SoapLoop -Mutants (New-SoapMutants -Ids 1)
+
+        $log = @($global:SoapLog)
+        $log | Should -Contain 'OUTAGE-WAIT'
+        $log.IndexOf('OUTAGE-WAIT') | Should -BeLessThan $log.IndexOf('STOP:live-batch')
+        $log.IndexOf('STOP:live-batch') | Should -BeLessThan ([array]::LastIndexOf($log, 'BATCH:1'))
+        $global:SoapCalls.Count | Should -Be 2
+        $rows[0].Status | Should -Be 'Survived'
+    }
+
+    It 'records Error for the batch head after the outage retries are spent, and continues with the rest' {
+        $global:SoapScript.Add({ param($ids) throw 'down' }) | Out-Null
+        $global:SoapScript.Add({ param($ids) throw 'down' }) | Out-Null
+        $global:SoapScript.Add({ param($ids) throw 'down' }) | Out-Null
+        $rows = Invoke-SoapLoop -Mutants (New-SoapMutants -Ids 1, 2)
+        $rows[0].Status | Should -Be 'Error'
+        $rows[0].Error | Should -Be 'down'
+        $rows[1].Status | Should -Be 'Survived'
+        @($global:SoapLog | Where-Object { $_ -eq 'OUTAGE-WAIT' }).Count | Should -Be 2
+        @($global:SoapCalls | ForEach-Object { $_.MutantIds -join ',' }) | Should -Be @('1,2', '1,2', '1,2', '2')
+    }
+
+    It 'on RunnerStopFailed: PATCH 0, Reset-MutEnvironment; the culprit is Error, its predecessors keep their rows, the rest continue' {
+        $global:SoapExisting[1] = [pscustomobject]@{ status = 'Survived'; killingTest = ''; durationMs = 9 }
+        $global:SoapScript.Add({ param($ids) throw 'RunnerStopFailed: the runner of batch b was not confirmed stopped within 120 s (mutant 2).' }) | Out-Null
+
+        $rows = Invoke-SoapLoop -Mutants (New-SoapMutants -Ids 1, 2, 3)
+
+        $log = @($global:SoapLog)
+        $log[($log.IndexOf('RESET') - 1)] | Should -Be 'PATCH:0'
+        @($rows | ForEach-Object { $_.Status }) | Should -Be @('Survived', 'Error', 'Survived')
+        $rows[1].Error | Should -BeLike 'RunnerStopFailed*'
+        @($global:SoapCalls | ForEach-Object { $_.MutantIds -join ',' }) | Should -Be @('1,2,3', '3')
+        $global:SoapPosts.Count | Should -Be 0
+    }
+
+    It 'a confirmed reset after RunnerStopFailed gives its recovery slot back' {
+        foreach ($n in 1..4) {
+            $global:SoapScript.Add([scriptblock]::Create("param(`$ids) throw 'RunnerStopFailed: x (mutant $n).'")) | Out-Null
+        }
+        $script:Config.soap.batchSize = 1
+        $rows = Invoke-SoapLoop -Mutants (New-SoapMutants -Ids 1, 2, 3, 4)
+        @($rows | ForEach-Object { $_.Status }) | Should -Be @('Error', 'Error', 'Error', 'Error')
+        @($global:SoapLog | Where-Object { $_ -eq 'RESET' }).Count | Should -Be 4
+    }
+
+    It 'a failed reset after RunnerStopFailed keeps its slot spent, and the recovery cap aborts with the rows so far' {
+        $global:SoapResetThrows = $true
+        foreach ($n in 1..4) {
+            $global:SoapScript.Add([scriptblock]::Create("param(`$ids) throw 'RunnerStopFailed: x (mutant $n).'")) | Out-Null
+        }
+        $script:Config.soap.batchSize = 1
+        $caught = $null
+        try { Invoke-SoapLoop -Mutants (New-SoapMutants -Ids 1, 2, 3, 4) | Out-Null } catch { $caught = $_ }
+
+        $caught | Should -Not -BeNullOrEmpty
+        $caught.CategoryInfo.Category | Should -Be ([System.Management.Automation.ErrorCategory]::LimitsExceeded)
+        @($caught.TargetObject).Count | Should -Be 3
+        @($global:SoapLog | Where-Object { $_ -eq 'RESET' }).Count | Should -Be 3
+    }
+
+    It 'aborts after 5 consecutive Timeouts with the rows so far' {
+        $global:SoapDefault = { param($ids) New-MutBatchRes -Hung $ids[0] }
+        $script:Config.soap.batchSize = 1
+        $caught = $null
+        try { Invoke-SoapLoop -Mutants (New-SoapMutants -Ids 1, 2, 3, 4, 5, 6) | Out-Null } catch { $caught = $_ }
+
+        $caught | Should -Not -BeNullOrEmpty
+        $caught.CategoryInfo.Category | Should -Be ([System.Management.Automation.ErrorCategory]::LimitsExceeded)
+        $caught.Exception.Message | Should -BeLike '*5 consecutive*Timeout*'
+        @($caught.TargetObject).Count | Should -Be 5
+        @($global:SoapPosts | Where-Object { $_.status -eq 'Timeout' }).Count | Should -Be 5
+    }
+
+    It 'aborts after 5 consecutive Error rows' {
+        $global:SoapDefault = { param($ids) New-MutBatchRes -Results @($ids | ForEach-Object { New-MutBatchEntry -Id $_ -Status 'Empty' }) }
+        $script:Config.soap.batchSize = 1
+        $caught = $null
+        try { Invoke-SoapLoop -Mutants (New-SoapMutants -Ids 1, 2, 3, 4, 5, 6) | Out-Null } catch { $caught = $_ }
+        $caught | Should -Not -BeNullOrEmpty
+        $caught.Exception.Message | Should -BeLike '*5 consecutive*Error*'
+        @($caught.TargetObject).Count | Should -Be 5
+    }
+
+    It 'resume: skips recorded mutants (no batch for them) and still returns their rows' {
+        $global:SoapResumeRows = @(
+            [pscustomobject]@{ mutantId = 1; status = 'Killed'; killingTest = 'T:A'; durationMs = 3 }
+            [pscustomobject]@{ mutantId = 2; status = 'Survived'; killingTest = ''; durationMs = 4 }
+        )
+        $rows = Invoke-SoapLoop -Mutants (New-SoapMutants -Ids 1, 2, 3, 4)
+
+        @($global:SoapCalls | ForEach-Object { $_.MutantIds -join ',' }) | Should -Be @('3,4')
+        @($rows | ForEach-Object { $_.Id }) | Should -Be @(1, 2, 3, 4)
+        $rows[0].Status | Should -Be 'Killed'
+        $rows[0].KillingTest | Should -Be 'T:A'
+        # Resumed rows are not appended again.
+        @(Get-Content -Path (Join-Path $script:RunDir 'results.jsonl')).Count | Should -Be 2
+    }
+
+    It 'a batch interrupted by an outage is re-run whole; rows the runner already wrote are not POSTed' {
+        $global:SoapScript.Add({ param($ids) throw 'connection refused' }) | Out-Null
+        $rows = Invoke-SoapLoop -Mutants (New-SoapMutants -Ids 1, 2)
+        @($rows | ForEach-Object { $_.Status }) | Should -Be @('Survived', 'Survived')
+        $global:SoapPosts.Count | Should -Be 0
+    }
+}

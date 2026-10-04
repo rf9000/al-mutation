@@ -59,6 +59,33 @@ if (-not (Get-Command -Name 'Start-MutEnvironment' -ErrorAction SilentlyContinue
     }
 }
 
+# T42 (§6.10.4): the SOAP test transport's backend functions (§6.10.3). Same placeholder-for-Mock
+# pattern as above; importing a real backend module always wins.
+if (-not (Get-Command -Name 'Invoke-MutMutantBatch' -ErrorAction SilentlyContinue)) {
+    function global:Invoke-MutMutantBatch {
+        param($Env, [int[]]$CodeunitIds, [int[]]$MutantIds, [int]$RunNo, [int]$MutantBudgetSec)
+        throw 'Invoke-MutMutantBatch: no backend module has been imported into this session.'
+    }
+}
+if (-not (Get-Command -Name 'Get-MutRunnerState' -ErrorAction SilentlyContinue)) {
+    function global:Get-MutRunnerState {
+        param($Env)
+        throw 'Get-MutRunnerState: no backend module has been imported into this session.'
+    }
+}
+if (-not (Get-Command -Name 'Stop-MutRunnerBatch' -ErrorAction SilentlyContinue)) {
+    function global:Stop-MutRunnerBatch {
+        param($Env, [string]$BatchId, [string]$CodeunitIds)
+        throw 'Stop-MutRunnerBatch: no backend module has been imported into this session.'
+    }
+}
+if (-not (Get-Command -Name 'Test-MutSoapRunner' -ErrorAction SilentlyContinue)) {
+    function global:Test-MutSoapRunner {
+        param($Env)
+        throw 'Test-MutSoapRunner: no backend module has been imported into this session.'
+    }
+}
+
 # FIX (F3, run 8 -- finding I6): recovery-attempt cap (Confirm-MutEnvironmentServing, below).
 # Reset to 0 at the top of every Invoke-MutMutantLoop call. A small constant per the task brief
 # rather than a config key -- three lost environments in one run is a reason to stop, not a
@@ -838,6 +865,651 @@ function Get-MutRecordedResultsForRun {
     return $recorded
 }
 
+# ---------------------------------------------------------------------------------------------
+# T42 (§6.10.4): the SOAP test transport. With config testTransport 'soap', Invoke-MutMutantLoop
+# hands over to Invoke-MutSoapMutantLoop, which batches consecutive mutants that share a covering
+# set and runs each batch through the backend's Invoke-MutMutantBatch (one SOAP call per batch,
+# the runner writes the API rows itself, so nothing is POSTed except a confirmed Timeout).
+# Only the backend functions of §6.10.3 are called (guardrail 6).
+# ---------------------------------------------------------------------------------------------
+$script:SoapDefaultBatchSize = 50
+$script:SoapMaxBatchBaselineSec = 120
+
+function Add-MutSoapRow {
+    <#
+        .SYNOPSIS
+        Private. Records one final mutant row: results.jsonl, the context's row table, and the
+        consecutive-Error / consecutive-Timeout breakers (same limits as the cli loop). A breaker
+        throws a LimitsExceeded ErrorRecord; the soap loop's outer catch attaches the rows.
+    #>
+    param(
+        [Parameter(Mandatory = $true)]
+        $Ctx,
+        [Parameter(Mandatory = $true)]
+        $Row
+    )
+
+    Write-MutResultsJsonLine -RunDir $Ctx.RunDir -Row $Row
+    $Ctx.Rows[[int]$Row.Id] = $Row
+
+    if ($Row.Status -eq 'Error') { $Ctx.ConsecutiveErrors++ } else { $Ctx.ConsecutiveErrors = 0 }
+    if ($Row.Status -eq 'Timeout') { $Ctx.ConsecutiveTimeouts++ } else { $Ctx.ConsecutiveTimeouts = 0 }
+
+    if ($Ctx.ConsecutiveErrors -ge $script:MaxConsecutiveErrors) {
+        $message = "Invoke-MutMutantLoop: $($Ctx.ConsecutiveErrors) consecutive mutants ended in Error (last: mutant $($Row.Id): $($Row.Error)). A run whose mutants keep failing to produce real results is not producing a trustworthy score; aborting with a partial export rather than continuing."
+        throw [System.Management.Automation.ErrorRecord]::new([System.Exception]::new($message), 'MutConsecutiveErrorsExceeded', [System.Management.Automation.ErrorCategory]::LimitsExceeded, $null)
+    }
+    if ($Ctx.ConsecutiveTimeouts -ge $script:MaxConsecutiveTimeouts) {
+        $message = "Invoke-MutMutantLoop: $($Ctx.ConsecutiveTimeouts) consecutive mutants ended in Timeout (last: mutant $($Row.Id)). Every mutant timing out points at the per-mutant budget or the environment, not at that many non-terminating mutants in a row; aborting with a partial export rather than continuing."
+        throw [System.Management.Automation.ErrorRecord]::new([System.Exception]::new($message), 'MutConsecutiveTimeoutsExceeded', [System.Management.Automation.ErrorCategory]::LimitsExceeded, $null)
+    }
+}
+
+function New-MutSoapRow {
+    <# Private. A results row in the cli loop's shape (Id, Status, KillingTest, DurationMs, CoveringTests; Error on Error rows). #>
+    param(
+        [Parameter(Mandatory = $true)]
+        $Item,
+        [Parameter(Mandatory = $true)]
+        [string]$Status,
+        $KillingTest = $null,
+        $DurationMs = $null,
+        [string]$ErrorText = $null
+    )
+
+    if (($null -ne $KillingTest) -and [string]::IsNullOrEmpty([string]$KillingTest)) { $KillingTest = $null }
+    $row = [pscustomobject]@{
+        Id            = $Item.Mutant.id
+        Status        = $Status
+        KillingTest   = $KillingTest
+        DurationMs    = $DurationMs
+        CoveringTests = @($Item.Covering)
+    }
+    if ($Status -eq 'Error') {
+        $row | Add-Member -NotePropertyName 'Error' -NotePropertyValue $ErrorText
+    }
+    return $row
+}
+
+function Clear-MutSoapActiveMutant {
+    <# Private. PATCH activeMutantId = 0, required before any probe, reset or outage wait (F3b BLOCKER 1). #>
+    param([Parameter(Mandatory = $true)] $Ctx)
+
+    Invoke-MutApi -Env $Ctx.Env -Method 'PATCH' -Path 'mutationSetup(0)' -Body @{ activeMutantId = 0; currentRunNo = $Ctx.RunNo } | Out-Null
+}
+
+function Invoke-MutSoapOutageWait {
+    <# Private. Wait-MutOutageRecovery, keeping the refreshed environment handle in the context. #>
+    param(
+        [Parameter(Mandatory = $true)] $Ctx,
+        [Parameter(Mandatory = $true)] [int]$MutantId,
+        [Parameter(Mandatory = $true)] [string]$Reason
+    )
+
+    $Ctx.Env = Wait-MutOutageRecovery -Env $Ctx.Env -Config $Ctx.Config -MutantId $MutantId -RunNo $Ctx.RunNo -Reason $Reason
+}
+
+function Invoke-MutSoapStopFailedRecovery {
+    <#
+        .SYNOPSIS
+        Private. A runner stop that was not confirmed (RunnerStopFailed, or an orphan whose stop
+        is unconfirmed): PATCH 0, then Reset-MutEnvironment under the §6.5.6 recovery cap. A
+        reset that returns gives its slot back; a failed reset keeps it spent and waits for the
+        environment. A confirmed stop never reaches here, so it spends no slot.
+    #>
+    param(
+        [Parameter(Mandatory = $true)] $Ctx,
+        [Parameter(Mandatory = $true)] [int]$MutantId,
+        [Parameter(Mandatory = $true)] [string]$Why
+    )
+
+    Clear-MutSoapActiveMutant -Ctx $Ctx
+    Request-MutEnvironmentRecoveryBudget -MutantId $MutantId -Context $Why
+    $resetFailure = $null
+    try {
+        Reset-MutEnvironment -Env $Ctx.Env -Config $Ctx.Config | Out-Null
+        $script:MutEnvironmentRecoveryCount--
+        Start-MutPostResetSettle
+    }
+    catch {
+        $resetFailure = $_.Exception.Message
+    }
+    if ($resetFailure) {
+        Invoke-MutSoapOutageWait -Ctx $Ctx -MutantId $MutantId -Reason "the environment reset after an unconfirmed runner stop failed: $resetFailure"
+    }
+}
+
+function Invoke-MutSoapOrphanSweep {
+    <#
+        .SYNOPSIS
+        Private. §6.10.4 step 1: stop every unfinished runner row (its covering set is unknown,
+        so the health codeunit comes from testApp.testCodeunits), then PATCH activeMutantId = 0.
+        Finished rows are left (the backend has no call to delete one; they are keyed by a unique
+        BatchId, so they are harmless). An unconfirmed stop goes to the stop-failed recovery.
+    #>
+    param([Parameter(Mandatory = $true)] $Ctx)
+
+    $state = Get-MutRunnerState -Env $Ctx.Env
+    $health = ($Ctx.TestCodeunits | ForEach-Object { [string]$_ }) -join '|'
+    foreach ($row in @($state.Rows)) {
+        if ($row.Finished) { continue }
+        $stop = Stop-MutRunnerBatch -Env $Ctx.Env -BatchId $row.BatchId -CodeunitIds $health
+        if (-not $stop.Confirmed) {
+            Invoke-MutSoapStopFailedRecovery -Ctx $Ctx -MutantId 0 -Why "an orphaned runner (batch $($row.BatchId)) could not be confirmed stopped"
+        }
+    }
+    Clear-MutSoapActiveMutant -Ctx $Ctx
+}
+
+function Invoke-MutSoapBatchCall {
+    <#
+        .SYNOPSIS
+        Private. One Invoke-MutMutantBatch call for $Items (one covering set), with the outage
+        wait: any throw other than RunnerStopFailed waits for the environment, re-runs the orphan
+        sweep (the failed batch's runner may still be alive), and retries, up to
+        $script:MaxOutageRetriesPerMutant times.
+        .OUTPUTS
+        @{ Kind = 'Result'; Res } | @{ Kind = 'StopFailed'; MutantId; Message } | @{ Kind = 'Error'; Message }
+    #>
+    param(
+        [Parameter(Mandatory = $true)] $Ctx,
+        [Parameter(Mandatory = $true)] [object[]]$Items
+    )
+
+    $ids = [int[]]@($Items | ForEach-Object { [int]$_.Mutant.id })
+    $head = $Items[0]
+    $retries = 0
+    $needSweep = $false
+    while ($true) {
+        try {
+            if ($needSweep) {
+                Invoke-MutSoapOrphanSweep -Ctx $Ctx
+                $needSweep = $false
+            }
+            $res = Invoke-MutMutantBatch -Env $Ctx.Env -CodeunitIds $head.Covering -MutantIds $ids -RunNo $Ctx.RunNo -MutantBudgetSec $head.Budget
+            return [pscustomobject]@{ Kind = 'Result'; Res = $res }
+        }
+        catch {
+            $caught = $_
+            if ($caught.CategoryInfo.Category -eq [System.Management.Automation.ErrorCategory]::LimitsExceeded) {
+                throw $caught
+            }
+            $text = $caught.Exception.Message
+            if ($text -like 'RunnerStopFailed*') {
+                $culprit = $ids[0]
+                if ($text -match '\(mutant (\d+)\)') {
+                    $parsed = [int]$Matches[1]
+                    if ($ids -contains $parsed) { $culprit = $parsed }
+                }
+                return [pscustomobject]@{ Kind = 'StopFailed'; MutantId = $culprit; Message = $text }
+            }
+            if ($retries -ge $script:MaxOutageRetriesPerMutant) {
+                return [pscustomobject]@{ Kind = 'Error'; Message = $text }
+            }
+            $retries++
+            $needSweep = $true
+            Invoke-MutSoapOutageWait -Ctx $Ctx -MutantId ([int]$head.Mutant.id) -Reason $text
+        }
+    }
+}
+
+function Get-MutSoapExistingRow {
+    <# Private. GET mutantResults for (RunNo, MutantId); the API row or $null. #>
+    param(
+        [Parameter(Mandatory = $true)] $Ctx,
+        [Parameter(Mandatory = $true)] [int]$MutantId
+    )
+
+    $path = 'mutantResults?$filter=runNo eq {0} and mutantId eq {1}' -f $Ctx.RunNo, $MutantId
+    $response = Invoke-MutApi -Env $Ctx.Env -Method 'GET' -Path $path
+    if (($response) -and (Test-MutHasProperty $response 'value') -and (@($response.value).Count -gt 0)) {
+        return @($response.value)[0]
+    }
+    return $null
+}
+
+function Add-MutSoapApiRow {
+    <# Private. Records an existing API row (written by the runner or the hook) as the mutant's result. #>
+    param(
+        [Parameter(Mandatory = $true)] $Ctx,
+        [Parameter(Mandatory = $true)] $Item,
+        [Parameter(Mandatory = $true)] $ApiRow
+    )
+
+    $killing = $null
+    if (Test-MutHasProperty $ApiRow 'killingTest') { $killing = $ApiRow.killingTest }
+    $duration = $null
+    if (Test-MutHasProperty $ApiRow 'durationMs') { $duration = $ApiRow.durationMs }
+    Add-MutSoapRow -Ctx $Ctx -Row (New-MutSoapRow -Item $Item -Status ([string]$ApiRow.status) -KillingTest $killing -DurationMs $duration)
+}
+
+function Get-MutSoapResultFor {
+    <# Private. The Results entry of one mutant id, or $null. #>
+    param($Res, [int]$MutantId)
+
+    $match = @(@($Res.Results) | Where-Object { $null -ne $_ -and [int]$_.MutantId -eq $MutantId })
+    if ($match.Count -gt 0) { return $match[0] }
+    return $null
+}
+
+function Test-MutSoapIsId {
+    <# Private. True when $Value (a nullable id from a batch result) equals $Id. #>
+    param($Value, [int]$Id)
+
+    return ($null -ne $Value) -and ([int]$Value -eq $Id)
+}
+
+function Resolve-MutSoapHang {
+    <#
+        .SYNOPSIS
+        Private. §6.10.4 step 4 for one mutant that hung: an existing API row stands (no re-run);
+        otherwise re-run it alone (the run-14 confirmation), and POST Timeout only when it hangs
+        again. A re-run that finishes stands as its own result.
+    #>
+    param(
+        [Parameter(Mandatory = $true)] $Ctx,
+        [Parameter(Mandatory = $true)] $Item
+    )
+
+    $id = [int]$Item.Mutant.id
+    $existing = Get-MutSoapExistingRow -Ctx $Ctx -MutantId $id
+    if ($null -ne $existing) {
+        Add-MutSoapApiRow -Ctx $Ctx -Item $Item -ApiRow $existing
+        return
+    }
+
+    Write-Warning "Invoke-MutMutantLoop: mutant $id -- hung the runner; re-running it alone once to confirm (a non-terminating mutant hangs every time, an environment hiccup does not)."
+    $call = Invoke-MutSoapBatchCall -Ctx $Ctx -Items @($Item)
+    if ($call.Kind -eq 'Error') {
+        Add-MutSoapRow -Ctx $Ctx -Row (New-MutSoapRow -Item $Item -Status 'Error' -ErrorText $call.Message)
+        return
+    }
+    if ($call.Kind -eq 'StopFailed') {
+        Invoke-MutSoapStopFailedRecovery -Ctx $Ctx -MutantId $id -Why "the runner of mutant $id could not be confirmed stopped"
+        Add-MutSoapRow -Ctx $Ctx -Row (New-MutSoapRow -Item $Item -Status 'Error' -ErrorText $call.Message)
+        return
+    }
+
+    $res = $call.Res
+    $r = Get-MutSoapResultFor -Res $res -MutantId $id
+    if (($null -ne $r) -and ($r.Status -eq 'Killed' -or $r.Status -eq 'Survived')) {
+        Add-MutSoapRow -Ctx $Ctx -Row (New-MutSoapRow -Item $Item -Status $r.Status -KillingTest $r.KillingTest -DurationMs $r.DurationMs)
+        return
+    }
+    if (Test-MutSoapIsId $res.HungMutantId $id) {
+        $existing = Get-MutSoapExistingRow -Ctx $Ctx -MutantId $id
+        if ($null -ne $existing) {
+            Add-MutSoapApiRow -Ctx $Ctx -Item $Item -ApiRow $existing
+            return
+        }
+        try {
+            Invoke-MutApi -Env $Ctx.Env -Method 'POST' -Path 'mutantResults' -Body @{ runNo = $Ctx.RunNo; mutantId = $id; status = 'Timeout' } | Out-Null
+        }
+        catch {
+            $text = ''
+            if ($_.ErrorDetails -and $_.ErrorDetails.Message) { $text = $_.ErrorDetails.Message }
+            if (-not $text) { $text = $_.Exception.Message }
+            if ($text -notmatch 'EntityWithSameKeyExists') { throw }
+        }
+        Add-MutSoapRow -Ctx $Ctx -Row (New-MutSoapRow -Item $Item -Status 'Timeout')
+        return
+    }
+
+    $why = 'no tests discovered'
+    if ((Test-MutHasProperty $res 'Fault') -and $res.Fault) { $why = "the runner faulted: $($res.Fault)" }
+    Add-MutSoapRow -Ctx $Ctx -Row (New-MutSoapRow -Item $Item -Status 'Error' -ErrorText $why)
+}
+
+function Resolve-MutSoapAlone {
+    <#
+        .SYNOPSIS
+        Private. Re-runs one mutant alone: after an Empty entry (§6.10.4 step 3, with
+        Confirm-MutEnvironmentServing first, PATCH 0 before it) or as the culprit of a fault
+        (step 5, under the per-mutant rules: outage wait and re-runs live in
+        Invoke-MutSoapBatchCall). A result stands; a hang goes through Resolve-MutSoapHang;
+        anything else is Error (never POSTed).
+    #>
+    param(
+        [Parameter(Mandatory = $true)] $Ctx,
+        [Parameter(Mandatory = $true)] $Item,
+        [Parameter(Mandatory = $true)] [ValidateSet('Empty', 'Fault')] [string]$Reason
+    )
+
+    $id = [int]$Item.Mutant.id
+    if ($Reason -eq 'Empty') {
+        Clear-MutSoapActiveMutant -Ctx $Ctx
+        $Ctx.Env = Confirm-MutEnvironmentServing -Env $Ctx.Env -Config $Ctx.Config -MutantId $id
+    }
+
+    $call = Invoke-MutSoapBatchCall -Ctx $Ctx -Items @($Item)
+    if ($call.Kind -eq 'Error') {
+        Add-MutSoapRow -Ctx $Ctx -Row (New-MutSoapRow -Item $Item -Status 'Error' -ErrorText $call.Message)
+        return
+    }
+    if ($call.Kind -eq 'StopFailed') {
+        Invoke-MutSoapStopFailedRecovery -Ctx $Ctx -MutantId $id -Why "the runner of mutant $id could not be confirmed stopped"
+        Add-MutSoapRow -Ctx $Ctx -Row (New-MutSoapRow -Item $Item -Status 'Error' -ErrorText $call.Message)
+        return
+    }
+
+    $res = $call.Res
+    $r = Get-MutSoapResultFor -Res $res -MutantId $id
+    if (($null -ne $r) -and ($r.Status -eq 'Killed' -or $r.Status -eq 'Survived')) {
+        Add-MutSoapRow -Ctx $Ctx -Row (New-MutSoapRow -Item $Item -Status $r.Status -KillingTest $r.KillingTest -DurationMs $r.DurationMs)
+        return
+    }
+    if (Test-MutSoapIsId $res.HungMutantId $id) {
+        Resolve-MutSoapHang -Ctx $Ctx -Item $Item
+        return
+    }
+    $why = 'no tests discovered'
+    if ((Test-MutHasProperty $res 'Fault') -and $res.Fault) { $why = "the runner faulted: $($res.Fault)" }
+    Add-MutSoapRow -Ctx $Ctx -Row (New-MutSoapRow -Item $Item -Status 'Error' -ErrorText $why)
+}
+
+function Invoke-MutSoapSafely {
+    <#
+        .SYNOPSIS
+        Private. Runs one per-mutant resolution; an unexpected throw (anything but LimitsExceeded)
+        becomes that mutant's Error row, as the cli loop's per-mutant catch does.
+    #>
+    param(
+        [Parameter(Mandatory = $true)] $Ctx,
+        [Parameter(Mandatory = $true)] $Item,
+        [Parameter(Mandatory = $true)] [scriptblock]$Action
+    )
+
+    try {
+        & $Action
+    }
+    catch {
+        $caught = $_
+        if ($caught.CategoryInfo.Category -eq [System.Management.Automation.ErrorCategory]::LimitsExceeded) {
+            throw $caught
+        }
+        if (-not $Ctx.Rows.ContainsKey([int]$Item.Mutant.id)) {
+            Add-MutSoapRow -Ctx $Ctx -Row (New-MutSoapRow -Item $Item -Status 'Error' -ErrorText $caught.Exception.Message)
+        }
+    }
+}
+
+function Invoke-MutSoapProcessBatch {
+    <#
+        .SYNOPSIS
+        Private. Runs one batch and turns its outcome into rows (§6.10.4 steps 3-5).
+        .OUTPUTS
+        The items that were not processed and must go back to the front of the queue (the mutants
+        after a hung/fault culprit, or after a stop-failed or exhausted batch).
+    #>
+    param(
+        [Parameter(Mandatory = $true)] $Ctx,
+        [Parameter(Mandatory = $true)] [object[]]$Items
+    )
+
+    $call = Invoke-MutSoapBatchCall -Ctx $Ctx -Items $Items
+    $head = $Items[0]
+
+    if ($call.Kind -eq 'Error') {
+        Add-MutSoapRow -Ctx $Ctx -Row (New-MutSoapRow -Item $head -Status 'Error' -ErrorText $call.Message)
+        return @($Items | Select-Object -Skip 1)
+    }
+
+    if ($call.Kind -eq 'StopFailed') {
+        $culprit = [int]$call.MutantId
+        Invoke-MutSoapStopFailedRecovery -Ctx $Ctx -MutantId $culprit -Why "the runner of a batch (mutant $culprit) could not be confirmed stopped"
+        $remainder = @()
+        foreach ($item in $Items) {
+            $id = [int]$item.Mutant.id
+            $existing = Get-MutSoapExistingRow -Ctx $Ctx -MutantId $id
+            if ($null -ne $existing) {
+                Add-MutSoapApiRow -Ctx $Ctx -Item $item -ApiRow $existing
+            }
+            elseif ($id -eq $culprit) {
+                Add-MutSoapRow -Ctx $Ctx -Row (New-MutSoapRow -Item $item -Status 'Error' -ErrorText $call.Message)
+            }
+            else {
+                $remainder += $item
+            }
+        }
+        return $remainder
+    }
+
+    $res = $call.Res
+    $culpritId = $null
+    $culpritKind = $null
+    if ((Test-MutHasProperty $res 'HungMutantId') -and ($null -ne $res.HungMutantId)) {
+        $culpritId = [int]$res.HungMutantId
+        $culpritKind = 'Hang'
+    }
+    elseif ((Test-MutHasProperty $res 'FaultMutantId') -and ($null -ne $res.FaultMutantId)) {
+        $culpritId = [int]$res.FaultMutantId
+        $culpritKind = 'Fault'
+    }
+
+    $remainder = @()
+    $afterCulprit = $false
+    foreach ($item in $Items) {
+        $id = [int]$item.Mutant.id
+        $r = Get-MutSoapResultFor -Res $res -MutantId $id
+        $hasRow = ($null -ne $r) -and ($r.Status -eq 'Killed' -or $r.Status -eq 'Survived')
+
+        if ($afterCulprit) {
+            if ($hasRow) {
+                Add-MutSoapRow -Ctx $Ctx -Row (New-MutSoapRow -Item $item -Status $r.Status -KillingTest $r.KillingTest -DurationMs $r.DurationMs)
+            }
+            else {
+                $remainder += $item
+            }
+            continue
+        }
+
+        if (($null -ne $culpritId) -and ($id -eq $culpritId)) {
+            $afterCulprit = $true
+            $kind = $culpritKind
+            Invoke-MutSoapSafely -Ctx $Ctx -Item $item -Action {
+                if ($kind -eq 'Hang') {
+                    Resolve-MutSoapHang -Ctx $Ctx -Item $item
+                }
+                else {
+                    Resolve-MutSoapAlone -Ctx $Ctx -Item $item -Reason 'Fault'
+                }
+            }
+            continue
+        }
+
+        if ($hasRow) {
+            Add-MutSoapRow -Ctx $Ctx -Row (New-MutSoapRow -Item $item -Status $r.Status -KillingTest $r.KillingTest -DurationMs $r.DurationMs)
+            continue
+        }
+
+        # Empty entry, or (when the call did not return a value) a mutant with neither a row nor a
+        # hung/fault id: the CLI's empty result.
+        Invoke-MutSoapSafely -Ctx $Ctx -Item $item -Action { Resolve-MutSoapAlone -Ctx $Ctx -Item $item -Reason 'Empty' }
+    }
+
+    return $remainder
+}
+
+function Invoke-MutSoapMutantLoop {
+    <#
+        .SYNOPSIS
+        Private. The mutant loop for testTransport 'soap' (§6.10.4). Called by Invoke-MutMutantLoop
+        after its per-run counters are reset. Same parameters and return shape as the cli loop.
+
+        Order: Test-MutSoapRunner (false throws), orphan sweep, recorded results (resume), then
+        batches of consecutive pending mutants with an identical covering set, at most
+        soap.batchSize each and at most 120 s of covering-set baseline duration in sum (a single
+        mutant always forms a batch). MutantBudgetSec is the §6.5.6 per-mutant budget
+        (Get-MutTimeoutBudget) for the covering set. After every outage wait the orphan sweep runs
+        again before the next batch (Invoke-MutSoapBatchCall).
+    #>
+    param(
+        [Parameter(Mandatory = $true)] $Config,
+        [Parameter(Mandatory = $true)] $Env,
+        [Parameter(Mandatory = $true)] [object[]]$Mutants,
+        [Parameter(Mandatory = $true)] $Baseline,
+        [Parameter(Mandatory = $true)] $Coverage,
+        [Parameter(Mandatory = $true)] $References,
+        [Parameter(Mandatory = $true)] [int]$RunNo,
+        [Parameter(Mandatory = $true)] [string]$RunDir
+    )
+
+    $testCodeunits = [int[]]@($Config.testApp.testCodeunits)
+    $batchSize = $script:SoapDefaultBatchSize
+    if ((Test-MutHasProperty $Config 'soap') -and (Test-MutHasProperty $Config.soap 'batchSize') -and ($null -ne $Config.soap.batchSize)) {
+        $batchSize = [int]$Config.soap.batchSize
+    }
+
+    $ctx = @{
+        Env                 = $Env
+        Config              = $Config
+        RunNo               = $RunNo
+        RunDir              = $RunDir
+        TestCodeunits       = $testCodeunits
+        Rows                = @{}
+        ConsecutiveErrors   = 0
+        ConsecutiveTimeouts = 0
+    }
+
+    try {
+        if (-not (Test-MutSoapRunner -Env $ctx.Env)) {
+            throw 'Invoke-MutMutantLoop: testTransport is soap but the MUTRunner service does not answer (Mutation Core older than 1.1.0.0, or the service is missing).'
+        }
+
+        # §6.10.4 step 1: orphans before anything else, before resume data is read.
+        $sweepRetries = 0
+        while ($true) {
+            try {
+                Invoke-MutSoapOrphanSweep -Ctx $ctx
+                break
+            }
+            catch {
+                $caught = $_
+                if (($caught.CategoryInfo.Category -eq [System.Management.Automation.ErrorCategory]::LimitsExceeded) -or ($sweepRetries -ge $script:MaxOutageRetriesPerMutant)) {
+                    throw $caught
+                }
+                $sweepRetries++
+                Invoke-MutSoapOutageWait -Ctx $ctx -MutantId 0 -Reason $caught.Exception.Message
+            }
+        }
+
+        $recordedResults = Get-MutRecordedResultsForRun -Env $ctx.Env -RunNo $RunNo -RunDir $RunDir
+
+        $queue = [System.Collections.Generic.List[object]]::new()
+        foreach ($mutant in $Mutants) {
+            $mutantId = [int]$mutant.id
+            if ($recordedResults.ContainsKey($mutantId)) {
+                $prior = $recordedResults[$mutantId]
+                $resumedRow = [pscustomobject]@{
+                    Id            = $mutant.id
+                    Status        = $prior.Status
+                    KillingTest   = $prior.KillingTest
+                    DurationMs    = $prior.DurationMs
+                    CoveringTests = @($prior.CoveringTests)
+                }
+                if ($prior.Status -eq 'Error') {
+                    $resumedRow | Add-Member -NotePropertyName 'Error' -NotePropertyValue $prior.Error
+                }
+                $ctx.Rows[$mutantId] = $resumedRow
+                continue
+            }
+
+            $covering = [int[]]@()
+            $coverError = $null
+            try {
+                $found = Get-MutCoveringTests -Mutant $mutant -Coverage $Coverage -References $References -TestCodeunits $testCodeunits
+                $covering = [int[]]@($found)
+            }
+            catch {
+                $coverError = $_.Exception.Message
+            }
+
+            $budget = 0
+            $baselineSec = 0.0
+            if ($covering.Count -gt 0) {
+                $budget = Get-MutTimeoutBudget -Config $Config -CoveringTests $covering -Baseline $Baseline
+                foreach ($codeunitId in $covering) {
+                    if ($Baseline.DurationsByCodeunit.ContainsKey("$codeunitId")) {
+                        $baselineSec += [double]$Baseline.DurationsByCodeunit["$codeunitId"] / 1000.0
+                    }
+                }
+            }
+            $queue.Add([pscustomobject]@{
+                    Mutant      = $mutant
+                    Covering    = $covering
+                    Key         = ($covering | ForEach-Object { [string]$_ }) -join '|'
+                    Budget      = $budget
+                    BaselineSec = $baselineSec
+                    CoverError  = $coverError
+                })
+        }
+
+        while ($queue.Count -gt 0) {
+            $head = $queue[0]
+            $queue.RemoveAt(0)
+
+            if ($head.CoverError) {
+                Add-MutSoapRow -Ctx $ctx -Row (New-MutSoapRow -Item $head -Status 'Error' -ErrorText $head.CoverError)
+                continue
+            }
+            if ($head.Covering.Count -eq 0) {
+                Add-MutSoapRow -Ctx $ctx -Row (New-MutSoapRow -Item $head -Status 'Uncovered')
+                continue
+            }
+
+            $batch = @($head)
+            $sumSec = [double]$head.BaselineSec
+            while (($queue.Count -gt 0) -and ($batch.Count -lt $batchSize)) {
+                $next = $queue[0]
+                if ($next.Key -ne $head.Key) { break }
+                if (($sumSec + [double]$next.BaselineSec) -gt $script:SoapMaxBatchBaselineSec) { break }
+                $sumSec += [double]$next.BaselineSec
+                $batch += $next
+                $queue.RemoveAt(0)
+            }
+
+            $remainder = @()
+            try {
+                $remainder = @(Invoke-MutSoapProcessBatch -Ctx $ctx -Items $batch)
+            }
+            catch {
+                $caught = $_
+                if ($caught.CategoryInfo.Category -eq [System.Management.Automation.ErrorCategory]::LimitsExceeded) {
+                    throw $caught
+                }
+                if (-not $ctx.Rows.ContainsKey([int]$head.Mutant.id)) {
+                    Add-MutSoapRow -Ctx $ctx -Row (New-MutSoapRow -Item $head -Status 'Error' -ErrorText $caught.Exception.Message)
+                }
+                $remainder = @($batch | Select-Object -Skip 1 | Where-Object { -not $ctx.Rows.ContainsKey([int]$_.Mutant.id) })
+            }
+            if ($remainder.Count -gt 0) {
+                $queue.InsertRange(0, [object[]]$remainder)
+            }
+        }
+    }
+    catch {
+        $caught = $_
+        if ($caught.CategoryInfo.Category -eq [System.Management.Automation.ErrorCategory]::LimitsExceeded) {
+            $partial = @($ctx.Rows.Values | Sort-Object -Property Id)
+            throw [System.Management.Automation.ErrorRecord]::new($caught.Exception, $caught.FullyQualifiedErrorId, [System.Management.Automation.ErrorCategory]::LimitsExceeded, $partial)
+        }
+        throw $caught
+    }
+
+    $rows = @($ctx.Rows.Values | Sort-Object -Property Id)
+    $errorCount = @($rows | Where-Object { $_.Status -eq 'Error' }).Count
+    if ($errorCount -gt 0) {
+        Write-Warning "Invoke-MutMutantLoop: $errorCount of $(@($Mutants).Count) mutant(s) ended in Error"
+    }
+    if ($script:MutOutageWaitCount -gt 0) {
+        Write-Warning "Invoke-MutMutantLoop: waited out $($script:MutOutageWaitCount) environment outage(s) this run"
+    }
+    if ($script:MutEnvironmentRecoveryCount -gt 0) {
+        Write-Warning "Invoke-MutMutantLoop: environment recovered $($script:MutEnvironmentRecoveryCount) of $($script:MaxEnvironmentRecoveries) allowed time(s) this run"
+    }
+    return , $rows
+}
+
 function Invoke-MutMutantLoop {
     <#
         .SYNOPSIS
@@ -935,6 +1607,15 @@ function Invoke-MutMutantLoop {
     # FIX (M3): resume support -- see this function's own FIX note above and
     # Get-MutRecordedResultsForRun's doc comment. Fetched once per loop invocation, not per
     # mutant.
+    # T42 (§6.10.4): the one branch point. With testTransport 'soap' the per-mutant loop below is
+    # replaced wholesale by the batch loop (Invoke-MutSoapMutantLoop); 'cli' (the default, and an
+    # absent key) runs everything below exactly as before.
+    if ((Test-MutHasProperty $Config 'testTransport') -and ([string]$Config.testTransport -eq 'soap')) {
+        $soapRows = Invoke-MutSoapMutantLoop -Config $Config -Env $Env -Mutants $orderedMutants -Baseline $Baseline `
+            -Coverage $Coverage -References $References -RunNo $RunNo -RunDir $RunDir
+        return , $soapRows
+    }
+
     $recordedResults = Get-MutRecordedResultsForRun -Env $Env -RunNo $RunNo -RunDir $RunDir
 
     foreach ($mutant in $orderedMutants) {

@@ -644,3 +644,50 @@ Describe 'Get-MutConfig: onlyObjects scope is announced, not silent' {
         ($warnings | Where-Object { $_ -like '*onlyObjects*' }) | Should -BeNullOrEmpty
     }
 }
+
+Describe 'Get-MutConfig testTransport and soap.batchSize (§6.10.4)' {
+    It 'defaults testTransport to cli and soap.batchSize to 50 when absent' {
+        $cfg = Get-MutConfig -Path (New-MutTestConfigFile)
+        $cfg.testTransport | Should -Be 'cli'
+        $cfg.soap.batchSize | Should -Be 50
+    }
+
+    It 'accepts testTransport soap' {
+        $cfg = Get-MutConfig -Path (New-MutTestConfigFile -Overrides @{ testTransport = 'soap' })
+        $cfg.testTransport | Should -Be 'soap'
+    }
+
+    It 'accepts testTransport cli explicitly' {
+        $cfg = Get-MutConfig -Path (New-MutTestConfigFile -Overrides @{ testTransport = 'cli' })
+        $cfg.testTransport | Should -Be 'cli'
+    }
+
+    It 'rejects any other testTransport, naming the key' {
+        { Get-MutConfig -Path (New-MutTestConfigFile -Overrides @{ testTransport = 'carrier-pigeon' }) } | Should -Throw '*testTransport*'
+    }
+
+    It 'rejects a null testTransport' {
+        { Get-MutConfig -Path (New-MutTestConfigFile -Overrides @{ testTransport = $null }) } | Should -Throw '*testTransport*'
+    }
+
+    It 'reads a custom soap.batchSize' {
+        $cfg = Get-MutConfig -Path (New-MutTestConfigFile -Overrides @{ soap = @{ batchSize = 12 } })
+        $cfg.soap.batchSize | Should -Be 12
+    }
+
+    It 'defaults soap.batchSize to 50 when soap is present without it' {
+        $cfg = Get-MutConfig -Path (New-MutTestConfigFile -Overrides @{ soap = @{} })
+        $cfg.soap.batchSize | Should -Be 50
+    }
+
+    It 'rejects a soap.batchSize that is not a positive integer' {
+        foreach ($bad in 0, -3, 2.5, 'many') {
+            { Get-MutConfig -Path (New-MutTestConfigFile -Overrides @{ soap = @{ batchSize = $bad } }) } | Should -Throw '*soap.batchSize*'
+        }
+    }
+
+    It 'leaves the shipped configs on the cli transport' {
+        (Get-MutConfig -Path (Join-Path $script:RepoRoot 'mutation.config.json')).testTransport | Should -Be 'cli'
+        (Get-MutConfig -Path (Join-Path $script:RepoRoot 'mutation.fixture.config.json')).testTransport | Should -Be 'cli'
+    }
+}

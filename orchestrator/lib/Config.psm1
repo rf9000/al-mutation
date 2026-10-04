@@ -8,6 +8,11 @@ $script:AllowedBackends = @('DemoPortal', 'Docker')  # isolation-lint: allow
 
 $script:AllowedPublishStrategies = @('same-version', 'bump-build', 'unpublish-test-app')
 
+# §6.10.4: how the mutant loop runs the tests of one mutant. 'cli' is today's behaviour (the
+# default); 'soap' runs them through the Mutation Core runner service in batches.
+$script:AllowedTestTransports = @('cli', 'soap')
+$script:DefaultSoapBatchSize = 50
+
 # Review fix round 1: [System.IO.Path]::GetFullPath does NOT resolve reparse points
 # (directory junctions/symlinks), so Assert-MutWorkDirOutsideSources' containment check was
 # defeated by a junction -- workDir pointing at a junction into one of the source trees
@@ -409,6 +414,18 @@ function Assert-MutConfigShape {
     Assert-MutNumberAtLeast $Config.timeouts 'minSeconds' 'timeouts.minSeconds' -Minimum 0 -ExclusiveMinimum
     Assert-MutNumberAtLeast $Config.timeouts 'jobOverheadSeconds' 'timeouts.jobOverheadSeconds' -Minimum 0
 
+    # §6.10.4: the test transport of the mutant loop. Optional; absent means 'cli'.
+    if (Test-MutHasProperty $Config 'testTransport') {
+        Assert-MutRequiredKey $Config 'testTransport' 'testTransport'
+        if ($script:AllowedTestTransports -notcontains [string]$Config.testTransport) {
+            throw "Get-MutConfig: config key 'testTransport' must be one of: $($script:AllowedTestTransports -join ', '). Got '$($Config.testTransport)'."
+        }
+    }
+    # soap.batchSize: optional, a positive integer (default 50, applied in Get-MutConfig).
+    if ((Test-MutHasProperty $Config 'soap') -and ($null -ne $Config.soap) -and (Test-MutHasProperty $Config.soap 'batchSize')) {
+        Assert-MutIntegerAtLeast $Config.soap 'batchSize' 'soap.batchSize' -Minimum 1
+    }
+
     if ($Config.backend -eq 'DemoPortal') {
         Assert-MutRequiredKey $Config 'demoPortal' 'demoPortal'
         Assert-MutNonEmptyString $Config.demoPortal 'profileId' 'demoPortal.profileId'
@@ -457,6 +474,17 @@ function Get-MutConfig {
     $config = $raw | ConvertFrom-Json
 
     Assert-MutConfigShape $config
+
+    # §6.10.4 defaults: testTransport 'cli', soap.batchSize 50.
+    if (-not (Test-MutHasProperty $config 'testTransport')) {
+        $config | Add-Member -NotePropertyName 'testTransport' -NotePropertyValue 'cli'
+    }
+    if ((-not (Test-MutHasProperty $config 'soap')) -or ($null -eq $config.soap)) {
+        $config | Add-Member -NotePropertyName 'soap' -NotePropertyValue ([pscustomobject]@{}) -Force
+    }
+    if (-not (Test-MutHasProperty $config.soap 'batchSize')) {
+        $config.soap | Add-Member -NotePropertyName 'batchSize' -NotePropertyValue $script:DefaultSoapBatchSize
+    }
 
     $repoRoot = Get-MutRepoRoot
 

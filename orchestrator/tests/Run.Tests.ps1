@@ -149,6 +149,38 @@ Describe 'Invoke-MutRunPipeline (fully mocked backend/lib boundary)' {
         Mock -ModuleName Run Export-MutFixBriefs { "$script:WorkDir/results/1-fix-briefs.json" }
     }
 
+    It 'with testTransport soap, checks Test-MutSoapRunner right after the baseline and before the schemata are built' {
+        $script:Config | Add-Member -NotePropertyName testTransport -NotePropertyValue 'soap'
+        Mock -ModuleName Run Test-MutSoapRunner { $script:CallLog.Add('Test-MutSoapRunner'); return $true }
+
+        Invoke-MutRunPipeline -Config $script:Config -RunNo 1 | Out-Null
+
+        Should -Invoke -ModuleName Run Test-MutSoapRunner -Times 1 -Exactly
+        $log = @($script:CallLog)
+        $log.IndexOf('Test-MutSoapRunner') | Should -BeGreaterThan $log.IndexOf('Get-MutCoverage')
+        $log.IndexOf('Test-MutSoapRunner') | Should -BeLessThan $log.IndexOf('Build-MutSchemata')
+    }
+
+    It 'with testTransport soap, a false Test-MutSoapRunner throws before any further work' {
+        $script:Config | Add-Member -NotePropertyName testTransport -NotePropertyValue 'soap'
+        Mock -ModuleName Run Test-MutSoapRunner { return $false }
+
+        { Invoke-MutRunPipeline -Config $script:Config -RunNo 1 } | Should -Throw '*MUTRunner*'
+
+        Should -Invoke -ModuleName Run Build-MutSchemata -Times 0 -Exactly
+        Should -Invoke -ModuleName Run Invoke-MutMutantLoop -Times 0 -Exactly
+    }
+
+    It 'with testTransport cli (or none), never calls Test-MutSoapRunner' {
+        Mock -ModuleName Run Test-MutSoapRunner { throw 'must not be called on the cli transport' }
+
+        Invoke-MutRunPipeline -Config $script:Config -RunNo 1 | Out-Null
+        $script:Config | Add-Member -NotePropertyName testTransport -NotePropertyValue 'cli'
+        Invoke-MutRunPipeline -Config $script:Config -RunNo 2 | Out-Null
+
+        Should -Invoke -ModuleName Run Test-MutSoapRunner -Times 0 -Exactly
+    }
+
     It 'writes the fix briefs after a complete export' {
         Invoke-MutRunPipeline -Config $script:Config -RunNo 1 | Out-Null
 
