@@ -686,6 +686,12 @@ Describe 'Get-MutConfig testTransport and soap.batchSize (§6.10.4)' {
         }
     }
 
+    It 'rejects a soap value that is not an object, naming soap' {
+        foreach ($bad in 5, 'text', $true) {
+            { Get-MutConfig -Path (New-MutTestConfigFile -Overrides @{ soap = $bad }) } | Should -Throw '*soap*object*'
+        }
+    }
+
     It 'leaves the shipped configs on the cli transport' {
         (Get-MutConfig -Path (Join-Path $script:RepoRoot 'mutation.config.json')).testTransport | Should -Be 'cli'
         (Get-MutConfig -Path (Join-Path $script:RepoRoot 'mutation.fixture.config.json')).testTransport | Should -Be 'cli'

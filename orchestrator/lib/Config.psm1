@@ -422,6 +422,9 @@ function Assert-MutConfigShape {
         }
     }
     # soap.batchSize: optional, a positive integer (default 50, applied in Get-MutConfig).
+    if ((Test-MutHasProperty $Config 'soap') -and ($null -ne $Config.soap) -and ($Config.soap -isnot [pscustomobject])) {
+        throw "Get-MutConfig: config key 'soap' must be an object (for example { ""batchSize"": 50 }). Got '$($Config.soap)'."
+    }
     if ((Test-MutHasProperty $Config 'soap') -and ($null -ne $Config.soap) -and (Test-MutHasProperty $Config.soap 'batchSize')) {
         Assert-MutIntegerAtLeast $Config.soap 'batchSize' 'soap.batchSize' -Minimum 1
     }

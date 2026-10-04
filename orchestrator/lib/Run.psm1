@@ -1086,7 +1086,7 @@ function Invoke-MutRunPipeline {
         }
     }
 
-    $schemata =Build-MutSchemataStep -Config $Config -Env $env -RunDir $runDir -RunNo $runNo
+    $schemata = Build-MutSchemataStep -Config $Config -Env $env -RunDir $runDir -RunNo $runNo
 
     Publish-MutSchemata -Config $Config -Env $env -Schemata $schemata -RunDir $runDir -RunNo $runNo
 
