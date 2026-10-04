@@ -184,6 +184,10 @@ Describe 'Invoke-MutSoap' {
         }
 
         { Invoke-InModule { param($e) Invoke-MutSoap -Env $e -Operation 'GetRunnerState' -Arguments @{} } @($envHandle) } | Should -Throw '*503*'
+
+        $caught = $null
+        try { Invoke-InModule { param($e) Invoke-MutSoap -Env $e -Operation 'GetRunnerState' -Arguments @{} } @($envHandle) } catch { $caught = $_ }
+        $caught.Exception.Data['MutSoapOutage'] | Should -BeTrue
     }
 
     It 'throws when there is no connection at all (<status>)' -ForEach @(
@@ -518,6 +522,7 @@ Describe 'Invoke-MutMutantBatch' {
         $script:waitAfterReceive = 0
         $script:waitMs = @()
         $script:stateThrowFrom = -1
+        $script:stateThrowOutage = $false
         Mock -ModuleName DemoPortal Test-MutSoapRunspaceDone { $script:pollNo -ge $script:doneAtPoll }
         Mock -ModuleName DemoPortal Receive-MutSoapRunspace { $script:received = $true; $script:callResult }
         Mock -ModuleName DemoPortal Wait-MutSoapRunspace {
@@ -533,7 +538,7 @@ Describe 'Invoke-MutMutantBatch' {
                 'GetRunnerState' {
                     $script:pollNo++
                     if ($script:pollNo -eq $script:stateThrowAtPoll) { throw 'transient state poll failure' }
-                    if ($script:stateThrowFrom -gt 0 -and $script:pollNo -ge $script:stateThrowFrom) { throw 'state poll outage' }
+                    if ($script:stateThrowFrom -gt 0 -and $script:pollNo -ge $script:stateThrowFrom) { $ex = [System.Exception]::new('state poll failure'); if ($script:stateThrowOutage) { $ex.Data['MutSoapOutage'] = $true }; throw $ex }
                     $json = & $script:stateFn $script:pollNo $script:batchId
                     return [pscustomobject]@{ Ok = $true; Value = $json; Fault = $null; TimedOut = $false; Dropped = $false; DurationMs = 1 }
                 }
@@ -826,8 +831,9 @@ Describe 'Invoke-MutMutantBatch' {
         Get-Ops | Should -Not -Contain 'StopRunner'
     }
 
-    It 'a state-poll outage while the call is still running is retried, not swallowed forever: once the call has ended it is rethrown with the BatchId' {
+    It 'an OUTAGE poll failure is retried while the call runs, and rethrown with the BatchId once the call has ended' {
         $script:stateThrowFrom = 2
+        $script:stateThrowOutage = $true
         $script:stateFn = { param($poll, $batchId) New-RunnerStateJson -Rows @((New-StateRow -BatchId $batchId -MutantId 12 -StartedAt '2026-10-04T20:43:42.0000000Z' -Done 1)) }
         $script:doneAtPoll = 4
         $script:callResult = New-SoapResult -Dropped
@@ -837,11 +843,57 @@ Describe 'Invoke-MutMutantBatch' {
         catch { $caught = $_ }
 
         $caught | Should -Not -BeNullOrEmpty
-        $caught.Exception.Message | Should -BeLike '*state poll outage*'
+        $caught.Exception.Message | Should -BeLike '*state poll failure*'
         $caught.Exception.Data['BatchId'] | Should -Be $script:batchId
         $script:pollNo | Should -BeGreaterOrEqual 4
         Get-Ops | Should -Not -Contain 'StopRunner'
         $script:runspaceStopped | Should -Be 1
+    }
+
+    It 'a NON-outage poll failure after the call has ended is retried, and the batch then ends normally' {
+        $script:stateThrowAtPoll = 3
+        $script:stateFn = {
+            param($poll, $batchId)
+            if ($poll -lt 5) { return New-RunnerStateJson -Rows @((New-StateRow -BatchId $batchId -MutantId 12 -StartedAt '2026-10-04T20:43:42.0000000Z' -Done 1)) }
+            New-RunnerStateJson -Rows @((New-StateRow -BatchId $batchId -Done 2 -Finished $true))
+        }
+        $script:doneAtPoll = 1
+        $script:callResult = New-SoapResult -Dropped
+        $script:apiRows = @((New-ApiRow -MutantId 11 -Status 'Survived' -KillingTest ''), (New-ApiRow -MutantId 12 -Status 'Killed'))
+
+        $r = Invoke-MutMutantBatch -Env $envHandle -CodeunitIds 95155 -MutantIds 11, 12 -RunNo 5 -MutantBudgetSec 30 @fast
+
+        $r.HungMutantId | Should -BeNullOrEmpty
+        $r.Stopped | Should -BeFalse
+        @($r.Results).Count | Should -Be 2
+        $script:pollNo | Should -BeGreaterOrEqual 5
+        Get-Ops | Should -Not -Contain 'StopRunner'
+    }
+
+    It 'polls failing continuously past the client timeout is a hang of the last known mutant, then the stop runs' {
+        $script:stateFn = { param($poll, $batchId) New-RunnerStateJson -Rows @((New-StateRow -BatchId $batchId -MutantId 12 -StartedAt '2026-10-04T20:43:42.0000000Z' -Done 1)) }
+        $script:doneAtPoll = 1
+        $script:callResult = New-SoapResult -Dropped
+        # Poll 1 succeeds and shows mutant 12; every later poll fails (not an outage).
+        $script:stateThrowFrom = 2
+        $s = $script:fast.Clone(); $s['PollIntervalSec'] = 0.02
+
+        $r = Invoke-MutMutantBatch -Env $envHandle -CodeunitIds 95155 -MutantIds 11, 12, 13 -RunNo 5 -MutantBudgetSec 30 -ClientTimeoutSec 0.3 @s
+
+        $r.HungMutantId | Should -Be 12
+        $r.Stopped | Should -BeTrue
+        @($script:soapCalls | Where-Object Operation -eq 'StopRunner').Count | Should -Be 1
+    }
+
+    It 'with no row ever seen, polls failing past the client timeout blame the first mutant' {
+        $script:stateThrowFrom = 1
+        $script:doneAtPoll = 1000
+        $s = $script:fast.Clone(); $s['PollIntervalSec'] = 0.02
+
+        $r = Invoke-MutMutantBatch -Env $envHandle -CodeunitIds 95155 -MutantIds 21, 22 -RunNo 5 -MutantBudgetSec 30 -ClientTimeoutSec 0.3 @s
+
+        $r.HungMutantId | Should -Be 21
+        $r.Stopped | Should -BeTrue
     }
 
     It 'an outage during the stop carries the BatchId on the original exception' {
@@ -945,5 +997,47 @@ Describe 'Start-MutSoapRunspace wiring' {
     It 'refuses an environment not named mut-* before opening any runspace' {
         $bad = [pscustomobject]@{ Id = 'E1'; Name = 'fix-auth'; Url = 'https://x'; Backend = 'DemoPortal'; Shared = $false }
         { Invoke-InModule { param($e) Start-MutSoapRunspace -Env $e -Operation 'GetRunnerState' -Arguments @{} -TimeoutSec 5 } @($bad) } | Should -Throw "*does not match '^mut-'*"
+    }
+}
+
+Describe 'Get-MutRunnerState failure classes' {
+    It 'rethrows an outage exception from Invoke-MutSoap unchanged (marker kept)' {
+        $outage = Invoke-InModule { New-MutOutageException -Message 'HTTP 503' }
+        Mock -ModuleName DemoPortal Invoke-MutSoap ({ throw $outage }.GetNewClosure())
+
+        $caught = $null
+        try { Get-MutRunnerState -Env $envHandle } catch { $caught = $_ }
+
+        $caught.Exception.Data['MutSoapOutage'] | Should -BeTrue
+    }
+
+    It 'throws a distinct non-outage error for a dropped, timed-out or faulted call' {
+        $result = New-SoapResult -Dropped
+        Mock -ModuleName DemoPortal Invoke-MutSoap ({ $result }.GetNewClosure())
+
+        $caught = $null
+        try { Get-MutRunnerState -Env $envHandle } catch { $caught = $_ }
+
+        $caught.Exception.Data['MutSoapNonOutage'] | Should -BeTrue
+        $caught.Exception.Data.Contains('MutSoapOutage') | Should -BeFalse
+    }
+}
+
+Describe 'Receive-MutSoapRunspace' {
+    It 'returns the first result object' {
+        $h = [pscustomobject]@{ Async = [pscustomobject]@{}; PowerShell = [pscustomobject]@{} }
+        $h.PowerShell | Add-Member ScriptMethod EndInvoke { param($a) , @([pscustomobject]@{ Ok = $true; Value = 'v' }) }
+        $r = Invoke-InModule { param($x) Receive-MutSoapRunspace -Handle $x } @($h)
+        $r.Value | Should -Be 'v'
+    }
+
+    It 'throws, naming the runspace error records, when the runspace produced no output (setup failure, call never sent)' {
+        $h = [pscustomobject]@{
+            Async      = [pscustomobject]@{}
+            PowerShell = [pscustomobject]@{ Streams = [pscustomobject]@{ Error = @('Import-Module: could not load DemoPortal', 'second problem') } }
+        }
+        $h.PowerShell | Add-Member ScriptMethod EndInvoke { param($a) , @() }
+
+        { Invoke-InModule { param($x) Receive-MutSoapRunspace -Handle $x } @($h) } | Should -Throw '*no result*could not load DemoPortal*second problem*'
     }
 }

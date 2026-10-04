@@ -1767,6 +1767,27 @@ function Get-MutWebFailure {
     return [pscustomobject]@{ IsWebError = $isWebError; Status = $status; StatusCode = $statusCode; Body = $body }
 }
 
+function New-MutOutageException {
+    <#
+        .SYNOPSIS
+        Private. An exception for an outage (HTTP 503 or no connection at all), marked with
+        Data['MutSoapOutage'] = $true so callers can tell it from a dropped, timed-out or faulted
+        call without parsing message text.
+    #>
+    param([Parameter(Mandatory = $true)][string]$Message)
+
+    $exception = [System.Exception]::new($Message)
+    $exception.Data['MutSoapOutage'] = $true
+    return $exception
+}
+
+function Test-MutOutageError {
+    <# Private. $true when an ErrorRecord's exception was raised by New-MutOutageException. #>
+    param([Parameter(Mandatory = $true)]$ErrorRecord)
+
+    return [bool]$ErrorRecord.Exception.Data.Contains('MutSoapOutage')
+}
+
 function Invoke-MutSoap {
     <#
         .SYNOPSIS
@@ -1825,7 +1846,7 @@ function Invoke-MutSoap {
             throw "Invoke-MutSoap: $Operation failed: $($caught.Exception.Message)"
         }
         if ($failure.StatusCode -eq 503) {
-            throw "Invoke-MutSoap: $Operation failed: HTTP 503 (service unavailable)."
+            throw (New-MutOutageException -Message "Invoke-MutSoap: $Operation failed: HTTP 503 (service unavailable).")
         }
         if ($failure.StatusCode -in @(401, 403)) {
             throw "Invoke-MutSoap: $Operation failed: HTTP $($failure.StatusCode) (credentials or permissions rejected)."
@@ -1849,7 +1870,7 @@ function Invoke-MutSoap {
                 'Timeout' { $result.TimedOut = $true }
                 { $_ -in @('ConnectionClosed', 'KeepAliveFailure', 'ReceiveFailure', 'SendFailure', 'PipelineFailure') } { $result.Dropped = $true }
                 { $_ -in @('NameResolutionFailure', 'ProxyNameResolutionFailure', 'ConnectFailure') } {
-                    throw "Invoke-MutSoap: $Operation failed: no connection ($($failure.Status))."
+                    throw (New-MutOutageException -Message "Invoke-MutSoap: $Operation failed: no connection ($($failure.Status)).")
                 }
                 default { }
             }
@@ -1914,7 +1935,9 @@ function Get-MutRunnerState {
         if ($call.Fault) { $reason = $call.Fault }
         elseif ($call.TimedOut) { $reason = 'timed out' }
         elseif ($call.Dropped) { $reason = 'connection dropped' }
-        throw "Get-MutRunnerState: GetRunnerState failed: $reason"
+        $failure = [System.InvalidOperationException]::new("Get-MutRunnerState: GetRunnerState failed: $reason")
+        $failure.Data['MutSoapNonOutage'] = $true
+        throw $failure
     }
 
     $parsed = $call.Value | ConvertFrom-Json
@@ -2123,8 +2146,15 @@ function Receive-MutSoapRunspace {
 
     $items = @($output)
     if ($items.Count -eq 0) {
-        # The call ended without producing a result: treat it as a drop, never as $null.
-        return [pscustomobject]@{ Ok = $false; Value = $null; Fault = $null; TimedOut = $false; Dropped = $true; DurationMs = 0; HttpStatus = $null }
+        # Invoke-MutSoap always returns an object, so no output means the runspace never got that
+        # far (for example Import-Module failed and the error only landed in Streams.Error): the
+        # call was never sent. Fail loudly with the first error records.
+        $errorText = ''
+        try {
+            $errorText = (@($Handle.PowerShell.Streams.Error | Select-Object -First 3 | ForEach-Object { $_.ToString() }) -join '; ')
+        }
+        catch { }
+        throw "Receive-MutSoapRunspace: the background call produced no result (runspace setup failure?). $errorText"
     }
     return $items[0]
 }
@@ -2284,6 +2314,7 @@ function Invoke-MutMutantBatch {
         $progressKey = $null
         $ended = $false
         $rowSeen = $false
+        $lastCurrent = $ids[0]
 
         while (-not $ended) {
             if ($null -eq $call -and (Test-MutSoapRunspaceDone -Handle $handle)) {
@@ -2306,18 +2337,29 @@ function Invoke-MutMutantBatch {
 
             if ($null -ne $pollError) {
                 # A failed poll is no information: skip every rule this iteration and keep the
-                # last row and progress key as they were. If the call itself has ended
-                # (returned, timed out or dropped) the failure is not retried forever: rethrow it
-                # (an outage is then handled by the caller's outage wait). A call that returned a
-                # value has ended the batch regardless.
+                # last row and progress key as they were. A call that returned a value has ended
+                # the batch regardless. Only an OUTAGE (HTTP 503 / no connection), and only once
+                # the call itself has ended, is rethrown for the caller's outage wait; any other
+                # failure (a dropped or faulted GetRunnerState, say) is retried on the next poll.
+                # The retries are bounded by the batch's client-timeout clock: past it, the last
+                # known mutant is treated as hung (rule 2) and the runner is stopped.
                 if ($null -ne $call -and $call.Ok -and -not [string]::IsNullOrWhiteSpace($call.Value)) {
                     $ended = $true
                     continue
                 }
-                if ($null -ne $call) {
+                if ($null -ne $call -and (Test-MutOutageError -ErrorRecord $pollError)) {
                     throw $pollError
                 }
-                Wait-MutSoapRunspace -Handle $handle -TimeoutMs ([int][math]::Round($PollIntervalSec * 1000))
+                if ($clock.Elapsed.TotalSeconds -gt $clientTimeout) {
+                    $hungMutantId = $lastCurrent
+                    break
+                }
+                if ($null -eq $call) {
+                    Wait-MutSoapRunspace -Handle $handle -TimeoutMs ([int][math]::Round($PollIntervalSec * 1000))
+                }
+                else {
+                    Start-Sleep -Milliseconds ([int][math]::Round($PollIntervalSec * 1000))
+                }
                 continue
             }
             if ($null -ne $row) {
@@ -2343,6 +2385,8 @@ function Invoke-MutMutantBatch {
                     $current = $ids[$row.MutantsDone]
                 }
             }
+
+            $lastCurrent = $current
 
             # Rule 1: one mutant has been running longer than its budget, on the server clock.
             if ($null -ne $row -and $row.MutantId -ne 0 -and $null -ne $row.MutantStartedAt -and $null -ne $serverNow) {
