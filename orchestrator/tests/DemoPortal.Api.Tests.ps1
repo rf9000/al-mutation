@@ -30,6 +30,7 @@ BeforeAll {
         InModuleScope DemoPortal {
             $script:MutApiBaseCache = @{}
             $script:MutCredentialCache = @{}
+            $script:MutCompanyCache = @{}
         }
     }
 }
@@ -150,6 +151,28 @@ Describe 'Get-MutCompanyId' {
 
     It 'returns the id of the first company' {
         Get-MutCompanyId -Env $envHandle | Should -Be 'C1'
+    }
+
+    It 'queries /api/v2.0/companies once per session for both Get-MutCompanyId and Get-MutCompanyName' {
+        Get-MutCompanyId -Env $envHandle | Should -Be 'C1'
+        Get-MutCompanyId -Env $envHandle | Should -Be 'C1'
+        Get-MutCompanyName -Env $envHandle | Should -Be 'First'
+        Get-MutCompanyName -Env $envHandle | Should -Be 'First'
+
+        # One GET for Get-MutApiBase's probe, one for the company lookup: nothing more.
+        Should -Invoke -ModuleName DemoPortal Invoke-RestMethod -Times 2 -Exactly
+    }
+
+    It 'caches per environment id' {
+        $other = [pscustomobject]@{ Id = 'E2'; Name = 'mut-other'; Url = 'https://demoportaldev.continiaonline.com/E2'; Backend = 'DemoPortal'; Shared = $false; Status = 'Running'; CliPath = './.tools/continia.exe' }
+        Get-MutCompanyId -Env $envHandle | Should -Be 'C1'
+        Get-MutCompanyId -Env $other | Should -Be 'C1'
+        Should -Invoke -ModuleName DemoPortal Invoke-RestMethod -ParameterFilter { $Uri -like 'https://demoportaldev.continiaonline.com/E2/*' } -Times 2 -Exactly
+    }
+
+    It 'throws when the environment has no companies' {
+        Mock -ModuleName DemoPortal Invoke-RestMethod -ParameterFilter { $Uri -like '*api/v2.0/companies*' } { [pscustomobject]@{ value = @() } }
+        { Get-MutCompanyName -Env $envHandle } | Should -Throw '*no companies*'
     }
 }
 

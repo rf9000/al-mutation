@@ -24,6 +24,11 @@ $script:MaxAppearIterations = 6
 # opposed to one that is $null.
 $script:MutApiBaseCache = @{}
 $script:MutCredentialCache = @{}
+# Per-environment-id cache of the first company's @{ Id; Name } (one /api/v2.0/companies GET per
+# session; §6.10.3).
+$script:MutCompanyCache = @{}
+# This module's own path: the SOAP background runspace imports it by path (§6.5.6 pattern).
+$script:DemoPortalModulePath = $PSCommandPath
 
 function Resolve-MutCliPath {
     param($Config)
@@ -750,17 +755,23 @@ function Get-MutApiBase {
     throw "Get-MutApiBase: no working API base found for environment '$($Env.Name)'. Tried: $($candidates -join ', ')"
 }
 
-function Get-MutCompanyId {
+function Get-MutCompanyInfo {
     <#
         .SYNOPSIS
-        Returns the GUID id of the first company reported by `<apiBase>/api/v2.0/companies`.
+        Private. The first company of `<apiBase>/api/v2.0/companies` as @{ Id; Name }, cached per
+        environment id so a session makes one lookup (§6.10.3).
     #>
     param(
         [Parameter(Mandatory = $true)]
-        $Env
+        $Env,
+        [string]$Caller = 'Get-MutCompanyInfo'
     )
 
     Assert-MutEnvironmentAllowed $Env
+
+    if ($script:MutCompanyCache.ContainsKey($Env.Id)) {
+        return $script:MutCompanyCache[$Env.Id]
+    }
 
     $apiBase = Get-MutApiBase -Env $Env
     $credential = Get-MutCredential -Env $Env
@@ -769,10 +780,44 @@ function Get-MutCompanyId {
     $response = Invoke-RestMethod -Uri "$apiBase/api/v2.0/companies" -Method Get -Headers $headers
     $companies = @($response.value)
     if ($companies.Count -eq 0) {
-        throw "Get-MutCompanyId: environment '$($Env.Name)' has no companies."
+        throw "${Caller}: environment '$($Env.Name)' has no companies."
     }
 
-    return $companies[0].id
+    $info = @{ Id = $companies[0].id; Name = $companies[0].name }
+    $script:MutCompanyCache[$Env.Id] = $info
+    return $info
+}
+
+function Get-MutCompanyId {
+    <#
+        .SYNOPSIS
+        Returns the GUID id of the first company reported by `<apiBase>/api/v2.0/companies`
+        (cached per environment id).
+    #>
+    param(
+        [Parameter(Mandatory = $true)]
+        $Env
+    )
+
+    Assert-MutEnvironmentAllowed $Env
+
+    return (Get-MutCompanyInfo -Env $Env -Caller 'Get-MutCompanyId').Id
+}
+
+function Get-MutCompanyName {
+    <#
+        .SYNOPSIS
+        Returns the `name` of the first company (the SOAP web-service path takes the name, S7),
+        cached per environment id together with Get-MutCompanyId.
+    #>
+    param(
+        [Parameter(Mandatory = $true)]
+        $Env
+    )
+
+    Assert-MutEnvironmentAllowed $Env
+
+    return (Get-MutCompanyInfo -Env $Env -Caller 'Get-MutCompanyName').Name
 }
 
 function Invoke-MutApi {
@@ -1674,4 +1719,643 @@ function Get-MutCoverage {
     return , [pscustomobject[]]@($merged.Values)
 }
 
-Export-ModuleMember -Function Get-MutEnvironment, New-MutEnvironment, Start-MutEnvironment, Remove-MutEnvironment, Reset-MutEnvironment, Assert-MutEnvironmentAllowed, Get-MutApiBase, Get-MutCompanyId, Grant-MutPermissionSet, Invoke-MutApi, Install-MutDependencies, Compile-MutApp, Publish-MutApp, Publish-MutAppFile, Unpublish-MutApp, Invoke-MutTests, Get-MutCoverageRaw, Get-MutCoverage, Stop-MutBackendChildProcesses
+# ======================================================================================
+# SOAP test transport (§6.10.3): the mutant loop's per-mutant calls go to the MUTRunner web
+# service instead of DemoPortal test jobs.
+# ======================================================================================
+
+$script:MutRunnerNamespace = 'urn:microsoft-dynamics-schemas/codeunit/MUTRunner'
+
+function Get-MutWebFailure {
+    <#
+        .SYNOPSIS
+        Private. Reduces a caught Invoke-WebRequest ErrorRecord to @{ IsWebError; Status;
+        StatusCode; Body }. Status is the WebExceptionStatus name (never message text: messages
+        are localized), StatusCode the HTTP status of the response when there is one, Body the
+        response body (read from the response stream, else from ErrorDetails, where PowerShell
+        5.1 puts it after it has consumed the stream). Never touches request headers, so no
+        credential can leak through it.
+    #>
+    param(
+        [Parameter(Mandatory = $true)]
+        [System.Management.Automation.ErrorRecord]$ErrorRecord
+    )
+
+    $exception = $ErrorRecord.Exception
+    $isWebError = $exception -is [System.Net.WebException]
+    $status = $null
+    $statusCode = $null
+    $body = $null
+
+    if ($isWebError) {
+        $status = [string]$exception.Status
+        $response = $exception.Response
+        if ($null -ne $response) {
+            try { $statusCode = [int]$response.StatusCode } catch { }
+            try {
+                $reader = New-Object System.IO.StreamReader($response.GetResponseStream())
+                try { $body = $reader.ReadToEnd() } finally { $reader.Dispose() }
+            }
+            catch { }
+        }
+    }
+
+    if ([string]::IsNullOrEmpty($body) -and $null -ne $ErrorRecord.ErrorDetails -and $ErrorRecord.ErrorDetails.Message) {
+        $body = $ErrorRecord.ErrorDetails.Message
+    }
+
+    return [pscustomobject]@{ IsWebError = $isWebError; Status = $status; StatusCode = $statusCode; Body = $body }
+}
+
+function Invoke-MutSoap {
+    <#
+        .SYNOPSIS
+        Private, and the single Pester mock point for SOAP (§6.10.3). POSTs one operation to
+        `<apiBase>/WS/<escaped company name>/Codeunit/MUTRunner` with `SOAPAction:
+        <namespace>:<Operation>`, Basic auth and XML-escaped arguments.
+
+        .OUTPUTS
+        @{ Ok; Value; Fault; TimedOut; Dropped; DurationMs }. Value is the `return_value` text.
+        Fault is the `faultstring` of a SOAP fault. TimedOut: the client timeout fired
+        (WebException Status Timeout). Dropped: the connection closed before a response
+        (ConnectionClosed / KeepAliveFailure / ReceiveFailure / SendFailure / PipelineFailure).
+        Throws only on HTTP 503 or no connection at all (DNS / connect failure), which the
+        caller's outage wait (§6.5.6) handles, and on an exception that is not a web error.
+    #>
+    param(
+        [Parameter(Mandatory = $true)]
+        $Env,
+        [Parameter(Mandatory = $true)]
+        [string]$Operation,
+        [hashtable]$Arguments = @{},
+        [int]$TimeoutSec = 600
+    )
+
+    Assert-MutEnvironmentAllowed $Env
+
+    $apiBase = Get-MutApiBase -Env $Env
+    $company = Get-MutCompanyName -Env $Env
+    $credential = Get-MutCredential -Env $Env
+    $headers = Get-MutBasicAuthHeader -Credential $credential
+
+    $namespace = $script:MutRunnerNamespace
+    $argumentXml = (@($Arguments.Keys | Sort-Object) | ForEach-Object {
+            '<x:{0}>{1}</x:{0}>' -f $_, [System.Security.SecurityElement]::Escape([string]$Arguments[$_])
+        }) -join ''
+    $body = '<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" xmlns:x="{0}"><s:Body><x:{1}>{2}</x:{1}></s:Body></s:Envelope>' -f $namespace, $Operation, $argumentXml
+    $headers['SOAPAction'] = '{0}:{1}' -f $namespace, $Operation
+    $uri = '{0}/WS/{1}/Codeunit/MUTRunner' -f $apiBase, [uri]::EscapeDataString($company)
+
+    $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+    $response = $null
+    $failure = $null
+    $caught = $null
+    try {
+        $response = Invoke-WebRequest -Uri $uri -Method Post -Headers $headers -ContentType 'text/xml; charset=utf-8' -Body $body -UseBasicParsing -TimeoutSec $TimeoutSec
+    }
+    catch {
+        $caught = $_
+        $failure = Get-MutWebFailure -ErrorRecord $_
+    }
+
+    $result = @{ Ok = $false; Value = $null; Fault = $null; TimedOut = $false; Dropped = $false; DurationMs = 0 }
+
+    if ($null -ne $failure) {
+        if (-not $failure.IsWebError) {
+            throw "Invoke-MutSoap: $Operation failed: $($caught.Exception.Message)"
+        }
+        if ($failure.StatusCode -eq 503) {
+            throw "Invoke-MutSoap: $Operation failed: HTTP 503 (service unavailable)."
+        }
+        switch ($failure.Status) {
+            'Timeout' { $result.TimedOut = $true }
+            { $_ -in @('ConnectionClosed', 'KeepAliveFailure', 'ReceiveFailure', 'SendFailure', 'PipelineFailure') } { $result.Dropped = $true }
+            { $_ -in @('NameResolutionFailure', 'ProxyNameResolutionFailure', 'ConnectFailure') } {
+                throw "Invoke-MutSoap: $Operation failed: no connection ($($failure.Status))."
+            }
+            default {
+                $faultText = $null
+                if ($failure.Body -and $failure.Body -match '<faultstring[^>]*>([^<]*)<') {
+                    $faultText = $Matches[1]
+                }
+                elseif ($failure.StatusCode) {
+                    $faultText = "HTTP $($failure.StatusCode)"
+                }
+                else {
+                    $faultText = "request failed ($($failure.Status))"
+                }
+                $result.Fault = $faultText
+            }
+        }
+        $result.DurationMs = [int]$stopwatch.ElapsedMilliseconds
+        return [pscustomobject]$result
+    }
+
+    [xml]$xml = $response.Content
+    $fault = $xml.SelectSingleNode("//*[local-name()='faultstring']")
+    if ($null -ne $fault) {
+        $result.Fault = $fault.InnerText
+    }
+    else {
+        $value = $xml.SelectSingleNode("//*[local-name()='return_value']")
+        $result.Ok = $true
+        if ($null -ne $value) {
+            $result.Value = $value.InnerText
+        }
+    }
+    $result.DurationMs = [int]$stopwatch.ElapsedMilliseconds
+    return [pscustomobject]$result
+}
+
+
+function ConvertFrom-MutIsoUtc {
+    <#
+        .SYNOPSIS
+        Private. Parses an ISO-8601 UTC string from AL's Format(<DateTime>, 0, 9) (for example
+        2026-10-04T20:43:43.0700000Z) to a UTC [datetime]. Invariant culture: this machine's
+        Danish locale must not change the result. An empty or null string (a runner row that has
+        not started its first mutant) is $null.
+    #>
+    param([AllowNull()][AllowEmptyString()][string]$Text)
+
+    if ([string]::IsNullOrWhiteSpace($Text)) {
+        return $null
+    }
+    $styles = [System.Globalization.DateTimeStyles]::AdjustToUniversal -bor [System.Globalization.DateTimeStyles]::AssumeUniversal
+    return [datetime]::Parse($Text, [System.Globalization.CultureInfo]::InvariantCulture, $styles)
+}
+
+function Get-MutRunnerState {
+    <#
+        .SYNOPSIS
+        `GetRunnerState`, parsed (§6.10.2/§6.10.3).
+        .OUTPUTS
+        @{ ServerNowUtc (UTC datetime); Rows = @( @{ BatchId; SessionId; RunNo; MutantId;
+        MutantStartedAt (UTC datetime, or $null when the row has not started its first mutant);
+        MutantsDone; Finished } ) }. Throws when the call does not return a value.
+    #>
+    param(
+        [Parameter(Mandatory = $true)]
+        $Env
+    )
+
+    Assert-MutEnvironmentAllowed $Env
+
+    $call = Invoke-MutSoap -Env $Env -Operation 'GetRunnerState' -Arguments @{}
+    if (-not $call.Ok -or [string]::IsNullOrWhiteSpace($call.Value)) {
+        $reason = 'no value returned'
+        if ($call.Fault) { $reason = $call.Fault }
+        elseif ($call.TimedOut) { $reason = 'timed out' }
+        elseif ($call.Dropped) { $reason = 'connection dropped' }
+        throw "Get-MutRunnerState: GetRunnerState failed: $reason"
+    }
+
+    $parsed = $call.Value | ConvertFrom-Json
+    $rows = @()
+    foreach ($row in @($parsed.rows | ForEach-Object { $_ })) {
+        $rows += [pscustomobject]@{
+            BatchId         = [string]$row.batchId
+            SessionId       = [int]$row.sessionId
+            RunNo           = [int]$row.runNo
+            MutantId        = [int]$row.mutantId
+            MutantStartedAt = ConvertFrom-MutIsoUtc -Text ([string]$row.mutantStartedAt)
+            MutantsDone     = [int]$row.mutantsDone
+            Finished        = [bool]$row.finished
+        }
+    }
+
+    return [pscustomobject]@{
+        ServerNowUtc = ConvertFrom-MutIsoUtc -Text ([string]$parsed.serverNowUtc)
+        Rows         = $rows
+    }
+}
+
+function Test-MutSoapRunner {
+    <#
+        .SYNOPSIS
+        $true when the MUTRunner service answers GetRunnerState without a fault; $false when it
+        faults, times out or drops (Mutation Core older than 1.1.0.0, or the service is missing).
+        An outage (HTTP 503, no connection) still throws, so it is not reported as "missing".
+    #>
+    param(
+        [Parameter(Mandatory = $true)]
+        $Env
+    )
+
+    Assert-MutEnvironmentAllowed $Env
+
+    $call = Invoke-MutSoap -Env $Env -Operation 'GetRunnerState' -Arguments @{}
+    return [bool]($call.Ok -and -not [string]::IsNullOrWhiteSpace($call.Value))
+}
+
+function Stop-MutRunnerBatch {
+    <#
+        .SYNOPSIS
+        Stops a runner batch by BatchId and confirms the environment is healthy again (§6.10.3).
+        Calls StopRunner, then every PollIntervalSec (default 5) for up to ConfirmWindowSec
+        (default 120) runs RunTests of a health codeunit, the first codeunit of the batch's
+        covering set (-CodeunitIds, `95155|95110` style). Confirmed is true when such a RunTests
+        answers with failed = 0 within HealthTimeoutSec (default 30); RunTests clears the active
+        mutant first. DeleteRunnerState is called only after confirmation.
+
+        A StopRunner fault is not fatal: the row may already have finished (or not exist). The
+        health call is what confirms. The first health call comes one PollIntervalSec after
+        StopRunner, since the session needs a moment to end.
+
+        .PARAMETER CodeunitIds
+        The batch's covering set. Required: it names the health codeunit, and the runner row does
+        not carry it. (An orphan batch's caller passes any test codeunit of the app, for example
+        the settle-probe codeunit.)
+        .OUTPUTS
+        @{ Confirmed; Attempts }
+    #>
+    param(
+        [Parameter(Mandatory = $true)]
+        $Env,
+        [Parameter(Mandatory = $true)]
+        [string]$BatchId,
+        [Parameter(Mandatory = $true)]
+        [string]$CodeunitIds,
+        [double]$PollIntervalSec = 5,
+        [double]$ConfirmWindowSec = 120,
+        [int]$HealthTimeoutSec = 30
+    )
+
+    Assert-MutEnvironmentAllowed $Env
+
+    $healthCodeunit = @($CodeunitIds -split '[|,]' | ForEach-Object { $_.Trim() } | Where-Object { $_ })[0]
+    if (-not $healthCodeunit) {
+        throw 'Stop-MutRunnerBatch: -CodeunitIds names no health codeunit.'
+    }
+
+    Invoke-MutSoap -Env $Env -Operation 'StopRunner' -Arguments @{ batchId = $BatchId } | Out-Null
+
+    $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+    $attempts = 0
+    while ($stopwatch.Elapsed.TotalSeconds -lt $ConfirmWindowSec) {
+        Start-Sleep -Milliseconds ([int][math]::Round($PollIntervalSec * 1000))
+        $attempts++
+
+        $health = Invoke-MutSoap -Env $Env -Operation 'RunTests' -Arguments @{ codeunitIds = $healthCodeunit } -TimeoutSec $HealthTimeoutSec
+        if ($health.Ok -and -not [string]::IsNullOrWhiteSpace($health.Value)) {
+            $parsed = $null
+            try { $parsed = $health.Value | ConvertFrom-Json } catch { }
+            if ($null -ne $parsed -and (Test-MutHasProperty $parsed 'failed') -and ([int]$parsed.failed -eq 0)) {
+                Invoke-MutSoap -Env $Env -Operation 'DeleteRunnerState' -Arguments @{ batchId = $BatchId } | Out-Null
+                return [pscustomobject]@{ Confirmed = $true; Attempts = $attempts }
+            }
+        }
+    }
+
+    return [pscustomobject]@{ Confirmed = $false; Attempts = $attempts }
+}
+
+function Start-MutSoapRunspace {
+    <#
+        .SYNOPSIS
+        Private. Starts one MUTRunner SOAP call on a background runspace (the §6.5.6 runspace
+        pattern of Invoke-MutTestsWithBudget: a PowerShell instance on another thread of THIS
+        process), so the caller can keep polling on its own thread. The runspace imports this
+        module by path and is seeded with the credential, API base and company that the calling
+        thread already resolved: its own module instance has no CLI path and must never need the
+        CLI. Together with Test-/Receive-/Stop-MutSoapRunspace this is the one seam Pester mocks
+        to test Invoke-MutMutantBatch without a real runspace.
+        .OUTPUTS
+        An opaque handle for the other three functions.
+    #>
+    param(
+        [Parameter(Mandatory = $true)]
+        $Env,
+        [Parameter(Mandatory = $true)]
+        [string]$Operation,
+        [Parameter(Mandatory = $true)]
+        [hashtable]$Arguments,
+        [Parameter(Mandatory = $true)]
+        [int]$TimeoutSec
+    )
+
+    Assert-MutEnvironmentAllowed $Env
+
+    $credential = Get-MutCredential -Env $Env
+    $apiBase = Get-MutApiBase -Env $Env
+    $companyInfo = Get-MutCompanyInfo -Env $Env -Caller 'Start-MutSoapRunspace'
+
+    $runspace = [runspacefactory]::CreateRunspace()
+    $runspace.Open()
+    $powershell = [System.Management.Automation.PowerShell]::Create()
+    $powershell.Runspace = $runspace
+
+    [void]$powershell.AddScript({
+            param($ModulePath, $JobEnv, $JobCredential, $JobApiBase, $JobCompany, $JobOperation, $JobArguments, $JobTimeoutSec)
+            $module = Import-Module $ModulePath -Force -PassThru -WarningAction SilentlyContinue
+            & $module {
+                param($e, $c, $b, $company, $op, $a, $t)
+                $script:CliPath = $e.CliPath
+                $script:MutCredentialCache[$e.Id] = $c
+                $script:MutApiBaseCache[$e.Id] = $b
+                $script:MutCompanyCache[$e.Id] = $company
+                Invoke-MutSoap -Env $e -Operation $op -Arguments $a -TimeoutSec $t
+            } $JobEnv $JobCredential $JobApiBase $JobCompany $JobOperation $JobArguments $JobTimeoutSec
+        })
+    [void]$powershell.AddArgument($script:DemoPortalModulePath)
+    [void]$powershell.AddArgument($Env)
+    [void]$powershell.AddArgument($credential)
+    [void]$powershell.AddArgument($apiBase)
+    [void]$powershell.AddArgument($companyInfo)
+    [void]$powershell.AddArgument($Operation)
+    [void]$powershell.AddArgument($Arguments)
+    [void]$powershell.AddArgument($TimeoutSec)
+
+    $async = $powershell.BeginInvoke()
+    return [pscustomobject]@{ PowerShell = $powershell; Runspace = $runspace; Async = $async }
+}
+
+function Test-MutSoapRunspaceDone {
+    <# Private. $true once the background call has returned (or failed). #>
+    param([Parameter(Mandatory = $true)]$Handle)
+
+    return [bool]$Handle.Async.IsCompleted
+}
+
+function Receive-MutSoapRunspace {
+    <#
+        .SYNOPSIS
+        Private. Collects a finished background call: its Invoke-MutSoap result object. A throw
+        inside the runspace (HTTP 503, no connection) is rethrown here, so the caller's outage
+        handling (§6.5.6) sees it exactly as if it had made the call itself.
+    #>
+    param([Parameter(Mandatory = $true)]$Handle)
+
+    $output = $null
+    try {
+        $output = $Handle.PowerShell.EndInvoke($Handle.Async)
+    }
+    catch {
+        $inner = $_.Exception
+        if ($null -ne $inner.InnerException) { $inner = $inner.InnerException }
+        throw $inner.Message
+    }
+
+    return @($output)[0]
+}
+
+function Stop-MutSoapRunspace {
+    <#
+        .SYNOPSIS
+        Private. Releases the background runspace without ever blocking: BeginStop and CloseAsync
+        are asynchronous, so a call stuck in a hung server session (still waiting on its HTTP
+        response) cannot hold the caller. Never throws.
+    #>
+    param([Parameter(Mandatory = $true)]$Handle)
+
+    try {
+        if (-not $Handle.Async.IsCompleted) {
+            $Handle.PowerShell.BeginStop($null, $null) | Out-Null
+        }
+    }
+    catch { }
+    try { $Handle.Runspace.CloseAsync() } catch { }
+}
+
+function ConvertTo-MutBatchResult {
+    <# Private. Normalizes one RunMutants entry or one mutantResults API row to the Results shape. #>
+    param([Parameter(Mandatory = $true)]$Entry)
+
+    $get = {
+        param($name, $default)
+        if (Test-MutHasProperty $Entry $name) { return $Entry.$name }
+        return $default
+    }
+    return [pscustomobject]@{
+        MutantId    = [int](& $get 'mutantId' 0)
+        Status      = [string](& $get 'status' '')
+        KillingTest = [string](& $get 'killingTest' '')
+        DurationMs  = [int](& $get 'durationMs' 0)
+        Passed      = & $get 'passed' $null
+        Failed      = & $get 'failed' $null
+    }
+}
+
+function Invoke-MutMutantBatch {
+    <#
+        .SYNOPSIS
+        Runs one batch of mutants through the MUTRunner `RunMutants` operation with a hang
+        watchdog (§6.10.3). RunMutants runs on a background runspace with client timeout
+        MutantIds.Count x MutantBudgetSec + 60 s (-ClientTimeoutSec overrides it, for tests);
+        this thread polls Get-MutRunnerState every PollIntervalSec (default 5).
+
+        Hang rules: (1) the row of THIS BatchId has a non-zero Mutant Id whose age on the
+        SERVER clock (ServerNowUtc - MutantStartedAt) exceeds MutantBudgetSec; an empty
+        MutantStartedAt (first mutant not started yet) is not a hang on that basis alone;
+        (2) no row for this BatchId within NoRowWindowSec (default 60), or the batch exceeds its
+        client timeout. A hang calls Stop-MutRunnerBatch (with this BatchId); an unconfirmed stop
+        throws RunnerStopFailed.
+
+        Fault rule: the call returned a SOAP fault, the row is unfinished and its (Mutant Id,
+        Mutants Done) has not advanced for FaultStallSec (default 10): that mutant is
+        FaultMutantId, and the runner is stopped the same way.
+
+        The batch has ended only when its row shows Finished = true, the call returned a value
+        (the runner sets Finished before returning), or a stop was confirmed. A TimedOut or
+        Dropped call is not an outage and not an end: polling continues. A throw out of the call
+        itself (HTTP 503, no connection) propagates, for the caller's outage wait.
+
+        Results come from the call's return value when it finished with one, otherwise from GET
+        mutantResults for the batch's mutant ids (rows committed before a hang, S6). The hung or
+        fault mutant is never in Results.
+
+        .OUTPUTS
+        @{ Results = @( @{ MutantId; Status; KillingTest; DurationMs; Passed; Failed } );
+        HungMutantId; FaultMutantId; Fault; Stopped } (ids and Fault are $null when not
+        applicable; Stopped is $true when a stop was needed and confirmed).
+    #>
+    param(
+        [Parameter(Mandatory = $true)]
+        $Env,
+        [Parameter(Mandatory = $true)]
+        [int[]]$CodeunitIds,
+        [Parameter(Mandatory = $true)]
+        [int[]]$MutantIds,
+        [Parameter(Mandatory = $true)]
+        [int]$RunNo,
+        [Parameter(Mandatory = $true)]
+        [int]$MutantBudgetSec,
+        [double]$PollIntervalSec = 5,
+        [double]$NoRowWindowSec = 60,
+        [double]$FaultStallSec = 10,
+        [double]$StopConfirmSec = 120,
+        [int]$HealthTimeoutSec = 30,
+        [double]$ClientTimeoutSec = 0,
+        [double]$ReturnGraceSec = 10
+    )
+
+    Assert-MutEnvironmentAllowed $Env
+
+    $ids = @($MutantIds | ForEach-Object { [int]$_ })
+    if ($ids.Count -eq 0) {
+        throw 'Invoke-MutMutantBatch: -MutantIds is empty.'
+    }
+    $coveringSet = ($CodeunitIds | ForEach-Object { [string]$_ }) -join '|'
+    $batchId = [guid]::NewGuid().ToString()
+
+    $clientTimeout = $ClientTimeoutSec
+    if ($clientTimeout -le 0) {
+        $clientTimeout = ($ids.Count * $MutantBudgetSec) + 60
+    }
+
+    $handle = Start-MutSoapRunspace -Env $Env -Operation 'RunMutants' -TimeoutSec ([int][math]::Ceiling($clientTimeout)) -Arguments @{
+        batchId     = $batchId
+        codeunitIds = $coveringSet
+        mutantIds   = ($ids -join ',')
+        runNo       = $RunNo
+    }
+
+    $call = $null
+    $hungMutantId = $null
+    $faultMutantId = $null
+    $stopped = $false
+
+    try {
+        $clock = [System.Diagnostics.Stopwatch]::StartNew()
+        $progress = [System.Diagnostics.Stopwatch]::StartNew()
+        $progressKey = $null
+        $ended = $false
+
+        while (-not $ended) {
+            if ($null -eq $call -and (Test-MutSoapRunspaceDone -Handle $handle)) {
+                $call = Receive-MutSoapRunspace -Handle $handle
+            }
+
+            $row = $null
+            $serverNow = $null
+            try {
+                $state = Get-MutRunnerState -Env $Env
+                $serverNow = $state.ServerNowUtc
+                $row = @($state.Rows | Where-Object { $_.BatchId -eq $batchId })[0]
+            }
+            catch {
+                # A transient state-poll failure is no information; the next poll, the no-row
+                # window and the client timeout still bound the wait.
+                $row = $null
+                $serverNow = $null
+            }
+
+            if ($null -ne $row -and $row.Finished) {
+                $ended = $true
+                continue
+            }
+            if ($null -ne $call -and $call.Ok -and -not [string]::IsNullOrWhiteSpace($call.Value)) {
+                $ended = $true
+                continue
+            }
+
+            # The candidate culprit if this batch has to be abandoned now.
+            $current = $ids[0]
+            if ($null -ne $row) {
+                if ($row.MutantId -ne 0) {
+                    $current = $row.MutantId
+                }
+                elseif ($row.MutantsDone -lt $ids.Count) {
+                    $current = $ids[$row.MutantsDone]
+                }
+            }
+
+            # Rule 1: one mutant has been running longer than its budget, on the server clock.
+            if ($null -ne $row -and $row.MutantId -ne 0 -and $null -ne $row.MutantStartedAt -and $null -ne $serverNow) {
+                if (($serverNow - $row.MutantStartedAt).TotalSeconds -gt $MutantBudgetSec) {
+                    $hungMutantId = $row.MutantId
+                    break
+                }
+            }
+            # Rule 2: no row at all within the window, or the whole batch ran past its client timeout.
+            if ($null -eq $row -and $clock.Elapsed.TotalSeconds -gt $NoRowWindowSec) {
+                $hungMutantId = $current
+                break
+            }
+            if ($clock.Elapsed.TotalSeconds -gt $clientTimeout) {
+                $hungMutantId = $current
+                break
+            }
+
+            # Fault rule: the call faulted, the row is unfinished and no longer advancing.
+            $key = 'none'
+            if ($null -ne $row) {
+                $key = '{0}/{1}' -f $row.MutantId, $row.MutantsDone
+            }
+            if ($key -ne $progressKey) {
+                $progressKey = $key
+                $progress.Restart()
+            }
+            if ($null -ne $call -and $call.Fault -and $progress.Elapsed.TotalSeconds -ge $FaultStallSec) {
+                $faultMutantId = $current
+                break
+            }
+
+            Start-Sleep -Milliseconds ([int][math]::Round($PollIntervalSec * 1000))
+        }
+
+        if ($null -eq $hungMutantId -and $null -eq $faultMutantId -and $null -eq $call) {
+            # The row shows Finished a moment before the call's return value arrives. The value
+            # also carries the Empty entries (no row is written for them), so wait briefly for it.
+            $grace = [System.Diagnostics.Stopwatch]::StartNew()
+            while ($grace.Elapsed.TotalSeconds -lt $ReturnGraceSec -and -not (Test-MutSoapRunspaceDone -Handle $handle)) {
+                Start-Sleep -Milliseconds 50
+            }
+            if (Test-MutSoapRunspaceDone -Handle $handle) {
+                $call = Receive-MutSoapRunspace -Handle $handle
+            }
+        }
+
+        if ($null -ne $hungMutantId -or $null -ne $faultMutantId) {
+            $stop = Stop-MutRunnerBatch -Env $Env -BatchId $batchId -CodeunitIds $coveringSet -PollIntervalSec $PollIntervalSec -ConfirmWindowSec $StopConfirmSec -HealthTimeoutSec $HealthTimeoutSec
+            if (-not $stop.Confirmed) {
+                throw "RunnerStopFailed: the runner of batch $batchId was not confirmed stopped within $StopConfirmSec s (mutant $(@($hungMutantId, $faultMutantId | Where-Object { $null -ne $_ })[0]))."
+            }
+            $stopped = $true
+        }
+    }
+    finally {
+        Stop-MutSoapRunspace -Handle $handle
+    }
+
+    $excluded = @(@($hungMutantId, $faultMutantId) | Where-Object { $null -ne $_ })
+
+    $results = @()
+    if ($null -ne $call -and $call.Ok -and -not [string]::IsNullOrWhiteSpace($call.Value) -and $excluded.Count -eq 0) {
+        foreach ($entry in @($call.Value | ConvertFrom-Json | ForEach-Object { $_ })) {
+            $results += ConvertTo-MutBatchResult -Entry $entry
+        }
+    }
+    else {
+        $response = Invoke-MutApi -Env $Env -Method 'GET' -Path ('mutantResults?$filter=runNo eq {0}' -f $RunNo)
+        $rowsById = @{}
+        if ($null -ne $response -and (Test-MutHasProperty $response 'value')) {
+            foreach ($apiRow in @($response.value)) {
+                $rowsById[[int]$apiRow.mutantId] = $apiRow
+            }
+        }
+        foreach ($id in $ids) {
+            if ($excluded -contains $id) {
+                continue
+            }
+            if ($rowsById.ContainsKey($id)) {
+                $results += ConvertTo-MutBatchResult -Entry $rowsById[$id]
+            }
+        }
+    }
+
+    $fault = $null
+    if ($null -ne $call -and $call.Fault) {
+        $fault = $call.Fault
+    }
+
+    return [pscustomobject]@{
+        Results       = $results
+        HungMutantId  = $hungMutantId
+        FaultMutantId = $faultMutantId
+        Fault         = $fault
+        Stopped       = $stopped
+    }
+}
+
+Export-ModuleMember -Function Get-MutEnvironment, New-MutEnvironment, Start-MutEnvironment, Remove-MutEnvironment, Reset-MutEnvironment, Assert-MutEnvironmentAllowed, Get-MutApiBase, Get-MutCompanyId, Get-MutCompanyName, Get-MutRunnerState, Stop-MutRunnerBatch, Invoke-MutMutantBatch, Test-MutSoapRunner, Grant-MutPermissionSet, Invoke-MutApi, Install-MutDependencies, Compile-MutApp, Publish-MutApp, Publish-MutAppFile, Unpublish-MutApp, Invoke-MutTests, Get-MutCoverageRaw, Get-MutCoverage, Stop-MutBackendChildProcesses
