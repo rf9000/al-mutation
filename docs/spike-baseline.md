@@ -737,6 +737,91 @@ Four harness defects surfaced and were fixed during the spike, each worth knowin
 - A StrictMode crash between the activate and deactivate PATCHes left sentinel mutant 9901 active in the
   environment; the script now deactivates in a `finally`.
 
+### SOAP-runner spike: tests without a DemoPortal job (2026-10-04)
+
+**Yes, and it reverses the runner-nesting conclusion above.** `spikes/soap-runner/`, run against `mut-spike-02`.
+
+**Where the idea came from.** The Continia AL Test Runner VS Code extension (0.7.5) has two paths. Its normal
+"Run" goes through Environment Explorer to the same DemoPortal job API that `continia test run` uses
+(`POST /environments/{id}/tests/jobs.json`, then a 1 s poll of `jobs/{id}.xml`), so switching to it would save
+nothing. Its "Debug" path instead calls a SOAP codeunit `TestRunner` on the environment directly, with the
+environment user's basic-auth credentials. That service comes from the app `Continia Test Runner Service`
+25.0.0.0, which is installed on DemoPortal environments. Its operations are `RunTest`, `RunTestsFromFilter`,
+`GetCodeCoverage`, `GetPerformanceProfile` and `GetTableIDFromName`.
+
+**What the spike built.** A small app (`MUT SOAP Runner Spike`, codeunits 50700/50701) publishes codeunit 50700
+as the SOAP service `MUTSpikeRunner`. It runs tests from the web-service session through the standard chain:
+`"Test Suite Mgt."`, then runner 130450, then `"Test Runner - Mgt"`. That is the same chain a DemoPortal job
+uses, so `MUT Test Hooks` work unchanged. The call is not nested inside a test codeunit, so the runner-nesting
+refusal does not apply.
+- `RunTests(codeunitId, functionFilter)` runs one codeunit with no mutant active.
+- `RunMutants(codeunitId, functionFilter, mutantIds, runNo)` discovers the test methods once. Then, for each
+  mutant in turn, it sets `MUT Mutation Setup` with `Modify(true)` and runs the suite. This is §6.1.6's in-job
+  mutant loop.
+
+| Measure | `continia test run` | SOAP `MUTSpikeRunner` |
+|---|---|---|
+| 95155 whole codeunit (13 tests), no mutant, 5 calls each | median 10,698 ms (9,940–12,200) | median 630 ms (548–693) |
+| One mutant per call, 157 calls | ~10.5 s/job (503 bisect) | median 581 ms, p90 661, max 751 |
+| All 157 mutants of 72918635 in **one** call | n/a | 44.8 s total, **285 ms/mutant** |
+| Outcome vs run 15 (CLI), 157 mutants | — | **157/157 match** for one-per-call and for the batch: 62 Killed, 95 Survived, score 0.3949 |
+| Hook rows (`mutantResults`) | — | written for 62 of 62 Killed, 0 of 95 Survived |
+
+In-BC test time was 140–360 ms on both routes, so the gap is entirely per-job overhead. For comparison, run 15
+averaged 13.8 s per mutant end to end. At 285 ms per mutant, that is 30–45× fewer seconds per mutant.
+
+**Permissions did not differ.** DemoPortal job sessions run in a restricted permission mode. That restriction
+comes from `"Test Runner - Mgt".StartStopPermissionMock` (Permissions Mock 131006), which the SOAP route also
+goes through. All 157 outcomes matched, so no permission-sensitive difference showed up for these tests.
+
+Harness defects that surfaced and were fixed:
+- `RunAllTests` reads `"Test Suite"` from the record, not from the filter, so `FindFirst` is needed first.
+- `Setup.Modify()` without `true` skips `OnModify`, so the isolated-storage mirror never updated and every
+  mutant "survived". The CLI comparison caught this.
+- The first parity attempt found that the Banking app on the environment was not the run 15 schemata build,
+  so the CLI also reported 0 kills. Run 15's schemata app was republished (`Publish-MutAppFile`, 116 s)
+  before the parity runs.
+
+**Timeouts (spike app 1.0.0.3, `Invoke-SoapTimeoutSpike.ps1`).** These used the run-15 Timeout mutants 4512,
+4514 and 4515 on 95121.
+- **A runaway SOAP call blocks until the client gives up.** In one probe with a 15-minute client timeout,
+  the connection dropped by itself after 276 s. The cause is unknown, so nothing should depend on it.
+- **The runner's SOAP session is not in `Active Session`**, either while it runs or afterwards, so
+  `MUT Sessions API` cannot find or stop it. The rows that list does show are the short-lived sessions of the
+  API calls themselves, which turn over about every 20 s. Inside the call, `SessionId()` returns an ordinary
+  positive id (2025, 2041).
+- **The runaway holds its test transaction open and blocks other test runs.** A health run of 95155 during
+  the runaway took about 20 s and failed one test: `We can't save your changes right now, because a record
+  in table 'Bank' is being updated in a transaction done by another session.` A separate test suite per call
+  does not prevent this.
+- **Stopping by id works.** The runner commits `SessionId()` and the current mutant to `MUT Spike Runner
+  State` before each mutant. After a client timeout, `GetState` reads that row and `StopRunner(id)` calls
+  `StopSession`, which takes 142–213 ms. Five seconds later, a health run passed cleanly (549–572 ms, 13/13)
+  in 2 of 2 runs. Without a stop, the environment stayed blocked until the 276 s drop.
+
+The design that follows is:
+1. Commit a state row (session id, current mutant, mutants done) before each mutant.
+2. On a client timeout, read the state, record the current mutant as `Timeout`, and call `StopRunner`.
+3. Resume the batch after that mutant.
+
+The partial results the batch finished before the hang must also be committed per mutant, because a
+timed-out call returns nothing.
+
+**Coverage does not need to move.** Baseline coverage is one `--raw` job per test codeunit per run (4 jobs
+in the U2 scope), so it can stay on the CLI. Only the per-mutant loop needs SOAP.
+
+**Still open before this replaces the CLI path:**
+- Stability: about 330 SOAP calls ran without error, but none over the 45–60 minute window in which the job
+  path failed with 503s.
+- Only 95155 (outcome parity) and 95121 (timeouts) have been tested. Other codeunits may use handlers or
+  `TestPermissions` differently.
+- Concurrency: `MUT Mutation Setup` is one global row, so only one runner may run at a time, the same as
+  guardrail #8 for jobs.
+
+**Consequence:** F7's "no TestRunner codeunit id can be passed" still holds for the CLI, but it no longer
+limits this backend. A run can drive its own runner over SOAP. On this evidence the ~46 h full-AUT projection
+drops to about 1–2 h of test time.
+
 ### Not proven
 
 Schemata compile at whole-project scale, and publish at that size, were open questions in earlier drafts of
