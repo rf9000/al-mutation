@@ -59,8 +59,8 @@ BeforeAll {
     }
 
     function script:New-StateRow {
-        param([string]$BatchId = 'B1', [int]$MutantId = 0, [string]$StartedAt = '', [int]$Done = 0, [bool]$Finished = $false, [int]$SessionId = 77, [int]$RunNo = 5)
-        [pscustomobject]@{ batchId = $BatchId; sessionId = $SessionId; runNo = $RunNo; mutantId = $MutantId; mutantStartedAt = $StartedAt; mutantsDone = $Done; finished = $Finished }
+        param([string]$BatchId = 'B1', [int]$MutantId = 0, [string]$StartedAt = '', [int]$Done = 0, [bool]$Finished = $false, [int]$SessionId = 77, [int]$RunNo = 5, [bool]$StopRequested = $false)
+        [pscustomobject]@{ batchId = $BatchId; sessionId = $SessionId; runNo = $RunNo; mutantId = $MutantId; mutantStartedAt = $StartedAt; mutantsDone = $Done; finished = $Finished; stopRequested = $StopRequested }
     }
 }
 
@@ -343,6 +343,20 @@ Describe 'Get-MutRunnerState' {
         Should -Invoke -ModuleName DemoPortal Invoke-MutSoap -Times 1 -Exactly -ParameterFilter { $Operation -eq 'GetRunnerState' }
     }
 
+    It 'carries StopRequested on each row (false when the field is absent)' {
+        $old = New-StateRow -BatchId 'B3'
+        $old.PSObject.Properties.Remove('stopRequested')
+        $json = New-RunnerStateJson -Rows @((New-StateRow -BatchId 'B1' -StopRequested $true), (New-StateRow -BatchId 'B2'), $old)
+        $result = New-SoapResult -Value $json
+        Mock -ModuleName DemoPortal Invoke-MutSoap ({ $result }.GetNewClosure())
+
+        $state = Get-MutRunnerState -Env $envHandle
+
+        $state.Rows[0].StopRequested | Should -BeTrue
+        $state.Rows[1].StopRequested | Should -BeFalse
+        $state.Rows[2].StopRequested | Should -BeFalse
+    }
+
     It 'returns an empty Rows array when there are no rows' {
         $result = New-SoapResult -Value (New-RunnerStateJson)
         Mock -ModuleName DemoPortal Invoke-MutSoap ({ $result }.GetNewClosure())
@@ -389,6 +403,13 @@ Describe 'Test-MutSoapRunner' {
         $result = New-SoapResult -Value (New-RunnerStateJson)
         Mock -ModuleName DemoPortal Invoke-MutSoap ({ $result }.GetNewClosure())
         Test-MutSoapRunner -Env $envHandle | Should -BeTrue
+    }
+
+    It 'calls GetRunnerState with the 30 s state-call timeout' {
+        $result = New-SoapResult -Value (New-RunnerStateJson)
+        Mock -ModuleName DemoPortal Invoke-MutSoap ({ $result }.GetNewClosure())
+        Test-MutSoapRunner -Env $envHandle | Out-Null
+        Should -Invoke -ModuleName DemoPortal Invoke-MutSoap -Times 1 -Exactly -ParameterFilter { $Operation -eq 'GetRunnerState' -and $TimeoutSec -eq 30 }
     }
 
     It 'is false on a fault (Mutation Core older than 1.1.0.0 or the service missing)' {

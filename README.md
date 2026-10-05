@@ -41,7 +41,8 @@ codeunit 95155, which does not exist until the AUT is deployed — see `docs/iss
 
 `testTransport` picks how the per-mutant loop runs tests: `"cli"` (the default) runs one `continia test run`
 job per mutant; `"soap"` runs batches of mutants through Mutation Core's `MUTRunner` SOAP service (SPEC
-§6.10), about 0.2-1.0 s per mutant instead of about 10 s. `soap.batchSize` (a positive integer, default 50)
+§6.10). Test time inside the runner is about 0.2-1.0 s per mutant; the loop's wall clock is
+about 2 s per mutant in runs 16/17, against about 14 s per mutant end to end for the CLI run 15. `soap.batchSize` (a positive integer, default 50)
 caps the mutants per SOAP call. `"soap"` needs Mutation Core 1.1.1.0 or later on the environment (the configs'
 `coreApp.version`, published in pipeline step 3); the run checks that the service answers and stops if it does
 not. Only the mutant loop moves to SOAP;

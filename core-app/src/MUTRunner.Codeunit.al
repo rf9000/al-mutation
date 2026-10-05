@@ -154,6 +154,7 @@ codeunit 50003 "MUT Runner"
                 Row.Add('mutantStartedAt', Format(State."Mutant Started At", 0, 9));
                 Row.Add('mutantsDone', State."Mutants Done");
                 Row.Add('finished', State.Finished);
+                Row.Add('stopRequested', State."Stop Requested");
                 Rows.Add(Row);
             until State.Next() = 0;
 
@@ -168,6 +169,7 @@ codeunit 50003 "MUT Runner"
         State: Record "MUT Runner State";
     begin
         CheckBatchId(BatchId);
+        State.LockTable();
         if not State.Get(CopyStr(BatchId, 1, MaxStrLen(State."Batch Id"))) then
             Error(BatchNotFoundErr, BatchId);
         if State.Finished then

@@ -1928,7 +1928,7 @@ function Get-MutRunnerState {
         .OUTPUTS
         @{ ServerNowUtc (UTC datetime); Rows = @( @{ BatchId; SessionId; RunNo; MutantId;
         MutantStartedAt (UTC datetime, or $null when the row has not started its first mutant);
-        MutantsDone; Finished } ) }. Throws when the call does not return a value.
+        MutantsDone; Finished; StopRequested } ) }. Throws when the call does not return a value.
     #>
     param(
         [Parameter(Mandatory = $true)]
@@ -1957,6 +1957,7 @@ function Get-MutRunnerState {
             MutantStartedAt = ConvertFrom-MutIsoUtc -Text ([string]$row.mutantStartedAt)
             MutantsDone     = [int]$row.mutantsDone
             Finished        = [bool]$row.finished
+            StopRequested   = (Test-MutHasProperty $row 'stopRequested') -and [bool]$row.stopRequested
         }
     }
 
@@ -1981,7 +1982,7 @@ function Test-MutSoapRunner {
 
     Assert-MutEnvironmentAllowed $Env
 
-    $call = Invoke-MutSoap -Env $Env -Operation 'GetRunnerState' -Arguments ([ordered]@{})
+    $call = Invoke-MutSoap -Env $Env -Operation 'GetRunnerState' -Arguments ([ordered]@{}) -TimeoutSec $script:MutSoapShortTimeoutSec
     return [bool]($call.Ok -and -not [string]::IsNullOrWhiteSpace($call.Value))
 }
 

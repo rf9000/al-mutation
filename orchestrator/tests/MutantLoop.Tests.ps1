@@ -1882,6 +1882,7 @@ Describe 'Invoke-MutMutantLoop (testTransport soap)' {
         $global:SoapStopCalls = New-Object System.Collections.ArrayList
         $global:SoapResetThrows = $false
         $global:SoapFailOnce = New-Object System.Collections.ArrayList
+        $global:SoapDeleteThrows = $false
 
         Mock -ModuleName MutantLoop Invoke-MutApi {
             if ($global:SoapFailOnce.Contains($Method)) {
@@ -1949,7 +1950,11 @@ Describe 'Invoke-MutMutantLoop (testTransport soap)' {
             [void]$global:SoapLog.Add('OUTAGE-PROBE')
             return $Env
         }
-        Mock -ModuleName MutantLoop Remove-MutRunnerState { [void]$global:SoapLog.Add("DELETE-ROW:$BatchId"); return 'deleted' }
+        Mock -ModuleName MutantLoop Remove-MutRunnerState {
+            [void]$global:SoapLog.Add("DELETE-ROW:$BatchId")
+            if ($global:SoapDeleteThrows) { throw 'delete failed' }
+            return 'deleted'
+        }
         Mock -ModuleName MutantLoop Start-Sleep { }
         Mock -ModuleName MutantLoop Invoke-MutTestsWithBudget { throw 'the cli runner must not be used with testTransport soap' }
 
@@ -1976,7 +1981,7 @@ Describe 'Invoke-MutMutantLoop (testTransport soap)' {
     }
 
     AfterEach {
-        foreach ($name in 'SoapLog', 'SoapCalls', 'SoapScript', 'SoapDefault', 'SoapPosts', 'SoapExisting', 'SoapResumeRows', 'SoapStateRows', 'SoapRunnerOk', 'SoapStopConfirmed', 'SoapStopCalls', 'SoapResetThrows', 'SoapFailOnce') {
+        foreach ($name in 'SoapLog', 'SoapCalls', 'SoapScript', 'SoapDefault', 'SoapPosts', 'SoapExisting', 'SoapResumeRows', 'SoapStateRows', 'SoapRunnerOk', 'SoapStopConfirmed', 'SoapStopCalls', 'SoapResetThrows', 'SoapFailOnce', 'SoapDeleteThrows') {
             Remove-Variable -Name $name -Scope Global -ErrorAction SilentlyContinue
         }
     }
@@ -2474,11 +2479,82 @@ Describe 'Invoke-MutMutantLoop (testTransport soap)' {
             TestCodeunits = [int[]]@(95155)
             SweepPending  = $true
             OutageRetries = @{ 0 = 2; 7 = 1 }
+            RetryDepth    = @{}
+            StaleBatchIds = New-Object System.Collections.ArrayList
         }
         InModuleScope MutantLoop -Parameters @{ C = $ctx } { param($C) Invoke-MutSoapOrphanSweep -Ctx $C }
         $ctx.SweepPending | Should -BeFalse
         $ctx.OutageRetries.ContainsKey(0) | Should -BeFalse
         $ctx.OutageRetries[7] | Should -Be 1
+    }
+
+    It 'a failed row delete after a successful reset is best effort: the batch id becomes stale, the culprit still goes through the hang handling' {
+        $global:SoapDeleteThrows = $true
+        $global:SoapExisting[1] = [pscustomobject]@{ status = 'Survived'; killingTest = ''; durationMs = 9 }
+        $global:SoapScript.Add({
+                param($ids)
+                $e = [System.Exception]::new('RunnerStopFailed: the runner of batch b-42 was not confirmed stopped within 120 s (mutant 2).')
+                $e.Data['BatchId'] = 'b-42'
+                throw $e
+            }) | Out-Null
+        $rows = Invoke-SoapLoop -Mutants (New-SoapMutants -Ids 1, 2, 3)
+
+        @($rows | ForEach-Object { $_.Status }) | Should -Be @('Survived', 'Survived', 'Survived')
+        @($global:SoapCalls | ForEach-Object { $_.MutantIds -join ',' }) | Should -Be @('1,2,3', '2', '3')
+        @($global:SoapLog | Where-Object { $_ -eq 'DELETE-ROW:b-42' }).Count | Should -Be 1
+        $global:SoapPosts.Count | Should -Be 0
+    }
+
+    It 'the next sweep deletes a stale row instead of stopping it, and drops the id once deleted' {
+        $global:SoapStateRows = @(
+            [pscustomobject]@{ BatchId = 'stale-1'; Finished = $false }
+            [pscustomobject]@{ BatchId = 'orphan-2'; Finished = $false }
+        )
+        $stale = New-Object System.Collections.ArrayList
+        [void]$stale.Add('stale-1')
+        $ctx = @{
+            Env           = $script:EnvHandle
+            Config        = $script:Config
+            RunNo         = 1
+            TestCodeunits = [int[]]@(95155)
+            SweepPending  = $true
+            OutageRetries = @{}
+            RetryDepth    = @{}
+            StaleBatchIds = $stale
+        }
+        InModuleScope MutantLoop -Parameters @{ C = $ctx } { param($C) Invoke-MutSoapOrphanSweep -Ctx $C }
+
+        $global:SoapLog | Should -Contain 'DELETE-ROW:stale-1'
+        $global:SoapLog | Should -Not -Contain 'STOP:stale-1'
+        $global:SoapLog | Should -Contain 'STOP:orphan-2'
+        $ctx.StaleBatchIds.Count | Should -Be 0
+    }
+
+    It 'a sweep nested inside a mutant-0 retry leaves the outage counter, so the outer retry still stops at the cap' {
+        $ctx = @{
+            Env           = $script:EnvHandle
+            Config        = $script:Config
+            RunNo         = 1
+            TestCodeunits = [int[]]@(95155)
+            SweepPending  = $false
+            OutageRetries = @{}
+            RetryDepth    = @{}
+            StaleBatchIds = New-Object System.Collections.ArrayList
+        }
+        $global:SoapAttempts = 0
+        try {
+            { InModuleScope MutantLoop -Parameters @{ C = $ctx } {
+                    param($C)
+                    Invoke-MutSoapApiRetry -Ctx $C -MutantId 0 -Action {
+                        $global:SoapAttempts++
+                        if ($global:SoapAttempts -gt 10) { throw 'runaway: the counter was reset by a nested sweep' }
+                        throw 'down'
+                    }
+                } } | Should -Throw 'down'
+            $global:SoapAttempts | Should -Be 3
+            $ctx.RetryDepth[0] | Should -Be 0
+        }
+        finally { Remove-Variable -Name SoapAttempts -Scope Global -ErrorAction SilentlyContinue }
     }
 
     It 'a hang re-run that returns Empty goes through the environment check and one retry (step 3)' {

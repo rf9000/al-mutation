@@ -984,23 +984,33 @@ function Invoke-MutSoapApiRetry {
         [Parameter(Mandatory = $true)] [scriptblock]$Action
     )
 
-    while ($true) {
-        try {
-            return (& $Action)
-        }
-        catch {
-            $caught = $_
-            if ($caught.CategoryInfo.Category -eq [System.Management.Automation.ErrorCategory]::LimitsExceeded) {
-                throw $caught
+    # Active-retry depth per mutant: the orphan sweep inside this retry's outage wait must not
+    # reset the counter that bounds it (§6.10.4 step 1).
+    $depth = 0
+    if ($Ctx.RetryDepth.ContainsKey($MutantId)) { $depth = [int]$Ctx.RetryDepth[$MutantId] }
+    $Ctx.RetryDepth[$MutantId] = $depth + 1
+    try {
+        while ($true) {
+            try {
+                return (& $Action)
             }
-            $used = 0
-            if ($Ctx.OutageRetries.ContainsKey($MutantId)) { $used = [int]$Ctx.OutageRetries[$MutantId] }
-            if ($used -ge $script:MaxOutageRetriesPerMutant) {
-                throw $caught
+            catch {
+                $caught = $_
+                if ($caught.CategoryInfo.Category -eq [System.Management.Automation.ErrorCategory]::LimitsExceeded) {
+                    throw $caught
+                }
+                $used = 0
+                if ($Ctx.OutageRetries.ContainsKey($MutantId)) { $used = [int]$Ctx.OutageRetries[$MutantId] }
+                if ($used -ge $script:MaxOutageRetriesPerMutant) {
+                    throw $caught
+                }
+                $Ctx.OutageRetries[$MutantId] = $used + 1
+                Invoke-MutSoapOutageWait -Ctx $Ctx -MutantId $MutantId -Reason $caught.Exception.Message
             }
-            $Ctx.OutageRetries[$MutantId] = $used + 1
-            Invoke-MutSoapOutageWait -Ctx $Ctx -MutantId $MutantId -Reason $caught.Exception.Message
         }
+    }
+    finally {
+        $Ctx.RetryDepth[$MutantId] = [int]$Ctx.RetryDepth[$MutantId] - 1
     }
 }
 
@@ -1076,7 +1086,9 @@ function Invoke-MutSoapStopFailedRecovery {
 
         After a successful reset the runner of -BatchId is gone but its row is still unfinished:
         it is deleted (Remove-MutRunnerState), so no later sweep stops its session id, which a
-        restarted server may have handed to another session.
+        restarted server may have handed to another session. The delete is best effort: a failure
+        lists the batch id in Ctx.StaleBatchIds (the next sweep deletes the row) and never changes
+        the culprit's verdict.
     #>
     param(
         [Parameter(Mandatory = $true)] $Ctx,
@@ -1102,8 +1114,19 @@ function Invoke-MutSoapStopFailedRecovery {
         return $false
     }
     if ($BatchId) {
-        $staleBatch = $BatchId
-        Invoke-MutSoapApiRetry -Ctx $Ctx -MutantId $MutantId -Action { Remove-MutRunnerState -Env $Ctx.Env -BatchId $staleBatch } | Out-Null
+        # Best effort: a failed delete never changes the culprit's verdict. The id is remembered and
+        # the next sweep deletes the row instead of stopping its (possibly reused) session id.
+        try {
+            Remove-MutRunnerState -Env $Ctx.Env -BatchId $BatchId | Out-Null
+        }
+        catch {
+            $caught = $_
+            if ($caught.CategoryInfo.Category -eq [System.Management.Automation.ErrorCategory]::LimitsExceeded) {
+                throw $caught
+            }
+            if (-not $Ctx.StaleBatchIds.Contains($BatchId)) { [void]$Ctx.StaleBatchIds.Add($BatchId) }
+            Write-Warning "Invoke-MutMutantLoop: could not delete the runner row of batch $BatchId after the reset ($($caught.Exception.Message)); the next orphan sweep deletes it."
+        }
     }
     return $true
 }
@@ -1115,8 +1138,9 @@ function Invoke-MutSoapOrphanSweep {
         so the health codeunit comes from testApp.testCodeunits), then PATCH activeMutantId = 0.
         Finished rows are left (keyed by a unique BatchId, harmless; a batch deletes its own once
         its result is in). An unconfirmed stop goes to the stop-failed recovery. A sweep that
-        completes resets the PATCH-0 outage counter (OutageRetries[0]), so outages in separate
-        sweeps do not add up over the run.
+        completes resets the PATCH-0 outage counter (OutageRetries[0]) unless a retry for mutant 0
+        is still running (nested sweep), so outages in separate sweeps do not add up over the run.
+        Rows listed in Ctx.StaleBatchIds are deleted, not stopped.
     #>
     param([Parameter(Mandatory = $true)] $Ctx)
 
@@ -1126,6 +1150,18 @@ function Invoke-MutSoapOrphanSweep {
         $state = Get-MutRunnerState -Env $Ctx.Env
         $health = ($Ctx.TestCodeunits | ForEach-Object { [string]$_ }) -join '|'
         foreach ($row in @($state.Rows)) {
+            if ($Ctx.StaleBatchIds.Contains([string]$row.BatchId)) {
+                # A row left by a runner a reset ended: delete it, never stop its session id.
+                try {
+                    Remove-MutRunnerState -Env $Ctx.Env -BatchId $row.BatchId | Out-Null
+                    $Ctx.StaleBatchIds.Remove([string]$row.BatchId)
+                }
+                catch {
+                    if ($_.CategoryInfo.Category -eq [System.Management.Automation.ErrorCategory]::LimitsExceeded) { throw }
+                    Write-Warning "Invoke-MutMutantLoop: could not delete the stale runner row of batch $($row.BatchId) ($($_.Exception.Message)); it stays listed."
+                }
+                continue
+            }
             if ($row.Finished) { continue }
             $stop = Stop-MutRunnerBatch -Env $Ctx.Env -BatchId $row.BatchId -CodeunitIds $health
             if (-not $stop.Confirmed) {
@@ -1133,7 +1169,16 @@ function Invoke-MutSoapOrphanSweep {
             }
         }
         Clear-MutSoapActiveMutant -Ctx $Ctx
-        $Ctx.OutageRetries.Remove(0)
+        # Stale ids whose row no longer exists need no delete.
+        $present = @($state.Rows | ForEach-Object { [string]$_.BatchId })
+        foreach ($id in @($Ctx.StaleBatchIds)) {
+            if ($present -notcontains [string]$id) { $Ctx.StaleBatchIds.Remove($id) }
+        }
+        # Not while an outer retry for mutant 0 is running (a sweep nested in its outage wait):
+        # the per-mutant cap must still bound that retry.
+        $zeroDepth = 0
+        if ($Ctx.RetryDepth.ContainsKey(0)) { $zeroDepth = [int]$Ctx.RetryDepth[0] }
+        if ($zeroDepth -eq 0) { $Ctx.OutageRetries.Remove(0) }
     }
     catch {
         # An interrupted sweep has not finished its job.
@@ -1546,6 +1591,10 @@ function Invoke-MutSoapMutantLoop {
         ConsecutiveTimeouts = 0
         SweepPending        = $false
         OutageRetries       = @{}
+        # Active Invoke-MutSoapApiRetry calls per mutant id (a sweep nested in a retry's outage wait
+        # must not reset that retry's counter), and batch ids whose row delete failed after a reset.
+        RetryDepth          = @{}
+        StaleBatchIds       = (New-Object System.Collections.ArrayList)
     }
 
     try {
