@@ -881,6 +881,28 @@ Two early starts of run 16 failed in the baseline publish because of deviations 
 permission classifier refused to let the agent restart the run with the downgraded ruleset, so the owner started it
 manually; that start produced the results above.
 
+### Run 17: final-review fixes, live (2026-10-05)
+
+Run 17 used the same pinned source, config and ruleset deviations as run 16, with Mutation Core 1.1.1.0 and the
+final-review fix wave (`5ea4bf1`). That wave adds the sweep before the outage probe, the runner's "Stop Requested"
+guard, stop confirmation that needs `passed > 0` and an unchanged row, ordered SOAP arguments, and 30 s state-call
+timeouts. The owner started the run, as for run 16.
+
+| Measure | Run 15 (CLI) | Run 16 (SOAP) | Run 17 (SOAP, fixes) |
+|---|---|---|---|
+| Statuses equal to run 15 (by stable key) | — | 265/265 | 265/265 |
+| Killing tests equal to run 15 | — | 265/265 | 265/265 |
+| Killed / Survived / Timeout | 116 / 146 / 3 | 116 / 146 / 3 | 116 / 146 / 3 |
+| Score | 0.4491 | 0.4491 | 0.4491 |
+| Wall clock | 60m47s | 23m01s | 21m34s |
+| Mutant loop | — | 9m16s | 8m56s |
+
+- The watchdog stopped the three non-terminating mutants of 72918630 (4512, 4514, 4515). Each re-run hung again and
+  was recorded `Timeout`.
+- No outage waits, failed stops or `Error` rows; the error log was empty.
+- This is the first live run of the fix wave's orchestrator changes. It covers the normal path and the hang path; the
+  outage and failed-stop paths are still proven by Pester only.
+
 ### Not proven
 
 Schemata compile at whole-project scale, and publish at that size, were open questions in earlier drafts of
