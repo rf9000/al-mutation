@@ -103,6 +103,17 @@ Describe 'Invoke-MutSoap' {
         }
     }
 
+    It 'sends the arguments in the order of an ordered dictionary (BC SOAP binds by sequence, not by name)' {
+        $resp = New-SoapOk -ReturnValue 'x'
+        Mock -ModuleName DemoPortal Invoke-WebRequest ({ $resp }.GetNewClosure())
+
+        Invoke-InModule { param($e) Invoke-MutSoap -Env $e -Operation 'RunMutants' -Arguments ([ordered]@{ zeta = 'Z'; batchId = 'B'; alpha = 'A' }) } @($envHandle) | Out-Null
+
+        Should -Invoke -ModuleName DemoPortal Invoke-WebRequest -Times 1 -Exactly -ParameterFilter {
+            $Body -like '*<x:RunMutants><x:zeta>Z</x:zeta><x:batchId>B</x:batchId><x:alpha>A</x:alpha></x:RunMutants>*'
+        }
+    }
+
     It 'passes the client timeout to Invoke-WebRequest (default 600 s)' {
         $resp = New-SoapOk -ReturnValue 'x'
         Mock -ModuleName DemoPortal Invoke-WebRequest ({ $resp }.GetNewClosure())
@@ -341,6 +352,15 @@ Describe 'Get-MutRunnerState' {
         @($state.Rows).Count | Should -Be 0
     }
 
+    It 'calls GetRunnerState with a 30 s client timeout, not the 600 s default' {
+        $result = New-SoapResult -Value (New-RunnerStateJson)
+        Mock -ModuleName DemoPortal Invoke-MutSoap ({ $result }.GetNewClosure())
+
+        Get-MutRunnerState -Env $envHandle | Out-Null
+
+        Should -Invoke -ModuleName DemoPortal Invoke-MutSoap -Times 1 -Exactly -ParameterFilter { $Operation -eq 'GetRunnerState' -and $TimeoutSec -eq 30 }
+    }
+
     It 'throws when the call faults' {
         $result = New-SoapResult -Fault 'no such service'
         Mock -ModuleName DemoPortal Invoke-MutSoap ({ $result }.GetNewClosure())
@@ -396,11 +416,18 @@ Describe 'Stop-MutRunnerBatch' {
         $script:healthIndex = 0
         $script:stopResult = New-SoapResult -Value 'stopped'
         $script:deleteResult = New-SoapResult -Value 'deleted'
+        # The batch row as GetRunnerState shows it on the n-th call (default: a stopped runner, unchanged).
+        $script:stateCallNo = 0
+        $script:stopStateFn = { param($n) New-RunnerStateJson -Rows @((New-StateRow -BatchId 'B1' -MutantId 12 -StartedAt '2026-10-04T20:43:40.0000000Z' -Done 1)) }
         Mock -ModuleName DemoPortal Invoke-MutSoap {
             $script:soapCalls.Add([pscustomobject]@{ Operation = $Operation; Arguments = $Arguments; TimeoutSec = $TimeoutSec })
             switch ($Operation) {
                 'StopRunner' { return $script:stopResult }
                 'DeleteRunnerState' { return $script:deleteResult }
+                'GetRunnerState' {
+                    $script:stateCallNo++
+                    return (New-SoapResult -Value (& $script:stopStateFn $script:stateCallNo))
+                }
                 'RunTests' {
                     $i = [math]::Min($script:healthIndex, $script:healthResults.Count - 1)
                     $script:healthIndex++
@@ -417,11 +444,64 @@ Describe 'Stop-MutRunnerBatch' {
 
         $r.Confirmed | Should -BeTrue
         $ops = @($script:soapCalls | ForEach-Object { $_.Operation })
-        $ops | Should -Be @('StopRunner', 'RunTests', 'DeleteRunnerState')
+        $ops | Should -Be @('StopRunner', 'GetRunnerState', 'RunTests', 'GetRunnerState', 'DeleteRunnerState')
         $script:soapCalls[0].Arguments['batchId'] | Should -Be 'B1'
-        $script:soapCalls[1].Arguments['codeunitIds'] | Should -Be '95155'
-        $script:soapCalls[1].TimeoutSec | Should -Be 2
-        $script:soapCalls[2].Arguments['batchId'] | Should -Be 'B1'
+        $script:soapCalls[2].Arguments['codeunitIds'] | Should -Be '95155'
+        $script:soapCalls[2].TimeoutSec | Should -Be 2
+        $script:soapCalls[4].Arguments['batchId'] | Should -Be 'B1'
+    }
+
+    It 'gives StopRunner, GetRunnerState and DeleteRunnerState a 30 s client timeout' {
+        $script:healthResults = @((New-SoapResult -Value '{"passed":3,"failed":0,"durationMs":100,"tests":[]}'))
+
+        Stop-MutRunnerBatch -Env $envHandle -BatchId 'B1' -CodeunitIds '95155' -PollIntervalSec 0.01 -ConfirmWindowSec 2 | Out-Null
+
+        @($script:soapCalls | Where-Object { $_.Operation -ne 'RunTests' }).Count | Should -BeGreaterThan 2
+        @($script:soapCalls | Where-Object { $_.Operation -ne 'RunTests' } | ForEach-Object { $_.TimeoutSec }) | ForEach-Object { $_ | Should -Be 30 }
+    }
+
+    It 'a health call with passed = 0 (no test ran) does not confirm the stop' {
+        $script:healthResults = @((New-SoapResult -Value '{"passed":0,"failed":0,"durationMs":1,"tests":[]}'))
+
+        $r = Stop-MutRunnerBatch -Env $envHandle -BatchId 'B1' -CodeunitIds '95155' -PollIntervalSec 0.01 -ConfirmWindowSec 0.3
+
+        $r.Confirmed | Should -BeFalse
+        @($script:soapCalls | Where-Object Operation -eq 'DeleteRunnerState').Count | Should -Be 0
+    }
+
+    It 'does not confirm while the row''s (mutantId, mutantsDone) moves after StopRunner (the runner is still alive)' {
+        $script:healthResults = @((New-SoapResult -Value '{"passed":3,"failed":0,"durationMs":1,"tests":[]}'))
+        $script:stopStateFn = { param($n) New-RunnerStateJson -Rows @((New-StateRow -BatchId 'B1' -MutantId (12 + $n) -StartedAt '2026-10-04T20:43:40.0000000Z' -Done $n)) }
+
+        $r = Stop-MutRunnerBatch -Env $envHandle -BatchId 'B1' -CodeunitIds '95155' -PollIntervalSec 0.01 -ConfirmWindowSec 0.3
+
+        $r.Confirmed | Should -BeFalse
+        @($script:soapCalls | Where-Object Operation -eq 'DeleteRunnerState').Count | Should -Be 0
+    }
+
+    It 'does not confirm while the runner state cannot be read (no proof the row stopped moving)' {
+        $script:healthResults = @((New-SoapResult -Value '{"passed":3,"failed":0,"durationMs":1,"tests":[]}'))
+        $script:stopStateFn = { param($n) throw 'state read failure' }
+
+        $r = Stop-MutRunnerBatch -Env $envHandle -BatchId 'B1' -CodeunitIds '95155' -PollIntervalSec 0.01 -ConfirmWindowSec 0.3
+
+        $r.Confirmed | Should -BeFalse
+        @($script:soapCalls | Where-Object Operation -eq 'DeleteRunnerState').Count | Should -Be 0
+    }
+
+    It 'confirms once the row has stopped moving, compared with the state read after the last move' {
+        $script:healthResults = @((New-SoapResult -Value '{"passed":3,"failed":0,"durationMs":1,"tests":[]}'))
+        # Call 1 (right after StopRunner): mutant 12; call 2: the runner wrote one more mutant; then unchanged.
+        $script:stopStateFn = {
+            param($n)
+            if ($n -eq 1) { return New-RunnerStateJson -Rows @((New-StateRow -BatchId 'B1' -MutantId 12 -Done 1)) }
+            New-RunnerStateJson -Rows @((New-StateRow -BatchId 'B1' -MutantId 13 -Done 2))
+        }
+
+        $r = Stop-MutRunnerBatch -Env $envHandle -BatchId 'B1' -CodeunitIds '95155' -PollIntervalSec 0.01 -ConfirmWindowSec 2
+
+        $r.Confirmed | Should -BeTrue
+        @($script:soapCalls | Where-Object Operation -eq 'RunTests').Count | Should -Be 2
     }
 
     It 'gives each health call min(HealthTimeoutSec, remaining window) so the last call cannot overrun the window' {
@@ -523,6 +603,7 @@ Describe 'Invoke-MutMutantBatch' {
         $script:waitMs = @()
         $script:stateThrowFrom = -1
         $script:stateThrowOutage = $false
+        $script:stopCalled = $false
         Mock -ModuleName DemoPortal Test-MutSoapRunspaceDone { $script:pollNo -ge $script:doneAtPoll }
         Mock -ModuleName DemoPortal Receive-MutSoapRunspace { $script:received = $true; $script:callResult }
         Mock -ModuleName DemoPortal Wait-MutSoapRunspace {
@@ -538,11 +619,12 @@ Describe 'Invoke-MutMutantBatch' {
                 'GetRunnerState' {
                     $script:pollNo++
                     if ($script:pollNo -eq $script:stateThrowAtPoll) { throw 'transient state poll failure' }
-                    if ($script:stateThrowFrom -gt 0 -and $script:pollNo -ge $script:stateThrowFrom) { $ex = [System.Exception]::new('state poll failure'); if ($script:stateThrowOutage) { $ex.Data['MutSoapOutage'] = $true }; throw $ex }
+                    # stateThrowFrom: the batch's own polls fail; the stop's reads (after StopRunner) succeed.
+                    if ($script:stateThrowFrom -gt 0 -and $script:pollNo -ge $script:stateThrowFrom -and -not $script:stopCalled) { $ex = [System.Exception]::new('state poll failure'); if ($script:stateThrowOutage) { $ex.Data['MutSoapOutage'] = $true }; throw $ex }
                     $json = & $script:stateFn $script:pollNo $script:batchId
                     return [pscustomobject]@{ Ok = $true; Value = $json; Fault = $null; TimedOut = $false; Dropped = $false; DurationMs = 1 }
                 }
-                'StopRunner' { return $script:stopResult }
+                'StopRunner' { $script:stopCalled = $true; return $script:stopResult }
                 'DeleteRunnerState' { return [pscustomobject]@{ Ok = $true; Value = 'deleted'; Fault = $null; TimedOut = $false; Dropped = $false; DurationMs = 1 } }
                 'RunTests' { return $script:healthResults[0] }
             }
@@ -575,6 +657,54 @@ Describe 'Invoke-MutMutantBatch' {
         $script:startArgs.Arguments['mutantIds'] | Should -Be '11,12,13'
         $script:startArgs.Arguments['runNo'] | Should -Be 5
         $script:startArgs.TimeoutSec | Should -Be 150
+    }
+
+    It 'passes the RunMutants arguments as an ordered dictionary in the AL parameter order' {
+        $script:stateFn = { param($poll, $batchId) New-RunnerStateJson -Rows @((New-StateRow -BatchId $batchId -Done 1 -Finished $true)) }
+        $script:doneAtPoll = 1
+        $script:callResult = New-SoapResult -Value '[]'
+
+        Invoke-MutMutantBatch -Env $envHandle -CodeunitIds 95155 -MutantIds 11 -RunNo 5 -MutantBudgetSec 30 @fast | Out-Null
+
+        $script:startArgs.Arguments | Should -BeOfType [System.Collections.Specialized.OrderedDictionary]
+        @($script:startArgs.Arguments.Keys) | Should -Be @('batchId', 'codeunitIds', 'mutantIds', 'runNo')
+    }
+
+    It 'deletes the Finished row of THIS batch once the return value has been received' {
+        $script:stateFn = { param($poll, $batchId) New-RunnerStateJson -Rows @((New-StateRow -BatchId $batchId -Done 1 -Finished $true)) }
+        $script:doneAtPoll = 1
+        $script:callResult = New-SoapResult -Value '[{"mutantId":11,"status":"Survived","killingTest":"","durationMs":5,"passed":1,"failed":0}]'
+
+        Invoke-MutMutantBatch -Env $envHandle -CodeunitIds 95155 -MutantIds 11 -RunNo 5 -MutantBudgetSec 30 @fast | Out-Null
+
+        $deletes = @($script:soapCalls | Where-Object Operation -eq 'DeleteRunnerState')
+        $deletes.Count | Should -Be 1
+        $deletes[0].Arguments['batchId'] | Should -Be $script:batchId
+        $deletes[0].TimeoutSec | Should -Be 30
+    }
+
+    It 'leaves the Finished row when the return value never arrived, and a failing delete does not fail the batch' {
+        $script:stateFn = { param($poll, $batchId) New-RunnerStateJson -Rows @((New-StateRow -BatchId $batchId -Done 1 -Finished $true)) }
+        $script:doneAtPoll = 1000
+        $script:apiRows = @((New-ApiRow -MutantId 11 -Status 'Survived' -KillingTest ''))
+
+        $r = Invoke-MutMutantBatch -Env $envHandle -CodeunitIds 95155 -MutantIds 11 -RunNo 5 -MutantBudgetSec 30 @fast
+        @($r.Results).Count | Should -Be 1
+        Get-Ops | Should -Not -Contain 'DeleteRunnerState'
+
+        $script:soapCalls.Clear()
+        $script:pollNo = 0
+        $script:doneAtPoll = 1
+        $script:callResult = New-SoapResult -Value '[{"mutantId":11,"status":"Survived","killingTest":"","durationMs":5,"passed":1,"failed":0}]'
+        Mock -ModuleName DemoPortal Invoke-MutSoap {
+            if ($Operation -eq 'GetRunnerState') {
+                return [pscustomobject]@{ Ok = $true; Value = (& $script:stateFn 1 $script:batchId); Fault = $null; TimedOut = $false; Dropped = $false; DurationMs = 1 }
+            }
+            throw 'Invoke-MutSoap: DeleteRunnerState failed: HTTP 503 (service unavailable).'
+        }
+        $r2 = Invoke-MutMutantBatch -Env $envHandle -CodeunitIds 95155 -MutantIds 11 -RunNo 5 -MutantBudgetSec 30 @fast
+        @($r2.Results).Count | Should -Be 1
+        $r2.Results[0].Status | Should -Be 'Survived'
     }
 
     It 'a finished batch returns the RunMutants entries as Results (including an Empty one), no hang, no stop' {
@@ -1011,15 +1141,47 @@ Describe 'Get-MutRunnerState failure classes' {
         $caught.Exception.Data['MutSoapOutage'] | Should -BeTrue
     }
 
-    It 'throws a distinct non-outage error for a dropped, timed-out or faulted call' {
+    It 'throws an error without the outage marker for a dropped, timed-out or faulted call' {
         $result = New-SoapResult -Dropped
         Mock -ModuleName DemoPortal Invoke-MutSoap ({ $result }.GetNewClosure())
 
         $caught = $null
         try { Get-MutRunnerState -Env $envHandle } catch { $caught = $_ }
 
-        $caught.Exception.Data['MutSoapNonOutage'] | Should -BeTrue
+        $caught.Exception.Message | Should -BeLike '*connection dropped*'
         $caught.Exception.Data.Contains('MutSoapOutage') | Should -BeFalse
+        $caught.Exception.Data.Contains('MutSoapNonOutage') | Should -BeFalse
+    }
+}
+
+Describe 'Remove-MutRunnerState' {
+    It 'calls DeleteRunnerState with the BatchId (ordered arguments) and a 30 s timeout, returning its value' {
+        $script:soapCalls = [System.Collections.Generic.List[object]]::new()
+        Mock -ModuleName DemoPortal Invoke-MutSoap {
+            $script:soapCalls.Add([pscustomobject]@{ Operation = $Operation; Arguments = $Arguments; TimeoutSec = $TimeoutSec })
+            [pscustomobject]@{ Ok = $true; Value = 'deleted'; Fault = $null; TimedOut = $false; Dropped = $false; DurationMs = 1 }
+        }
+
+        $r = Remove-MutRunnerState -Env $envHandle -BatchId 'B9'
+
+        $r | Should -Be 'deleted'
+        $script:soapCalls.Count | Should -Be 1
+        $script:soapCalls[0].Operation | Should -Be 'DeleteRunnerState'
+        $script:soapCalls[0].Arguments | Should -BeOfType [System.Collections.Specialized.OrderedDictionary]
+        $script:soapCalls[0].Arguments['batchId'] | Should -Be 'B9'
+        $script:soapCalls[0].TimeoutSec | Should -Be 30
+    }
+
+    It 'throws when DeleteRunnerState does not return a value' {
+        Mock -ModuleName DemoPortal Invoke-MutSoap { [pscustomobject]@{ Ok = $false; Value = $null; Fault = 'boom'; TimedOut = $false; Dropped = $false; DurationMs = 1 } }
+        { Remove-MutRunnerState -Env $envHandle -BatchId 'B9' } | Should -Throw '*boom*'
+    }
+
+    It 'refuses an environment not named mut-*' {
+        Mock -ModuleName DemoPortal Invoke-MutSoap { }
+        $bad = [pscustomobject]@{ Id = 'E1'; Name = 'fix-auth'; Url = 'https://x'; Backend = 'DemoPortal'; Shared = $false }
+        { Remove-MutRunnerState -Env $bad -BatchId 'B9' } | Should -Throw "*does not match '^mut-'*"
+        Should -Invoke -ModuleName DemoPortal Invoke-MutSoap -Times 0
     }
 }
 

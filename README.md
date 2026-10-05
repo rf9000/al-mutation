@@ -39,6 +39,14 @@ swap, and it does not move when the AUT's own test suite changes. It previously 
 codeunit 95155, which does not exist until the AUT is deployed — see `docs/issues.md` for the residual case
 (a first-ever run on a brand-new environment still probes before step 3, so that one check stays non-fatal).
 
+`testTransport` picks how the per-mutant loop runs tests: `"cli"` (the default) runs one `continia test run`
+job per mutant; `"soap"` runs batches of mutants through Mutation Core's `MUTRunner` SOAP service (SPEC
+§6.10), about 0.2-1.0 s per mutant instead of about 10 s. `soap.batchSize` (a positive integer, default 50)
+caps the mutants per SOAP call. `"soap"` needs Mutation Core 1.1.1.0 or later on the environment (the configs'
+`coreApp.version`, published in pipeline step 3); the run checks that the service answers and stops if it does
+not. Only the mutant loop moves to SOAP;
+the baseline, coverage, the settle probe and fix verification still use the CLI.
+
 ## Toolchain
 
 | Tool | Version |

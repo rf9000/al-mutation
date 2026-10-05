@@ -5,7 +5,7 @@
   "aut": { "sourcePath": "C:/GeneralDev/AL/Continia Banking Master/Continia Banking/base-application", "appId": "83461f48-dd16-49ea-b00c-e656830c640f", "version": "29.0.0.0" },
   "testApp": { "sourcePath": "C:/GeneralDev/AL/Continia Banking Master/Continia Banking/base-application-test", "appId": "02b81fad-90fa-4cdc-a414-5bda25e96db0", "testCodeunits": [95155, 95179, 95191] },
   "rulesets": { "sourcePath": "C:/GeneralDev/AL/Continia Banking Master/Continia Banking/Banking Rulesets", "file": ".cli-ruleset-localdeploy.json" },
-  "coreApp": { "path": "./core-app", "appId": "6f1d2c3a-8b4e-4d5f-9a6b-7c8d9e0f1a2b", "version": "1.1.0.0" },
+  "coreApp": { "path": "./core-app", "appId": "6f1d2c3a-8b4e-4d5f-9a6b-7c8d9e0f1a2b", "version": "1.1.1.0" },
   "coreAppTest": { "path": "./core-app-test", "appId": "7a2e3d4b-9c5f-4e6a-8b7c-8d9e0f1a2b3c" },
   "permissionSets": [ { "id": "MUT Core All", "appId": "6f1d2c3a-8b4e-4d5f-9a6b-7c8d9e0f1a2b" } ],
   "workDir": "./out",

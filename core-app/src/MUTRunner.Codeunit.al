@@ -50,6 +50,10 @@ codeunit 50003 "MUT Runner"
         PrepareSuite(CodeunitIds);
 
         foreach MutantId in MutantIdList do begin
+            // A stop was requested (StopRunner) but this session survived StopSession: end without
+            // writing anything, not even the active mutant (SPEC 6.10.2).
+            if StopRequested(State) then
+                exit(StoppedResult(Results));
             State."Mutant Id" := MutantId;
             State."Mutant Started At" := CurrentDateTime();
             State.Modify();
@@ -59,6 +63,9 @@ codeunit 50003 "MUT Runner"
 
             Clear(Tests);
             RunSuite(Tests, Passed, Failed, KillingTest, DurationMs);
+
+            if StopRequested(State) then
+                exit(StoppedResult(Results));
 
             Clear(Entry);
             Entry.Add('mutantId', MutantId);
@@ -79,7 +86,7 @@ codeunit 50003 "MUT Runner"
                     MutantResult."Recorded At" := CurrentDateTime();
                     MutantResult.Insert();
                 end;
-                Entry.Add('status', Format(MutantResult.Status));
+                Entry.Add('status', GetStatusName(MutantResult.Status));
                 Entry.Add('killingTest', MutantResult."Killing Test");
             end;
             Entry.Add('durationMs', DurationMs);
@@ -87,11 +94,16 @@ codeunit 50003 "MUT Runner"
             Entry.Add('failed', Failed);
             Results.Add(Entry);
 
+            // Re-read before the write: the row may have been modified by StopRunner meanwhile.
+            if StopRequested(State) then
+                exit(StoppedResult(Results));
             State."Mutants Done" += 1;
             State.Modify();
             Commit();
         end;
 
+        if StopRequested(State) then
+            exit(StoppedResult(Results));
         SetActiveMutant(0, 0);
         State."Mutant Id" := 0;
         State.Finished := true;
@@ -162,6 +174,11 @@ codeunit 50003 "MUT Runner"
             Error(BatchFinishedErr, BatchId);
         if State."Session Id" = SessionId() then
             Error(OwnSessionErr, State."Session Id");
+        // Committed before StopSession: a runner that survives the stop exits on its next re-read
+        // without writing a result or setting the active mutant.
+        State."Stop Requested" := true;
+        State.Modify();
+        Commit();
         ClearLastError();
         if TryStopSession(State."Session Id") then
             exit('stopped');
@@ -181,6 +198,28 @@ codeunit 50003 "MUT Runner"
         State.Delete();
         Commit();
         exit('deleted');
+    end;
+
+    local procedure StopRequested(var State: Record "MUT Runner State"): Boolean
+    begin
+        // Re-reads the row, so the caller's next Modify works on the current version.
+        if not State.Get(State."Batch Id") then
+            exit(true);
+        exit(State."Stop Requested");
+    end;
+
+    local procedure StoppedResult(Results: JsonArray): Text
+    var
+        ResultText: Text;
+    begin
+        Results.WriteTo(ResultText);
+        exit(ResultText);
+    end;
+
+    local procedure GetStatusName(Status: Enum "MUT Mutant Status"): Text
+    begin
+        // The enum value name (Killed, Survived, ...), not its caption.
+        exit(Status.Names().Get(Status.Ordinals().IndexOf(Status.AsInteger())));
     end;
 
     [TryFunction]

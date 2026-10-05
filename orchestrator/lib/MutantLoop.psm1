@@ -79,6 +79,12 @@ if (-not (Get-Command -Name 'Stop-MutRunnerBatch' -ErrorAction SilentlyContinue)
         throw 'Stop-MutRunnerBatch: no backend module has been imported into this session.'
     }
 }
+if (-not (Get-Command -Name 'Remove-MutRunnerState' -ErrorAction SilentlyContinue)) {
+    function global:Remove-MutRunnerState {
+        param($Env, [string]$BatchId)
+        throw 'Remove-MutRunnerState: no backend module has been imported into this session.'
+    }
+}
 if (-not (Get-Command -Name 'Test-MutSoapRunner' -ErrorAction SilentlyContinue)) {
     function global:Test-MutSoapRunner {
         param($Env)
@@ -303,6 +309,12 @@ function Wait-MutOutageRecovery {
         mutant is active (the F3b BLOCKER 1 hazard). During an outage the caller's own
         best-effort deactivation may itself have failed, so this cannot assume it happened.
 
+        -BeforeProbe (optional; the soap loop passes the orphan sweep, §6.10.4) runs after a
+        successful PATCH and before the readiness check: a runner left alive by the interrupted
+        call re-sets the active mutant per mutant, so it must be stopped before the probe job
+        runs. A throw from it skips that poll's probe (a LimitsExceeded throw propagates). The cli
+        loop passes none, so its behaviour is unchanged.
+
         Not charged against $script:MaxEnvironmentRecoveries: an outage that ends, followed by a
         retry of the same mutant, costs time but not score integrity. An outage that does not end
         within the deadline aborts the run instead.
@@ -322,7 +334,8 @@ function Wait-MutOutageRecovery {
         [Parameter(Mandatory = $true)]
         [int]$RunNo,
         [Parameter(Mandatory = $true)]
-        [string]$Reason
+        [string]$Reason,
+        [scriptblock]$BeforeProbe = $null
     )
 
     $script:MutOutageWaitCount++
@@ -340,7 +353,21 @@ function Wait-MutOutageRecovery {
             $lastError = "deactivating the mutant failed: $($_.Exception.Message)"
         }
 
-        if ($deactivated) {
+        $readyToProbe = $deactivated
+        if ($deactivated -and $null -ne $BeforeProbe) {
+            try {
+                & $BeforeProbe
+            }
+            catch {
+                if ($_.CategoryInfo.Category -eq [System.Management.Automation.ErrorCategory]::LimitsExceeded) {
+                    throw
+                }
+                $readyToProbe = $false
+                $lastError = "the step before the readiness probe failed: $($_.Exception.Message)"
+            }
+        }
+
+        if ($readyToProbe) {
             try {
                 return (Start-MutEnvironment -Env $Env -Config $Config)
             }
@@ -1028,9 +1055,15 @@ function Invoke-MutSoapOutageWait {
     )
 
     # A runner from the interrupted call may still be alive: the orphan sweep must run before the
-    # next batch (§6.10.4 step 1, §6.10.5).
+    # next batch (§6.10.4 step 1, §6.10.5), and before the wait's readiness probe, because that
+    # runner re-sets the active mutant per mutant and the probe is a real test job (F3b BLOCKER
+    # 1). A sweep that succeeds inside the wait clears SweepPending; one that fails leaves it set.
     $Ctx.SweepPending = $true
-    $Ctx.Env = Wait-MutOutageRecovery -Env $Ctx.Env -Config $Ctx.Config -MutantId $MutantId -RunNo $Ctx.RunNo -Reason $Reason
+    # Not GetNewClosure(): that would bind the block to a new dynamic module, where this module's
+    # private functions do not resolve. $sweepCtx resolves through this function's scope.
+    $sweepCtx = $Ctx
+    $sweep = { Invoke-MutSoapOrphanSweep -Ctx $sweepCtx }
+    $Ctx.Env = Wait-MutOutageRecovery -Env $Ctx.Env -Config $Ctx.Config -MutantId $MutantId -RunNo $Ctx.RunNo -Reason $Reason -BeforeProbe $sweep
 }
 
 function Invoke-MutSoapStopFailedRecovery {
@@ -1040,11 +1073,16 @@ function Invoke-MutSoapStopFailedRecovery {
         is unconfirmed): PATCH 0, then Reset-MutEnvironment under the §6.5.6 recovery cap. A
         reset that returns gives its slot back; a failed reset keeps it spent and waits for the
         environment. A confirmed stop never reaches here, so it spends no slot.
+
+        After a successful reset the runner of -BatchId is gone but its row is still unfinished:
+        it is deleted (Remove-MutRunnerState), so no later sweep stops its session id, which a
+        restarted server may have handed to another session.
     #>
     param(
         [Parameter(Mandatory = $true)] $Ctx,
         [Parameter(Mandatory = $true)] [int]$MutantId,
-        [Parameter(Mandatory = $true)] [string]$Why
+        [Parameter(Mandatory = $true)] [string]$Why,
+        [string]$BatchId = $null
     )
 
     Clear-MutSoapActiveMutant -Ctx $Ctx -MutantId $MutantId
@@ -1063,6 +1101,10 @@ function Invoke-MutSoapStopFailedRecovery {
         Invoke-MutSoapOutageWait -Ctx $Ctx -MutantId $MutantId -Reason "the environment reset after an unconfirmed runner stop failed: $resetFailure"
         return $false
     }
+    if ($BatchId) {
+        $staleBatch = $BatchId
+        Invoke-MutSoapApiRetry -Ctx $Ctx -MutantId $MutantId -Action { Remove-MutRunnerState -Env $Ctx.Env -BatchId $staleBatch } | Out-Null
+    }
     return $true
 }
 
@@ -1071,8 +1113,10 @@ function Invoke-MutSoapOrphanSweep {
         .SYNOPSIS
         Private. §6.10.4 step 1: stop every unfinished runner row (its covering set is unknown,
         so the health codeunit comes from testApp.testCodeunits), then PATCH activeMutantId = 0.
-        Finished rows are left (the backend has no call to delete one; they are keyed by a unique
-        BatchId, so they are harmless). An unconfirmed stop goes to the stop-failed recovery.
+        Finished rows are left (keyed by a unique BatchId, harmless; a batch deletes its own once
+        its result is in). An unconfirmed stop goes to the stop-failed recovery. A sweep that
+        completes resets the PATCH-0 outage counter (OutageRetries[0]), so outages in separate
+        sweeps do not add up over the run.
     #>
     param([Parameter(Mandatory = $true)] $Ctx)
 
@@ -1085,10 +1129,11 @@ function Invoke-MutSoapOrphanSweep {
             if ($row.Finished) { continue }
             $stop = Stop-MutRunnerBatch -Env $Ctx.Env -BatchId $row.BatchId -CodeunitIds $health
             if (-not $stop.Confirmed) {
-                $null = Invoke-MutSoapStopFailedRecovery -Ctx $Ctx -MutantId 0 -Why "an orphaned runner (batch $($row.BatchId)) could not be confirmed stopped"
+                $null = Invoke-MutSoapStopFailedRecovery -Ctx $Ctx -MutantId 0 -BatchId $row.BatchId -Why "an orphaned runner (batch $($row.BatchId)) could not be confirmed stopped"
             }
         }
         Clear-MutSoapActiveMutant -Ctx $Ctx
+        $Ctx.OutageRetries.Remove(0)
     }
     catch {
         # An interrupted sweep has not finished its job.
@@ -1105,7 +1150,7 @@ function Invoke-MutSoapBatchCall {
         sweep (the failed batch's runner may still be alive), and retries, up to
         $script:MaxOutageRetriesPerMutant times.
         .OUTPUTS
-        @{ Kind = 'Result'; Res } | @{ Kind = 'StopFailed'; MutantId; Message } | @{ Kind = 'Error'; Message }
+        @{ Kind = 'Result'; Res } | @{ Kind = 'StopFailed'; MutantId; BatchId; Message } | @{ Kind = 'Error'; Message }
     #>
     param(
         [Parameter(Mandatory = $true)] $Ctx,
@@ -1137,7 +1182,14 @@ function Invoke-MutSoapBatchCall {
                     $parsed = [int]$Matches[1]
                     if ($ids -contains $parsed) { $culprit = $parsed }
                 }
-                return [pscustomobject]@{ Kind = 'StopFailed'; MutantId = $culprit; Message = $text }
+                $failedBatch = $null
+                if ($caught.Exception.Data.Contains('BatchId')) {
+                    $failedBatch = [string]$caught.Exception.Data['BatchId']
+                }
+                elseif ($text -match 'of batch (\S+) was not') {
+                    $failedBatch = $Matches[1]
+                }
+                return [pscustomobject]@{ Kind = 'StopFailed'; MutantId = $culprit; BatchId = $failedBatch; Message = $text }
             }
             # The call ended in an outage: its runner may still be alive, so sweep before the next batch.
             $Ctx.SweepPending = $true
@@ -1224,7 +1276,7 @@ function Resolve-MutSoapHang {
     }
     if ($call.Kind -eq 'StopFailed') {
         # The re-run hung and its stop was not confirmed: the confirmation is in, the verdict is Timeout.
-        $null = Invoke-MutSoapStopFailedRecovery -Ctx $Ctx -MutantId $id -Why "the runner of mutant $id could not be confirmed stopped"
+        $null = Invoke-MutSoapStopFailedRecovery -Ctx $Ctx -MutantId $id -BatchId $call.BatchId -Why "the runner of mutant $id could not be confirmed stopped"
         Send-MutSoapTimeout -Ctx $Ctx -Item $Item
         return
     }
@@ -1277,7 +1329,7 @@ function Resolve-MutSoapAlone {
         return
     }
     if ($call.Kind -eq 'StopFailed') {
-        $null = Invoke-MutSoapStopFailedRecovery -Ctx $Ctx -MutantId $id -Why "the runner of mutant $id could not be confirmed stopped"
+        $null = Invoke-MutSoapStopFailedRecovery -Ctx $Ctx -MutantId $id -BatchId $call.BatchId -Why "the runner of mutant $id could not be confirmed stopped"
         Add-MutSoapRow -Ctx $Ctx -Row (New-MutSoapRow -Item $Item -Status 'Error' -ErrorText $call.Message)
         return
     }
@@ -1345,13 +1397,29 @@ function Invoke-MutSoapProcessBatch {
     $head = $Items[0]
 
     if ($call.Kind -eq 'Error') {
-        Add-MutSoapRow -Ctx $Ctx -Row (New-MutSoapRow -Item $head -Status 'Error' -ErrorText $call.Message)
+        # The runner may have recorded the head before the outages (a row it committed stands).
+        # Best effort: a GET that still fails after its own outage waits leaves the Error.
+        $existing = $null
+        try {
+            $existing = Get-MutSoapExistingRow -Ctx $Ctx -MutantId ([int]$head.Mutant.id)
+        }
+        catch {
+            if ($_.CategoryInfo.Category -eq [System.Management.Automation.ErrorCategory]::LimitsExceeded) {
+                throw
+            }
+        }
+        if ($null -ne $existing) {
+            Add-MutSoapApiRow -Ctx $Ctx -Item $head -ApiRow $existing
+        }
+        else {
+            Add-MutSoapRow -Ctx $Ctx -Row (New-MutSoapRow -Item $head -Status 'Error' -ErrorText $call.Message)
+        }
         return @($Items | Select-Object -Skip 1)
     }
 
     if ($call.Kind -eq 'StopFailed') {
         $culprit = [int]$call.MutantId
-        $resetOk = Invoke-MutSoapStopFailedRecovery -Ctx $Ctx -MutantId $culprit -Why "the runner of a batch (mutant $culprit) could not be confirmed stopped"
+        $resetOk = Invoke-MutSoapStopFailedRecovery -Ctx $Ctx -MutantId $culprit -BatchId $call.BatchId -Why "the runner of a batch (mutant $culprit) could not be confirmed stopped"
         $remainder = @()
         foreach ($item in $Items) {
             $id = [int]$item.Mutant.id
@@ -1482,7 +1550,7 @@ function Invoke-MutSoapMutantLoop {
 
     try {
         if (-not (Test-MutSoapRunner -Env $ctx.Env)) {
-            throw 'Invoke-MutMutantLoop: testTransport is soap but the MUTRunner service does not answer (Mutation Core older than 1.1.0.0, or the service is missing).'
+            throw 'Invoke-MutMutantLoop: testTransport is soap but the MUTRunner service does not answer (Mutation Core older than 1.1.1.0, or the service is missing).'
         }
 
         # §6.10.4 step 1: orphans before anything else, before resume data is read.

@@ -1527,6 +1527,52 @@ Describe 'Wait-MutOutageRecovery' {
         $caught.Exception.Message | Should -BeLike '*did not return to serving*'
         $caught.Exception.Message | Should -BeLike '*did not reach status Running*'
     }
+
+    It '-BeforeProbe runs after a successful deactivation and before the readiness probe' {
+        Mock -ModuleName MutantLoop Start-MutEnvironment { $global:MutWaitLog.Add('PROBE'); [pscustomobject]@{ Id = 'E2'; Status = 'Running' } }
+
+        InModuleScope MutantLoop -Parameters @{ E = $script:EnvHandle } {
+            param($E)
+            Wait-MutOutageRecovery -Env $E -Config ([pscustomobject]@{}) -MutantId 7 -RunNo 3 -Reason '(503)' -BeforeProbe { $global:MutWaitLog.Add('SWEEP') } -WarningAction SilentlyContinue
+        } | Out-Null
+
+        ($global:MutWaitLog -join ',') | Should -Be 'PATCH:0,SWEEP,PROBE'
+    }
+
+    It 'a -BeforeProbe that throws skips the probe for that poll, and the wait polls again' {
+        $global:MutWaitSweeps = 0
+        Mock -ModuleName MutantLoop Start-MutEnvironment { $global:MutWaitLog.Add('PROBE'); [pscustomobject]@{ Id = 'E2'; Status = 'Running' } }
+
+        InModuleScope MutantLoop -Parameters @{ E = $script:EnvHandle } {
+            param($E)
+            Wait-MutOutageRecovery -Env $E -Config ([pscustomobject]@{}) -MutantId 7 -RunNo 3 -Reason '(503)' -WarningAction SilentlyContinue -BeforeProbe {
+                $global:MutWaitSweeps++
+                $global:MutWaitLog.Add('SWEEP')
+                if ($global:MutWaitSweeps -lt 2) { throw 'runner state unreadable' }
+            }
+        } | Out-Null
+
+        ($global:MutWaitLog -join ',') | Should -Be 'PATCH:0,SWEEP,SLEEP,PATCH:0,SWEEP,PROBE'
+    }
+
+    It 'a LimitsExceeded thrown by -BeforeProbe (the recovery cap) propagates at once' {
+        Mock -ModuleName MutantLoop Start-MutEnvironment { [pscustomobject]@{ Id = 'E2'; Status = 'Running' } }
+
+        $caught = $null
+        try {
+            InModuleScope MutantLoop -Parameters @{ E = $script:EnvHandle } {
+                param($E)
+                Wait-MutOutageRecovery -Env $E -Config ([pscustomobject]@{}) -MutantId 7 -RunNo 3 -Reason '(503)' -WarningAction SilentlyContinue -BeforeProbe {
+                    throw [System.Management.Automation.ErrorRecord]::new([System.Exception]::new('recovery cap'), 'Cap', [System.Management.Automation.ErrorCategory]::LimitsExceeded, $null)
+                }
+            }
+        }
+        catch { $caught = $_ }
+
+        $caught.CategoryInfo.Category | Should -Be ([System.Management.Automation.ErrorCategory]::LimitsExceeded)
+        $caught.Exception.Message | Should -Be 'recovery cap'
+        Should -Invoke -ModuleName MutantLoop Start-MutEnvironment -Times 0 -Exactly
+    }
 }
 
 Describe 'Invoke-MutMutantLoop: non-terminating mutants (run 10, 2026-09-30)' {
@@ -1896,7 +1942,14 @@ Describe 'Invoke-MutMutantLoop (testTransport soap)' {
             return [pscustomobject]@{ DurationSec = 1 }
         }
         Mock -ModuleName MutantLoop Start-MutPostResetSettle { }
-        Mock -ModuleName MutantLoop Wait-MutOutageRecovery { [void]$global:SoapLog.Add('OUTAGE-WAIT'); return $Env }
+        Mock -ModuleName MutantLoop Wait-MutOutageRecovery {
+            [void]$global:SoapLog.Add('OUTAGE-WAIT')
+            # The real wait runs -BeforeProbe after its PATCH 0 and before the readiness probe.
+            if ($null -ne $BeforeProbe) { & $BeforeProbe }
+            [void]$global:SoapLog.Add('OUTAGE-PROBE')
+            return $Env
+        }
+        Mock -ModuleName MutantLoop Remove-MutRunnerState { [void]$global:SoapLog.Add("DELETE-ROW:$BatchId"); return 'deleted' }
         Mock -ModuleName MutantLoop Start-Sleep { }
         Mock -ModuleName MutantLoop Invoke-MutTestsWithBudget { throw 'the cli runner must not be used with testTransport soap' }
 
@@ -2165,6 +2218,45 @@ Describe 'Invoke-MutMutantLoop (testTransport soap)' {
         $rows[0].Status | Should -Be 'Survived'
     }
 
+    It 'an outage wait runs the orphan sweep after its PATCH 0 and BEFORE the readiness probe (a live runner re-sets the mutant)' {
+        $global:SoapScript.Add({
+                param($ids)
+                $e = [System.Net.WebException]::new('(503) Server Unavailable')
+                $e.Data['BatchId'] = 'live-batch'
+                throw $e
+            }) | Out-Null
+        Mock -ModuleName MutantLoop Get-MutRunnerState {
+            [void]$global:SoapLog.Add('STATE')
+            $rows = @()
+            if (@($global:SoapLog | Where-Object { $_ -eq 'OUTAGE-WAIT' }).Count -gt 0 -and @($global:SoapLog | Where-Object { $_ -eq 'STOP:live-batch' }).Count -eq 0) {
+                $rows = @([pscustomobject]@{ BatchId = 'live-batch'; Finished = $false })
+            }
+            return [pscustomobject]@{ ServerNowUtc = [datetime]::UtcNow; Rows = $rows }
+        }
+
+        Invoke-SoapLoop -Mutants (New-SoapMutants -Ids 1) | Out-Null
+
+        $log = @($global:SoapLog)
+        $wait = $log.IndexOf('OUTAGE-WAIT')
+        $probe = $log.IndexOf('OUTAGE-PROBE')
+        $stop = $log.IndexOf('STOP:live-batch')
+        $wait | Should -BeGreaterThan -1
+        $stop | Should -BeGreaterThan $wait
+        $stop | Should -BeLessThan $probe
+        # The sweep's own PATCH 0 also lands before the probe.
+        @($log[$stop..$probe]) | Should -Contain 'PATCH:0'
+    }
+
+    It 'records the existing API row (not Error) for a batch head whose outage retries are spent' {
+        $global:SoapExisting[1] = [pscustomobject]@{ status = 'Killed'; killingTest = 'T:R'; durationMs = 8 }
+        foreach ($i in 1..3) { $global:SoapScript.Add({ param($ids) throw 'down' }) | Out-Null }
+        $rows = Invoke-SoapLoop -Mutants (New-SoapMutants -Ids 1, 2)
+        $rows[0].Status | Should -Be 'Killed'
+        $rows[0].KillingTest | Should -Be 'T:R'
+        $rows[1].Status | Should -Be 'Survived'
+        $global:SoapPosts.Count | Should -Be 0
+    }
+
     It 'records Error for the batch head after the outage retries are spent, and continues with the rest' {
         $global:SoapScript.Add({ param($ids) throw 'down' }) | Out-Null
         $global:SoapScript.Add({ param($ids) throw 'down' }) | Out-Null
@@ -2188,6 +2280,37 @@ Describe 'Invoke-MutMutantLoop (testTransport soap)' {
         @($rows | ForEach-Object { $_.Status }) | Should -Be @('Survived', 'Survived', 'Survived')
         @($global:SoapCalls | ForEach-Object { $_.MutantIds -join ',' }) | Should -Be @('1,2,3', '2', '3')
         $global:SoapPosts.Count | Should -Be 0
+    }
+
+    It 'on RunnerStopFailed with a successful reset: deletes the unfinished runner row of that batch after the reset' {
+        $global:SoapExisting[1] = [pscustomobject]@{ status = 'Survived'; killingTest = ''; durationMs = 9 }
+        $global:SoapScript.Add({
+                param($ids)
+                $e = [System.Exception]::new('RunnerStopFailed: the runner of batch b-42 was not confirmed stopped within 120 s (mutant 2).')
+                $e.Data['BatchId'] = 'b-42'
+                throw $e
+            }) | Out-Null
+        Invoke-SoapLoop -Mutants (New-SoapMutants -Ids 1, 2, 3) | Out-Null
+        $log = @($global:SoapLog)
+        $log | Should -Contain 'DELETE-ROW:b-42'
+        $log.IndexOf('DELETE-ROW:b-42') | Should -BeGreaterThan $log.IndexOf('RESET')
+    }
+
+    It 'an orphan whose stop is not confirmed: its row is deleted after a successful reset, never after a failed one' {
+        $global:SoapStateRows = @([pscustomobject]@{ BatchId = 'orphan-1'; Finished = $false })
+        $global:SoapStopConfirmed = $false
+        Invoke-SoapLoop -Mutants (New-SoapMutants -Ids 1) | Out-Null
+        $log = @($global:SoapLog)
+        $log.IndexOf('DELETE-ROW:orphan-1') | Should -BeGreaterThan $log.IndexOf('RESET')
+
+        $global:SoapLog.Clear()
+        $global:SoapResetThrows = $true
+        $script:RunDir = "$TestDrive/soap-$([guid]::NewGuid().ToString('N'))"
+        New-Item -ItemType Directory -Path $script:RunDir -Force | Out-Null
+        InModuleScope MutantLoop { $script:MutEnvironmentRecoveryCount = 0 }
+        try { Invoke-SoapLoop -Mutants (New-SoapMutants -Ids 1) | Out-Null } catch { }
+        $global:SoapLog | Should -Contain 'RESET'
+        @($global:SoapLog | Where-Object { $_ -like 'DELETE-ROW:*' }).Count | Should -Be 0
     }
 
     It 'on RunnerStopFailed with a successful reset: an existing row of the culprit stands with no re-run' {
@@ -2341,6 +2464,21 @@ Describe 'Invoke-MutMutantLoop (testTransport soap)' {
         $global:SoapPosts.Count | Should -Be 1
         $log = @($global:SoapLog)
         $log.IndexOf('OUTAGE-WAIT') | Should -BeLessThan $log.IndexOf('POST:Timeout')
+    }
+
+    It 'a successful orphan sweep resets the PATCH-0 outage counter (OutageRetries[0] is per sweep, not run-wide)' {
+        $ctx = @{
+            Env           = $script:EnvHandle
+            Config        = $script:Config
+            RunNo         = 1
+            TestCodeunits = [int[]]@(95155)
+            SweepPending  = $true
+            OutageRetries = @{ 0 = 2; 7 = 1 }
+        }
+        InModuleScope MutantLoop -Parameters @{ C = $ctx } { param($C) Invoke-MutSoapOrphanSweep -Ctx $C }
+        $ctx.SweepPending | Should -BeFalse
+        $ctx.OutageRetries.ContainsKey(0) | Should -BeFalse
+        $ctx.OutageRetries[7] | Should -Be 1
     }
 
     It 'a hang re-run that returns Empty goes through the environment check and one retry (step 3)' {

@@ -44,6 +44,13 @@ table 50004 "MUT Runner State"
             Caption = 'Finished';
             DataClassification = SystemMetadata;
         }
+        field(8; "Stop Requested"; Boolean)
+        {
+            // Set and committed by StopRunner before StopSession. A runner that survives the stop
+            // sees it on its next re-read and exits without writing (SPEC 6.10.2).
+            Caption = 'Stop Requested';
+            DataClassification = SystemMetadata;
+        }
     }
 
     keys

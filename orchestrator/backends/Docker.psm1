@@ -254,6 +254,16 @@ function Stop-MutRunnerBatch {
     throw [System.NotImplementedException]::new('Docker backend is not implemented in v1')
 }
 
+function Remove-MutRunnerState {
+    param(
+        [Parameter(Mandatory = $true)]
+        $Env,
+        [string]$BatchId
+    )
+
+    throw [System.NotImplementedException]::new('Docker backend is not implemented in v1')
+}
+
 function Invoke-MutMutantBatch {
     param(
         [Parameter(Mandatory = $true)]
@@ -283,4 +293,4 @@ function Test-MutSoapRunner {
     throw [System.NotImplementedException]::new('Docker backend is not implemented in v1')
 }
 
-Export-ModuleMember -Function Get-MutEnvironment, New-MutEnvironment, Start-MutEnvironment, Remove-MutEnvironment, Reset-MutEnvironment, Assert-MutEnvironmentAllowed, Get-MutApiBase, Get-MutCompanyId, Get-MutCompanyName, Get-MutRunnerState, Stop-MutRunnerBatch, Invoke-MutMutantBatch, Test-MutSoapRunner, Grant-MutPermissionSet, Invoke-MutApi, Install-MutDependencies, Compile-MutApp, Publish-MutApp, Publish-MutAppFile, Unpublish-MutApp, Invoke-MutTests, Get-MutCoverageRaw, Get-MutCoverage, Stop-MutBackendChildProcesses
+Export-ModuleMember -Function Get-MutEnvironment, New-MutEnvironment, Start-MutEnvironment, Remove-MutEnvironment, Reset-MutEnvironment, Assert-MutEnvironmentAllowed, Get-MutApiBase, Get-MutCompanyId, Get-MutCompanyName, Get-MutRunnerState, Stop-MutRunnerBatch, Remove-MutRunnerState, Invoke-MutMutantBatch, Test-MutSoapRunner, Grant-MutPermissionSet, Invoke-MutApi, Install-MutDependencies, Compile-MutApp, Publish-MutApp, Publish-MutAppFile, Unpublish-MutApp, Invoke-MutTests, Get-MutCoverageRaw, Get-MutCoverage, Stop-MutBackendChildProcesses

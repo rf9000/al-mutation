@@ -1,6 +1,10 @@
 <#
     .SYNOPSIS
-    Live check of the Mutation Core 1.1.0.0 SOAP service MUTRunner (SPEC 6.10.2) on a mut-* environment.
+    Live check of the Mutation Core 1.1.x SOAP service MUTRunner (SPEC 6.10.2) on a mut-* environment.
+
+    WARNING: never run this during a mutation run on the same environment. It stops and deletes
+    EVERY runner state row and deletes result rows; it takes the SPEC 6.9.5 environment lock
+    (<workDir>/.environment.lock) for its whole duration and refuses to start while a run holds it.
 
     .DESCRIPTION
     Adapts Invoke-SoapRunnerSpike.ps1 and Invoke-SoapTimeoutSpike.ps1 to the MUTRunner service.
@@ -41,6 +45,7 @@ New-Item -ItemType Directory -Force $outDir | Out-Null
 $logPath = Join-Path $outDir ('mutrunner-{0:yyyyMMdd-HHmmss}.jsonl' -f (Get-Date))
 
 Import-Module (Join-Path $repoRoot 'orchestrator\lib\Config.psm1') -Force
+Import-Module (Join-Path $repoRoot 'orchestrator\lib\EnvLock.psm1') -Force
 $dp = Import-Module (Join-Path $repoRoot 'orchestrator\backends\DemoPortal.psm1') -Force -PassThru -WarningAction SilentlyContinue
 
 function Write-Log($Record) {
@@ -53,6 +58,9 @@ if (-not [System.IO.Path]::IsPathRooted($resolvedConfigPath)) {
 }
 $cfg = Get-MutConfig -Path $resolvedConfigPath -WarningAction SilentlyContinue
 
+# SPEC 6.9.5: the same lock a mutation run holds, so this script and a run never overlap.
+Enter-MutEnvLock -WorkDir $cfg.workDir -RunNo $RunNo -Owner 'Test-MutRunnerLive.ps1'
+try {
 $envHandle = Get-MutEnvironment -Name $cfg.environmentName -Config $cfg
 if ($null -eq $envHandle -or $envHandle.Status -ne 'Running') {
     throw "Test-MutRunnerLive: environment '$($cfg.environmentName)' is not running."
@@ -67,7 +75,8 @@ $serviceUrl = "$apiBase/WS/$([uri]::EscapeDataString($company))/Codeunit/MUTRunn
 $ns = 'urn:microsoft-dynamics-schemas/codeunit/MUTRunner'
 Write-Output "Environment: $($envHandle.Name) ($($envHandle.Id)), company '$company'."
 
-function New-SoapRequest([string]$Operation, [hashtable]$Arguments) {
+# Arguments are an ordered dictionary in the AL parameter order: BC SOAP binds by sequence.
+function New-SoapRequest([string]$Operation, [System.Collections.IDictionary]$Arguments) {
     $argXml = ($Arguments.GetEnumerator() | ForEach-Object {
             "<x:$($_.Key)>$([System.Security.SecurityElement]::Escape([string]$_.Value))</x:$($_.Key)>"
         }) -join ''
@@ -79,7 +88,7 @@ function New-SoapRequest([string]$Operation, [hashtable]$Arguments) {
     }
 }
 
-function Invoke-Soap([string]$Operation, [hashtable]$Arguments, [int]$TimeoutSec = 600) {
+function Invoke-Soap([string]$Operation, [System.Collections.IDictionary]$Arguments, [int]$TimeoutSec = 600) {
     $request = New-SoapRequest $Operation $Arguments
     $sw = [Diagnostics.Stopwatch]::StartNew()
     try {
@@ -114,7 +123,7 @@ function Remove-ResultRows {
 }
 
 function Get-RunnerState {
-    $r = Invoke-Soap 'GetRunnerState' @{} 60
+    $r = Invoke-Soap 'GetRunnerState' ([ordered]@{}) 60
     if (-not $r.Ok) { throw "GetRunnerState failed: $($r.Fault)" }
     return ($r.Value | ConvertFrom-Json)
 }
@@ -125,12 +134,15 @@ function Clear-RunnerState {
     foreach ($row in @((Get-RunnerState).rows)) {
         if (-not $row.finished) {
             Write-Host "  cleanup: stopping unfinished batch $($row.batchId) (session $($row.sessionId), mutant $($row.mutantId))"
-            $stop = Invoke-Soap 'StopRunner' @{ batchId = $row.batchId } 60
+            $stop = Invoke-Soap 'StopRunner' ([ordered]@{ batchId = $row.batchId }) 60
             $confirmed = $false
             for ($i = 1; $i -le 24; $i++) {
                 Start-Sleep -Seconds 5
-                $h = Invoke-Soap 'RunTests' @{ codeunitIds = "$CodeunitId" } 120
-                if ($h.Ok -and (($h.Value | ConvertFrom-Json).failed -eq 0)) { $confirmed = $true; break }
+                $h = Invoke-Soap 'RunTests' ([ordered]@{ codeunitIds = "$CodeunitId" }) 120
+                if ($h.Ok) {
+                    $hp = $h.Value | ConvertFrom-Json
+                    if (($hp.failed -eq 0) -and ($hp.passed -gt 0)) { $confirmed = $true; break }
+                }
             }
             if (-not $confirmed) {
                 $unconfirmed++
@@ -138,7 +150,7 @@ function Clear-RunnerState {
                 continue
             }
         }
-        Invoke-Soap 'DeleteRunnerState' @{ batchId = $row.batchId } 60 | Out-Null
+        Invoke-Soap 'DeleteRunnerState' ([ordered]@{ batchId = $row.batchId }) 60 | Out-Null
     }
     return $unconfirmed
 }
@@ -176,7 +188,7 @@ try {
     Write-Output "--- A: RunMutants over $($ownMutants.Count) mutants of $CodeunitId in one call ---"
     $batchA = [guid]::NewGuid().ToString()
     $ids = @($ownMutants | ForEach-Object { [int]$_.Id })
-    $a = Invoke-Soap 'RunMutants' @{ batchId = $batchA; codeunitIds = "$CodeunitId"; mutantIds = ($ids -join ','); runNo = $RunNo } 1800
+    $a = Invoke-Soap 'RunMutants' ([ordered]@{ batchId = $batchA; codeunitIds = "$CodeunitId"; mutantIds = ($ids -join ','); runNo = $RunNo }) 1800
     if (-not $a.Ok) { throw "A: RunMutants failed: $($a.Fault)" }
     $entries = @($a.Value | ConvertFrom-Json | ForEach-Object { $_ })
     $match = 0
@@ -200,7 +212,7 @@ try {
         $detailA = "finished=$($rowA[0].finished) mutantId=$($rowA[0].mutantId) mutantsDone=$($rowA[0].mutantsDone)"
     }
     Add-Check 'A state row' $okA $detailA
-    Invoke-Soap 'DeleteRunnerState' @{ batchId = $batchA } 60 | Out-Null
+    Invoke-Soap 'DeleteRunnerState' ([ordered]@{ batchId = $batchA }) 60 | Out-Null
 
     # --- B ------------------------------------------------------------------------------------
     $multiCovering = @($reference | Where-Object { @($_.CoveringTests).Count -ge 2 -and $_.Status -in 'Killed', 'Survived' })
@@ -220,7 +232,7 @@ try {
     Write-Output "--- B: RunMutants filter '$filterB', mutants $((@($sample | ForEach-Object { $_.Id })) -join ',') ---"
     Write-Output "  ($sampleNote)"
     $batchB = [guid]::NewGuid().ToString()
-    $b = Invoke-Soap 'RunMutants' @{ batchId = $batchB; codeunitIds = $filterB; mutantIds = ((@($sample | ForEach-Object { $_.Id })) -join ','); runNo = $RunNo } 600
+    $b = Invoke-Soap 'RunMutants' ([ordered]@{ batchId = $batchB; codeunitIds = $filterB; mutantIds = ((@($sample | ForEach-Object { $_.Id })) -join ','); runNo = $RunNo }) 600
     if (-not $b.Ok) { throw "B: RunMutants failed: $($b.Fault)" }
     $entriesB = @($b.Value | ConvertFrom-Json | ForEach-Object { $_ })
     $matchB = 0
@@ -232,13 +244,13 @@ try {
     }
     Remove-ResultRows | Out-Null
     Add-Check 'B multi-codeunit sample' (($matchB -eq $sample.Count) -and ($entriesB.Count -eq $sample.Count)) "$matchB/$($sample.Count) match run $ReferenceRun; $sampleNote"
-    Invoke-Soap 'DeleteRunnerState' @{ batchId = $batchB } 60 | Out-Null
+    Invoke-Soap 'DeleteRunnerState' ([ordered]@{ batchId = $batchB }) 60 | Out-Null
 
     # --- C ------------------------------------------------------------------------------------
     Write-Output ''
     Write-Output "--- C: hung mutant $HangMutantId on $HangCodeunitId, client timeout $HangClientTimeoutSec s ---"
     $batchC = [guid]::NewGuid().ToString()
-    $request = New-SoapRequest 'RunMutants' @{ batchId = $batchC; codeunitIds = "$HangCodeunitId"; mutantIds = "$HangMutantId"; runNo = $RunNo }
+    $request = New-SoapRequest 'RunMutants' ([ordered]@{ batchId = $batchC; codeunitIds = "$HangCodeunitId"; mutantIds = "$HangMutantId"; runNo = $RunNo })
     $runspace = [powershell]::Create()
     [void]$runspace.AddScript({
             param($Uri, $Headers, $Body, $Timeout)
@@ -262,7 +274,7 @@ try {
     Write-Output "  runaway call: $(if ($async.IsCompleted) { $runspace.EndInvoke($async) } else { 'still waiting' })"
 
     $stopSw = [Diagnostics.Stopwatch]::StartNew()
-    $stop = Invoke-Soap 'StopRunner' @{ batchId = $batchC } 60
+    $stop = Invoke-Soap 'StopRunner' ([ordered]@{ batchId = $batchC }) 60
     Write-Output "  StopRunner: ok=$($stop.Ok) $($stop.Value) $($stop.Fault) ($($stop.Ms) ms)"
     Add-Check 'C StopRunner by BatchId' ($stop.Ok -and ($stop.Value -eq 'stopped')) "$($stop.Value) $($stop.Fault)"
 
@@ -270,7 +282,7 @@ try {
     $stoppedAfterSec = $null
     for ($i = 1; $i -le 24; $i++) {
         Start-Sleep -Seconds 5
-        $h = Invoke-Soap 'RunTests' @{ codeunitIds = "$CodeunitId" } 120
+        $h = Invoke-Soap 'RunTests' ([ordered]@{ codeunitIds = "$CodeunitId" }) 120
         $hp = $null
         if ($h.Ok) { $hp = $h.Value | ConvertFrom-Json }
         Write-Output ("  health after {0:n0} s: {1}, {2:n0} ms" -f $stopSw.Elapsed.TotalSeconds, $(if ($h.Ok) { "$($hp.passed) passed, $($hp.failed) failed" } else { "FAILED: $($h.Fault)" }), $h.Ms)
@@ -284,9 +296,9 @@ try {
 
     $rowAfter = @((Get-RunnerState).rows | Where-Object { $_.batchId -eq $batchC })
     Add-Check 'C stop keeps the row' (($rowAfter.Count -eq 1) -and (-not $rowAfter[0].finished)) "row present=$($rowAfter.Count -eq 1)"
-    $stop2 = Invoke-Soap 'StopRunner' @{ batchId = $batchC } 60
+    $stop2 = Invoke-Soap 'StopRunner' ([ordered]@{ batchId = $batchC }) 60
     Add-Check 'C StopRunner on an ended session' ($stop2.Ok -and (($stop2.Value -eq 'stopped') -or ($stop2.Value -like 'not stopped:*'))) "ok=$($stop2.Ok) value=$($stop2.Value) fault=$($stop2.Fault)"
-    $del = Invoke-Soap 'DeleteRunnerState' @{ batchId = $batchC } 60
+    $del = Invoke-Soap 'DeleteRunnerState' ([ordered]@{ batchId = $batchC }) 60
     $rowGone = @((Get-RunnerState).rows | Where-Object { $_.batchId -eq $batchC }).Count -eq 0
     Add-Check 'C DeleteRunnerState' ($del.Ok -and $rowGone) "$($del.Value)"
 }
@@ -308,6 +320,10 @@ finally {
     catch { Write-Output "cleanup: health read failed: $($_.Exception.Message)" }
     Write-Output ''
     Write-Output "Log: $logPath"
+}
+}
+finally {
+    Exit-MutEnvLock -WorkDir $cfg.workDir
 }
 
 $failedChecks = @($checks | Where-Object { -not $_.Pass })

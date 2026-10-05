@@ -848,6 +848,8 @@ Score 0.4491 in both runs; 0 compile errors, uncovered, equivalent or errors. Th
 every mutant. The 3 Timeouts are the same mutants as in run 15 (stable keys cf66d6b5d5e386fc, 845018eb51cb832d,
 9feb7d5acd4546c9; ids 4512, 4514, 4515 in both runs).
 
+This evidence is one covering-set scope (the 4 AUT codeunits above), one environment (mut-spike-02) and one run.
+
 **Timing**
 
 | | Run 15 (CLI jobs) | Run 16 (SOAP) |
@@ -862,7 +864,7 @@ every mutant. The 3 Timeouts are the same mutants as in run 15 (stable keys cf66
 - **Hangs:** 3 hangs stopped by the watchdog (4512, 4514, 4515). Each was re-run alone once and hung again, so each is
   recorded as Timeout, as in run 15. Most of the loop time is probably these three.
 - **Outage waits:** none. The log has no outage or recovery lines and the error log is empty.
-- **Per-mutant time inside a batch:** 174 to 441 ms per mutant on the first rows (loop-results DurationMs).
+- **Per-mutant time inside a batch:** typically 0.2-1.0 s per mutant (DurationMs).
 
 **How the run went, and pin deviations.** The AUT checkout had moved on and lost its `.cli-ruleset*.json`, so the
 run used a source tree built with `git archive 1aae00528` (`out/aut-pin-1aae005/`, AUT repo untouched) plus the
