@@ -829,6 +829,56 @@ all 157 mutants on 95155 back to back for 60 minutes, deleting the hook rows bet
 limits this backend. A run can drive its own runner over SOAP. On this evidence the ~46 h full-AUT projection
 drops to about 1–2 h of test time.
 
+### Run 16: SOAP transport acceptance (2026-10-05)
+
+Same U2 scope as run 15 (4 objects, 265 mutants, seed 1) on mut-spike-02, but with `testTransport: "soap"` and
+Mutation Core 1.1.0.0. Config: `out/soap-acceptance.config.json`.
+
+**Result: 265 of 265 statuses equal to run 15** (compared by stable key; the ids are also identical).
+
+| AUT codeunit | Mutants | Killed (15 / 16) | Survived (15 / 16) | Timeout (15 / 16) |
+| --- | --- | --- | --- | --- |
+| 72918635 | 157 | 62 / 62 | 95 / 95 | 0 / 0 |
+| 72282417 | 58 | 29 / 29 | 29 / 29 | 0 / 0 |
+| 72918630 | 37 | 15 / 15 | 19 / 19 | 3 / 3 |
+| 71553757 | 13 | 10 / 10 | 3 / 3 | 0 / 0 |
+| Total | 265 | 116 / 116 | 146 / 146 | 3 / 3 |
+
+Score 0.4491 in both runs; 0 compile errors, uncovered, equivalent or errors. The killing test is also the same for
+every mutant. The 3 Timeouts are the same mutants as in run 15 (stable keys cf66d6b5d5e386fc, 845018eb51cb832d,
+9feb7d5acd4546c9; ids 4512, 4514, 4515 in both runs).
+
+**Timing**
+
+| | Run 15 (CLI jobs) | Run 16 (SOAP) |
+| --- | --- | --- |
+| Wall clock, total | 1 h 00 m 47 s | 23 m 01 s (10:26:07 to 10:49:08 UTC) |
+| Total per mutant | 13.8 s | 5.2 s |
+| Mutant loop only | not recorded | 9 m 16 s (covering.done 12:39:52 to mutant-loop.done 12:49:08, local) |
+| Loop per mutant | not recorded | 2.1 s |
+
+- **Batches:** about 8 SOAP batches (consecutive mutants with the same covering set, at most 50 each: 50, 50, 50, 7,
+  50, 8, 37, 13). This is derived from the covering sets in the results, not counted from a log line.
+- **Hangs:** 3 hangs stopped by the watchdog (4512, 4514, 4515). Each was re-run alone once and hung again, so each is
+  recorded as Timeout, as in run 15. Most of the loop time is probably these three.
+- **Outage waits:** none. The log has no outage or recovery lines and the error log is empty.
+- **Per-mutant time inside a batch:** 174 to 441 ms per mutant on the first rows (loop-results DurationMs).
+
+**How the run went, and pin deviations.** The AUT checkout had moved on and lost its `.cli-ruleset*.json`, so the
+run used a source tree built with `git archive 1aae00528` (`out/aut-pin-1aae005/`, AUT repo untouched) plus the
+2026-10-02 ruleset snapshots. Three deviations from a pure pin:
+1. `continia.appsource.ruleset.json` is gitignored in the AUT repo, so it is not in the archive. It was copied from
+   the AUT working tree (dated 2026-06-15, same bytes as the DevOpsCoder overlay copy).
+2. The pinned test app failed the strict compile with CodeCop AA0210 at `CurrExchCatalogTests.Codeunit.al(578)`.
+   AA0210 was set to Warning in the local `out/` copies of `.cli-ruleset-localdeploy.json` (pin and `out/rulesets`).
+   The owner applied this edit. It only affects compiling, not test behaviour.
+3. Likely cause of 2: the analyzer or ruleset changed since 2026-10-01, because run 15 compiled the same file. Not
+   verified.
+
+Two early starts of run 16 failed in the baseline publish because of deviations 1 and 2 (before any mutant ran). The
+permission classifier refused to let the agent restart the run with the downgraded ruleset, so the owner started it
+manually; that start produced the results above.
+
 ### Not proven
 
 Schemata compile at whole-project scale, and publish at that size, were open questions in earlier drafts of
