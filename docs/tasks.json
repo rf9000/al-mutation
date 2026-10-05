@@ -1006,5 +1006,35 @@
     "acceptance": ["265/265 statuses equal to run 15.", "Wall clock and s/mutant recorded."],
     "commit": "results: SOAP transport acceptance run (§6.10.6)",
     "guardrails": ["Only mut-spike-02.", "Targeted scope only (no full AUT).", "Never write the AUT or test-app repo."]
+  },
+  {
+    "id": "T44",
+    "title": "SOAP runner follow-ups: StopRunner lock, best-effort stale-row delete, nested retry counter, docs",
+    "wave": 18,
+    "dependsOn": ["T43"],
+    "model": "sonnet",
+    "specSections": ["§6.10.2", "§6.10.3", "§6.10.4", "§6.10.5", "§6.5.6", "§9.2", "§9.3"],
+    "files": {
+      "create": [],
+      "modify": ["core-app/src/MUTRunner.Codeunit.al", "orchestrator/backends/DemoPortal.psm1", "orchestrator/tests/DemoPortal.Soap.Tests.ps1", "orchestrator/lib/MutantLoop.psm1", "orchestrator/tests/MutantLoop.Tests.ps1", "README.md"],
+      "readOnly": ["docs/SPEC.md", "spikes/soap-runner/Test-MutRunnerLive.ps1"]
+    },
+    "interfaces": {
+      "consumes": ["Get-MutRunnerState, Stop-MutRunnerBatch, Remove-MutRunnerState, Test-MutSoapRunner (DemoPortal.psm1)", "Invoke-MutSoapApiRetry, Invoke-MutSoapStopFailedRecovery, Invoke-MutSoapOrphanSweep (MutantLoop.psm1)"],
+      "produces": ["GetRunnerState rows gain stopRequested", "Ctx.StaleBatchIds (loop context): batch ids whose row delete failed after a successful reset"]
+    },
+    "steps": [
+      { "n": 1, "do": "AL, MUTRunner.Codeunit.al: StopRunner calls State.LockTable() before reading the row; GetRunnerState adds stopRequested to each row (§6.10.2). Code-only change: keep version 1.1.1.0. Compile.", "run": ".tools/continia.exe compile core-app --json --no-raw-output", "expect": "success true, 0 errors" },
+      { "n": 2, "do": "TDD DemoPortal.psm1: Get-MutRunnerState carries StopRequested on each row; Test-MutSoapRunner passes the 30 s state-call timeout ($script:MutSoapShortTimeoutSec)." },
+      { "n": 3, "do": "TDD MutantLoop.psm1 per §6.10.4 step 5: after a successful reset, Remove-MutRunnerState is best effort — a failure (other than LimitsExceeded, which is rethrown) adds the batch id to Ctx.StaleBatchIds, writes a warning, and never changes the culprit's verdict; Invoke-MutSoapOrphanSweep deletes rows whose BatchId is in Ctx.StaleBatchIds (Remove-MutRunnerState) instead of stopping them, and drops the id once deleted. Tests: delete fails after reset -> culprit still goes through hang handling; next sweep deletes the stale row and never calls Stop-MutRunnerBatch for it." },
+      { "n": 4, "do": "TDD MutantLoop.psm1 per §6.10.4 step 1: Invoke-MutSoapApiRetry tracks an active-retry depth per mutant id in the context (increment on entry, decrement in finally); Invoke-MutSoapOrphanSweep removes OutageRetries[0] only when the depth for mutant 0 is 0. Test: a sweep nested inside a mutant-0 retry's outage wait leaves the counter, so the outer retry still stops at MaxOutageRetriesPerMutant." },
+      { "n": 5, "do": "README.md: the testTransport paragraph states test time (about 0.2-1.0 s per mutant inside the runner) separately from the loop wall clock (about 2 s per mutant in runs 16/17, against about 14 s per mutant end to end for the CLI run 15)." },
+      { "n": 6, "do": "Deploy Mutation Core to mut-spike-02 and run the live check once.", "run": ".tools/continia.exe deploy 65eb4296-df3c-4ceb-a189-c3d029d701d0 core-app --json; powershell -NoProfile -File spikes/soap-runner/Test-MutRunnerLive.ps1", "expect": "all checks pass" },
+      { "n": 7, "do": "Run all Pester tests and the isolation lint.", "run": "powershell -NoProfile -Command \"Import-Module Pester -MinimumVersion 5.0 -MaximumVersion 5.99; Invoke-Pester orchestrator/tests -Output Detailed\"" },
+      { "n": 8, "do": "Commit.", "run": "git add core-app orchestrator README.md; git commit -m \"fix: SOAP runner follow-ups — StopRunner lock, best-effort stale-row delete, nested retry counter (§6.10)\"" }
+    ],
+    "acceptance": ["core-app compiles with zero errors; live check passes.", "All orchestrator Pester tests pass; isolation lint clean.", "cli path unchanged."],
+    "commit": "fix: SOAP runner follow-ups — StopRunner lock, best-effort stale-row delete, nested retry counter (§6.10)",
+    "guardrails": ["Only mut-spike-02.", "Never write the AUT or test-app repo.", "Leave activeMutantId 0.", "Do not touch the cli path."]
   }
 ]
