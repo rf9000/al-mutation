@@ -665,8 +665,10 @@ Describe 'Invoke-Continia (private, mock point)' {
         InModuleScope DemoPortal {
             $previousCliPath = $script:CliPath
             try {
-                $script:CliPath = 'cmd.exe'
-                $result = Invoke-Continia -Arguments @('/c', 'echo {"ok":true} & echo warn 1>&2') -TimeoutSec 30
+                $script:CliPath = (Get-Process -Id $PID).Path
+                $fake = Join-Path $TestDrive ('cli-' + [guid]::NewGuid().ToString('N') + '.ps1')
+                Set-Content -LiteralPath $fake -Value '[Console]::Out.WriteLine(''{"ok":true}''); [Console]::Error.WriteLine(''warn'')'
+                $result = Invoke-Continia -Arguments @('-NoProfile', '-NonInteractive', '-File', $fake) -TimeoutSec 30
                 $result.ok | Should -Be $true
             }
             finally {
@@ -679,7 +681,7 @@ Describe 'Invoke-Continia (private, mock point)' {
         InModuleScope DemoPortal {
             $previousCliPath = $script:CliPath
             try {
-                $script:CliPath = 'powershell.exe'
+                $script:CliPath = (Get-Process -Id $PID).Path
                 $result = Invoke-Continia -Arguments @('-NoProfile', '-Command', 'ConvertTo-Json (1..300)') -TimeoutSec 60
                 $result.Count | Should -Be 300
                 $result[0] | Should -Be 1
@@ -695,8 +697,10 @@ Describe 'Invoke-Continia (private, mock point)' {
         InModuleScope DemoPortal {
             $previousCliPath = $script:CliPath
             try {
-                $script:CliPath = 'cmd.exe'
-                { Invoke-Continia -Arguments @('/c', 'echo not-json') -TimeoutSec 30 } | Should -Throw
+                $script:CliPath = (Get-Process -Id $PID).Path
+                $fake = Join-Path $TestDrive ('cli-' + [guid]::NewGuid().ToString('N') + '.ps1')
+                Set-Content -LiteralPath $fake -Value '''not-json'''
+                { Invoke-Continia -Arguments @('-NoProfile', '-NonInteractive', '-File', $fake) -TimeoutSec 30 } | Should -Throw
             }
             finally {
                 $script:CliPath = $previousCliPath
@@ -708,8 +712,10 @@ Describe 'Invoke-Continia (private, mock point)' {
         InModuleScope DemoPortal {
             $previousCliPath = $script:CliPath
             try {
-                $script:CliPath = 'cmd.exe'
-                { Invoke-Continia -Arguments @('/c', 'rem') -TimeoutSec 30 } | Should -Throw
+                $script:CliPath = (Get-Process -Id $PID).Path
+                $fake = Join-Path $TestDrive ('cli-' + [guid]::NewGuid().ToString('N') + '.ps1')
+                Set-Content -LiteralPath $fake -Value '$null = 1'
+                { Invoke-Continia -Arguments @('-NoProfile', '-NonInteractive', '-File', $fake) -TimeoutSec 30 } | Should -Throw
             }
             finally {
                 $script:CliPath = $previousCliPath
@@ -721,8 +727,10 @@ Describe 'Invoke-Continia (private, mock point)' {
         InModuleScope DemoPortal {
             $previousCliPath = $script:CliPath
             try {
-                $script:CliPath = 'cmd.exe'
-                $result = Invoke-Continia -Arguments @('/c', 'echo hi 1>&2') -TimeoutSec 30 -ExpectJson:$false
+                $script:CliPath = (Get-Process -Id $PID).Path
+                $fake = Join-Path $TestDrive ('cli-' + [guid]::NewGuid().ToString('N') + '.ps1')
+                Set-Content -LiteralPath $fake -Value '[Console]::Error.WriteLine(''hi'')'
+                $result = Invoke-Continia -Arguments @('-NoProfile', '-NonInteractive', '-File', $fake) -TimeoutSec 30 -ExpectJson:$false
                 $result.ExitCode | Should -Be 0
                 $result.StdErr | Should -Match 'hi'
             }
@@ -736,8 +744,10 @@ Describe 'Invoke-Continia (private, mock point)' {
         InModuleScope DemoPortal {
             $previousCliPath = $script:CliPath
             try {
-                $script:CliPath = 'cmd.exe'
-                { Invoke-Continia -Arguments @('/c', 'exit 3') -TimeoutSec 30 -ExpectJson:$false } | Should -Throw
+                $script:CliPath = (Get-Process -Id $PID).Path
+                $fake = Join-Path $TestDrive ('cli-' + [guid]::NewGuid().ToString('N') + '.ps1')
+                Set-Content -LiteralPath $fake -Value 'exit 3'
+                { Invoke-Continia -Arguments @('-NoProfile', '-NonInteractive', '-File', $fake) -TimeoutSec 30 -ExpectJson:$false } | Should -Throw
             }
             finally {
                 $script:CliPath = $previousCliPath

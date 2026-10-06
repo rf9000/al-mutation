@@ -92,11 +92,12 @@ Describe 'Get-MutConfig' {
     }
 
     It 'leaves already-absolute paths untouched' {
-        $overrides = @{ aut = @{ sourcePath = 'C:/GeneralDev/AL/somewhere'; appId = '8b3f4e5c-ad6a-4f7b-9c8d-9e0f1a2b3c4d'; version = '1.0.0.0' } }
+        $absolute = if ([System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT) { 'C:/GeneralDev/AL/somewhere' } else { '/opt/GeneralDev/AL/somewhere' }
+        $overrides = @{ aut = @{ sourcePath = $absolute; appId = '8b3f4e5c-ad6a-4f7b-9c8d-9e0f1a2b3c4d'; version = '1.0.0.0' } }
         $path = New-MutTestConfigFile -Overrides $overrides
         $cfg = Get-MutConfig -Path $path
 
-        $cfg.aut.sourcePath | Should -Be 'C:/GeneralDev/AL/somewhere'
+        $cfg.aut.sourcePath | Should -Be $absolute
     }
 
     It 'loads the real mutation.config.json without error' {
@@ -299,7 +300,7 @@ Describe 'Get-MutConfig' {
         { Get-MutConfig -Path $path } | Should -Not -Throw
     }
 
-    It 'throws when workDir is a directory junction whose real target lies inside aut.sourcePath (review fix round 1: a plain GetFullPath comparison alone is defeated by a reparse point)' {
+    It 'throws when workDir is a directory junction whose real target lies inside aut.sourcePath (review fix round 1: a plain GetFullPath comparison alone is defeated by a reparse point)' -Skip:([System.Environment]::OSVersion.Platform -ne [System.PlatformID]::Win32NT) {
         $autSrc = "$TestDrive/aut-src-junc-$([guid]::NewGuid().ToString('N'))"
         $autNested = Join-Path $autSrc 'nested'
         New-Item -ItemType Directory -Path $autNested -Force | Out-Null
@@ -321,7 +322,7 @@ Describe 'Get-MutConfig' {
         }
     }
 
-    It 'throws when workDir is LITERALLY nested inside aut.sourcePath even though workDir itself is a junction pointing somewhere else entirely (fix round 2: resolving BOTH operands past reparse points weakened the mirror case -- robocopy /MIR still targets the literal, nested path)' {
+    It 'throws when workDir is LITERALLY nested inside aut.sourcePath even though workDir itself is a junction pointing somewhere else entirely (fix round 2: resolving BOTH operands past reparse points weakened the mirror case -- robocopy /MIR still targets the literal, nested path)' -Skip:([System.Environment]::OSVersion.Platform -ne [System.PlatformID]::Win32NT) {
         $autSrc = "$TestDrive/aut-src-mirror-$([guid]::NewGuid().ToString('N'))"
         New-Item -ItemType Directory -Path $autSrc -Force | Out-Null
 
@@ -464,7 +465,7 @@ Describe 'Resolve-MutFinalPath (drive-root handling, review fix round 2)' {
         pointing the process's current directory somewhere that is provably NOT "C:\" and
         confirming Resolve-MutFinalPath('C:\') does not resolve to it.
     #>
-    It 'resolves "C:\" to the drive root, not to the process current directory' {
+    It 'resolves "C:\" to the drive root, not to the process current directory' -Skip:([System.Environment]::OSVersion.Platform -ne [System.PlatformID]::Win32NT) {
         # [Environment]::CurrentDirectory, NOT Set-Location: PowerShell's own location and the
         # process's actual current directory (what CreateFileW's drive-relative resolution
         # reads) are two different things -- Set-Location alone does not move the latter,
@@ -483,7 +484,7 @@ Describe 'Resolve-MutFinalPath (drive-root handling, review fix round 2)' {
         }
     }
 
-    It 'resolves "C:" (no trailing separator) the same way, not as drive-relative to the current directory' {
+    It 'resolves "C:" (no trailing separator) the same way, not as drive-relative to the current directory' -Skip:([System.Environment]::OSVersion.Platform -ne [System.PlatformID]::Win32NT) {
         $originalCurrentDirectory = [Environment]::CurrentDirectory
         try {
             [Environment]::CurrentDirectory = $env:WINDIR
@@ -609,14 +610,15 @@ Describe 'Get-MutConfig: environment-variable expansion in paths' {
     }
 
     It 'expands %VAR% in a sourcePath so a shipped config need not hard-code a drive layout' {
-        $env:MUT_TEST_AUT_ROOT = 'C:/GeneralDev/AL/SomeCheckout'
+        $root = if ([System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT) { 'C:/GeneralDev/AL/SomeCheckout' } else { '/opt/GeneralDev/AL/SomeCheckout' }
+        $env:MUT_TEST_AUT_ROOT = $root
         $path = New-MutTestConfigFile -Overrides @{
             aut = [ordered]@{ sourcePath = '%MUT_TEST_AUT_ROOT%/base-application'; appId = '8b3f4e5c-ad6a-4f7b-9c8d-9e0f1a2b3c4d'; version = '1.0.0.0' }
         }
         $cfg = Get-MutConfig -Path $path
         # An already-rooted path is returned as-is (see 'leaves already-absolute paths untouched'),
         # so expansion preserves whichever separators the config itself used.
-        $cfg.aut.sourcePath | Should -Be 'C:/GeneralDev/AL/SomeCheckout/base-application'
+        $cfg.aut.sourcePath | Should -Be "$root/base-application"
     }
 
     It 'throws naming the variable when it is not set, rather than leaving a literal %VAR% to fail later' {
@@ -696,5 +698,23 @@ Describe 'Get-MutConfig testTransport and soap.batchSize (§6.10.4)' {
         foreach ($name in 'mutation.config.json', 'mutation.fixture.config.json', 'mutation.u2.config.json') {
             (Get-MutConfig -Path (Join-Path $script:RepoRoot $name)).testTransport | Should -Be 'soap' -Because $name
         }
+    }
+}
+
+Describe 'Platform helpers (Linux port)' {
+    It 'Test-MutIsWindows matches the OS platform' {
+        $expected = [System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT
+        Test-MutIsWindows | Should -Be $expected
+    }
+
+    It 'Get-MutPathComparison ignores case only on Windows' {
+        $expected = if (Test-MutIsWindows) { [System.StringComparison]::OrdinalIgnoreCase } else { [System.StringComparison]::Ordinal }
+        Get-MutPathComparison | Should -Be $expected
+    }
+
+    It 'Get-MutShellPath returns the executable of the running PowerShell host' {
+        $shell = Get-MutShellPath
+        Test-Path -LiteralPath $shell | Should -BeTrue
+        [System.IO.Path]::GetFileNameWithoutExtension($shell) | Should -BeIn @('powershell', 'pwsh')
     }
 }

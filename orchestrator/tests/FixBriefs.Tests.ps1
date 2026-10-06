@@ -671,7 +671,7 @@ Describe 'Test-MutFixReport.ps1' {
     It 'exits 0, prints ok and writes the markdown for a valid report' {
         $fixes = @{ runNo = 7; fixes = @($script:ScriptFix) }
         ConvertTo-Json -InputObject $fixes -Depth 10 | Set-Content -Path (Join-Path $script:ScriptRepo 'results/7-fixes.json') -Encoding UTF8
-        $output = & powershell -NoProfile -File (Join-Path $script:ScriptRepo 'orchestrator/Test-MutFixReport.ps1') -RunNo 7
+        $output = & (Get-Process -Id $PID).Path -NoProfile -File (Join-Path $script:ScriptRepo 'orchestrator/Test-MutFixReport.ps1') -RunNo 7
         $LASTEXITCODE | Should -Be 0
         ($output -join "`n") | Should -Match '(?m)^ok$'
         Test-Path (Join-Path $script:ScriptRepo 'results/7-fixes.md') | Should -BeTrue
@@ -680,7 +680,7 @@ Describe 'Test-MutFixReport.ps1' {
     It 'exits 1 and prints the errors for an invalid report' {
         $fixes = @{ runNo = 7; fixes = @() }
         ConvertTo-Json -InputObject $fixes -Depth 10 | Set-Content -Path (Join-Path $script:ScriptRepo 'results/7-fixes.json') -Encoding UTF8
-        $output = & powershell -NoProfile -File (Join-Path $script:ScriptRepo 'orchestrator/Test-MutFixReport.ps1') -RunNo 7
+        $output = & (Get-Process -Id $PID).Path -NoProfile -File (Join-Path $script:ScriptRepo 'orchestrator/Test-MutFixReport.ps1') -RunNo 7
         $LASTEXITCODE | Should -Be 1
         ($output -join "`n") | Should -Match 'mutant 1'
     }

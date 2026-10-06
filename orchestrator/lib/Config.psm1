@@ -94,6 +94,36 @@ function Get-MutRepoRoot {
     return (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 }
 
+function Test-MutIsWindows {
+    <#
+        .SYNOPSIS
+        True on Windows. Works on Windows PowerShell 5.1, which has no $IsWindows.
+    #>
+    return [System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT
+}
+
+function Get-MutPathComparison {
+    <#
+        .SYNOPSIS
+        The StringComparison for file paths: case-insensitive on Windows, case-sensitive
+        elsewhere (Linux file systems treat Foo.al and foo.al as two files).
+    #>
+    if (Test-MutIsWindows) {
+        return [System.StringComparison]::OrdinalIgnoreCase
+    }
+    return [System.StringComparison]::Ordinal
+}
+
+function Get-MutShellPath {
+    <#
+        .SYNOPSIS
+        Full path of the PowerShell executable running this session (powershell.exe on
+        Windows PowerShell 5.1, pwsh on PowerShell 7), for starting child PowerShell
+        processes on the same host.
+    #>
+    return (Get-Process -Id $PID).Path
+}
+
 function Test-MutHasProperty {
     param($Object, [string]$Name)
 
@@ -520,4 +550,4 @@ function Get-MutConfig {
     return $config
 }
 
-Export-ModuleMember -Function Get-MutConfig, Get-MutRepoRoot
+Export-ModuleMember -Function Get-MutConfig, Get-MutRepoRoot, Test-MutIsWindows, Get-MutPathComparison, Get-MutShellPath

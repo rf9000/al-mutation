@@ -28,8 +28,9 @@ Import-Module '$($script:ModulePath)' -Force
 Enter-MutEnvLock -WorkDir '$WorkDir' -RunNo $RunNo -Owner '$Owner'
 Start-Sleep -Seconds 600
 "@ | Set-Content -LiteralPath $script
-        $p = Start-Process -FilePath 'powershell.exe' -PassThru -WindowStyle Hidden `
-            -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $script)
+        $startArgs = @{ FilePath = (Get-Process -Id $PID).Path; PassThru = $true; ArgumentList = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $script) }
+        if ([System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT) { $startArgs['WindowStyle'] = 'Hidden' }
+        $p = Start-Process @startArgs
         $lock = Join-Path $WorkDir '.environment.lock'
         $deadline = (Get-Date).AddSeconds(60)
         while (-not (Test-MutLockWritten $lock) -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 200 }
@@ -89,7 +90,12 @@ Describe 'Enter-MutEnvLock / Exit-MutEnvLock' {
 
         Stop-Process -Id $script:Child.Id -Force
         $script:Child.WaitForExit(10000) | Should -Be $true
-        Test-Path -LiteralPath $script:LockPath | Should -Be $false
+        # Windows deletes the file when the killed holder's handle closes (DeleteOnClose). Linux
+        # does not run DeleteOnClose on a kill; the file stays behind as a stale lock that the
+        # next Enter replaces (EnvLock.psm1 stale path).
+        if ([System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT) {
+            Test-Path -LiteralPath $script:LockPath | Should -Be $false
+        }
 
         { Enter-MutEnvLock -WorkDir $script:Work -RunNo 6 -Owner 'Other' } | Should -Not -Throw
     }
