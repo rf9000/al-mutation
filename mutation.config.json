@@ -2,6 +2,7 @@
   "backend": "DemoPortal",
   "environmentName": "mut-spike-02",
   "keepEnvironment": true,
+  "testTransport": "soap",
   "aut": { "sourcePath": "C:/GeneralDev/AL/Continia Banking Master/Continia Banking/base-application", "appId": "83461f48-dd16-49ea-b00c-e656830c640f", "version": "29.0.0.0" },
   "testApp": { "sourcePath": "C:/GeneralDev/AL/Continia Banking Master/Continia Banking/base-application-test", "appId": "02b81fad-90fa-4cdc-a414-5bda25e96db0", "testCodeunits": [95155, 95179, 95191] },
   "rulesets": { "sourcePath": "C:/GeneralDev/AL/Continia Banking Master/Continia Banking/Banking Rulesets", "file": ".cli-ruleset-localdeploy.json" },

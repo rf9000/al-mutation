@@ -2,6 +2,7 @@
   "backend": "DemoPortal",
   "environmentName": "mut-spike-01",
   "keepEnvironment": true,
+  "testTransport": "soap",
   "aut": { "sourcePath": "./fixtures/fixture-aut", "appId": "8b3f4e5c-ad6a-4f7b-9c8d-9e0f1a2b3c4d", "version": "1.0.0.1" },
   "testApp": { "sourcePath": "./fixtures/fixture-test", "appId": "9c4a5f6d-be7b-4a8c-8d9e-0f1a2b3c4d5e", "testCodeunits": [50300] },
   "rulesets": null,

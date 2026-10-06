@@ -692,8 +692,9 @@ Describe 'Get-MutConfig testTransport and soap.batchSize (§6.10.4)' {
         }
     }
 
-    It 'leaves the shipped configs on the cli transport' {
-        (Get-MutConfig -Path (Join-Path $script:RepoRoot 'mutation.config.json')).testTransport | Should -Be 'cli'
-        (Get-MutConfig -Path (Join-Path $script:RepoRoot 'mutation.fixture.config.json')).testTransport | Should -Be 'cli'
+    It 'puts every shipped config on the soap transport (owner decision 2026-10-06, after runs 16/17)' {
+        foreach ($name in 'mutation.config.json', 'mutation.fixture.config.json', 'mutation.u2.config.json') {
+            (Get-MutConfig -Path (Join-Path $script:RepoRoot $name)).testTransport | Should -Be 'soap' -Because $name
+        }
     }
 }

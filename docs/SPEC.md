@@ -1145,7 +1145,7 @@ read the same text whichever of the two wrote the row.
 timeout, `RunTests` the health timeout).
 
 #### 6.10.4 Loop changes (`lib/MutantLoop.psm1`) and config
-Config key `testTransport`: `"cli"` (default, today's behaviour) or `"soap"`. `Get-MutConfig` validates it. Optional
+Config key `testTransport`: `"cli"` (default when the key is missing) or `"soap"`. Since 2026-10-06 (after runs 16 and 17) every shipped config sets `"soap"`, so mutant-fixer, which uses `mutation.config.json` as its template, runs on SOAP too. `Get-MutConfig` validates it. Optional
 `soap.batchSize`, a positive integer with default 50. When `testTransport` is `"soap"`, `Test-MutSoapRunner` is
 checked right after `Publish-Baseline` (§6.5.4 step 3) and again at loop start; false throws before any further work.
 
