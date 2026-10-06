@@ -91,7 +91,7 @@ function Get-MutRepoRoot {
         Returns the repo root: two levels above this module file
         (orchestrator/lib/Config.psm1 -> repo root).
     #>
-    return (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
+    return (Resolve-Path (Join-Path $PSScriptRoot '../..')).Path
 }
 
 function Test-MutIsWindows {
@@ -260,7 +260,7 @@ function Resolve-MutFinalPath {
     #>
     param([Parameter(Mandatory = $true)][string]$Path)
 
-    $full = $Path.TrimEnd('\', '/')
+    $full = Remove-MutTrailingSeparator $Path
 
     # A bare drive letter ("C:", with no trailing separator) is NOT the drive root as far as
     # CreateFileW/the Win32 path APIs are concerned: it is the legacy DOS "current directory on
@@ -289,7 +289,12 @@ function Resolve-MutFinalPath {
     }
 
     try {
-        $resolvedAncestor = [MutFinalPathNative]::GetFinalPath($ancestor).TrimEnd('\', '/')
+        if (Test-MutIsWindows) {
+            $resolvedAncestor = Remove-MutTrailingSeparator ([MutFinalPathNative]::GetFinalPath($ancestor))
+        }
+        else {
+            $resolvedAncestor = Resolve-MutUnixFinalPath -Path $ancestor
+        }
     }
     catch {
         return $full
@@ -298,7 +303,62 @@ function Resolve-MutFinalPath {
     if ($tailParts.Count -eq 0) {
         return $resolvedAncestor
     }
-    return (Join-Path $resolvedAncestor ($tailParts -join '\')).TrimEnd('\', '/')
+    return Remove-MutTrailingSeparator ([System.IO.Path]::Combine(@($resolvedAncestor) + $tailParts))
+}
+
+function Remove-MutTrailingSeparator {
+    <#
+        .SYNOPSIS
+        Private. $Path.TrimEnd('\', '/'), except that the Unix root "/" stays "/" instead of
+        becoming an empty string. Drive roots are handled by the callers, as before.
+    #>
+    param([string]$Path)
+
+    $trimmed = $Path.TrimEnd('\', '/')
+    if ($trimmed -eq '' -and $Path -ne '') {
+        return $Path.Substring(0, 1)
+    }
+    return $trimmed
+}
+
+function Resolve-MutUnixFinalPath {
+    <#
+        .SYNOPSIS
+        Private, non-Windows. Resolves every symbolic link in an existing absolute $Path,
+        segment by segment, like realpath(1). Uses FileSystemInfo.LinkTarget (.NET 6+, i.e.
+        PowerShell 7). Throws after 40 link hops (a loop).
+    #>
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    $pending = New-Object 'System.Collections.Generic.List[string]'
+    $pending.AddRange([string[]]@($Path.Split([char[]]@('/'), [System.StringSplitOptions]::RemoveEmptyEntries)))
+    $current = '/'
+    $hops = 0
+    while ($pending.Count -gt 0) {
+        $part = $pending[0]
+        $pending.RemoveAt(0)
+        if ($part -eq '.') { continue }
+        if ($part -eq '..') {
+            $parent = [System.IO.Path]::GetDirectoryName($current)
+            $current = if ([string]::IsNullOrEmpty($parent)) { '/' } else { $parent }
+            continue
+        }
+        $next = if ($current -eq '/') { "/$part" } else { "$current/$part" }
+        $target = (New-Object System.IO.FileInfo $next).LinkTarget
+        if ([string]::IsNullOrEmpty($target)) {
+            $current = $next
+            continue
+        }
+        $hops++
+        if ($hops -gt 40) {
+            throw "Resolve-MutUnixFinalPath: too many symbolic links in '$Path'."
+        }
+        if ($target.StartsWith('/')) {
+            $current = '/'
+        }
+        $pending.InsertRange(0, [string[]]@($target.Split([char[]]@('/'), [System.StringSplitOptions]::RemoveEmptyEntries)))
+    }
+    return $current
 }
 
 function Assert-MutWorkDirOutsideSources {
@@ -328,7 +388,7 @@ function Assert-MutWorkDirOutsideSources {
     #>
     param($Config, [string]$RepoRoot)
 
-    $workDirLiteral = [System.IO.Path]::GetFullPath((Resolve-MutConfigPath -RepoRoot $RepoRoot -Path $Config.workDir)).TrimEnd('\', '/')
+    $workDirLiteral = Remove-MutTrailingSeparator ([System.IO.Path]::GetFullPath((Resolve-MutConfigPath -RepoRoot $RepoRoot -Path $Config.workDir)))
     $workDirResolved = Resolve-MutFinalPath -Path $workDirLiteral
 
     $sources = @(
@@ -340,13 +400,14 @@ function Assert-MutWorkDirOutsideSources {
     }
 
     foreach ($source in $sources) {
-        $sourceLiteral = [System.IO.Path]::GetFullPath((Resolve-MutConfigPath -RepoRoot $RepoRoot -Path $source.Path)).TrimEnd('\', '/')
+        $sourceLiteral = Remove-MutTrailingSeparator ([System.IO.Path]::GetFullPath((Resolve-MutConfigPath -RepoRoot $RepoRoot -Path $source.Path)))
         $sourceResolved = Resolve-MutFinalPath -Path $sourceLiteral
 
         $isContained = {
             param($WorkDir, $Source)
-            $WorkDir.Equals($Source, [System.StringComparison]::OrdinalIgnoreCase) -or
-                $WorkDir.StartsWith($Source + [System.IO.Path]::DirectorySeparatorChar, [System.StringComparison]::OrdinalIgnoreCase)
+            $comparison = Get-MutPathComparison
+            $WorkDir.Equals($Source, $comparison) -or
+                $WorkDir.StartsWith($Source + [System.IO.Path]::DirectorySeparatorChar, $comparison)
         }
 
         if ((& $isContained $workDirLiteral $sourceLiteral) -or (& $isContained $workDirResolved $sourceResolved)) {

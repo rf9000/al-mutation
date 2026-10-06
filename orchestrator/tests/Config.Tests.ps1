@@ -718,3 +718,39 @@ Describe 'Platform helpers (Linux port)' {
         [System.IO.Path]::GetFileNameWithoutExtension($shell) | Should -BeIn @('powershell', 'pwsh')
     }
 }
+
+Describe 'Paths on Linux (Linux port)' {
+    BeforeAll {
+        $script:OnLinux = [System.Environment]::OSVersion.Platform -ne [System.PlatformID]::Win32NT
+    }
+
+    It 'Resolve-MutFinalPath keeps the root "/"' -Skip:([System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT) {
+        InModuleScope Config { Resolve-MutFinalPath -Path '/' } | Should -Be '/'
+    }
+
+    It 'throws when workDir is a symlink whose real target lies inside aut.sourcePath' -Skip:([System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT) {
+        $autSrc = "$TestDrive/aut-src-link-$([guid]::NewGuid().ToString('N'))"
+        $autNested = Join-Path $autSrc 'nested'
+        New-Item -ItemType Directory -Path $autNested -Force | Out-Null
+        $link = "$TestDrive/workdir-link-$([guid]::NewGuid().ToString('N'))"
+        New-Item -ItemType SymbolicLink -Path $link -Target $autNested | Out-Null
+
+        $overrides = @{
+            aut     = @{ sourcePath = $autSrc; appId = '8b3f4e5c-ad6a-4f7b-9c8d-9e0f1a2b3c4d'; version = '1.0.0.0' }
+            workDir = $link
+        }
+        $path = New-MutTestConfigFile -Overrides $overrides
+        { Get-MutConfig -Path $path } | Should -Throw '*workDir*aut.sourcePath*'
+    }
+
+    It 'does not treat a workDir that differs from aut.sourcePath only in case as inside it' -Skip:([System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT) {
+        $base = "$TestDrive/case-$([guid]::NewGuid().ToString('N'))"
+        New-Item -ItemType Directory -Path "$base/CaseAut" -Force | Out-Null
+        $overrides = @{
+            aut     = @{ sourcePath = "$base/CaseAut"; appId = '8b3f4e5c-ad6a-4f7b-9c8d-9e0f1a2b3c4d'; version = '1.0.0.0' }
+            workDir = "$base/caseaut/out"
+        }
+        $path = New-MutTestConfigFile -Overrides $overrides
+        { Get-MutConfig -Path $path } | Should -Not -Throw
+    }
+}

@@ -2,7 +2,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 # Repo root is two levels above this module file (orchestrator/lib/Schemata.psm1).
-$script:RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
+$script:RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot '../..')).Path
 
 # Cap on the compile-error elimination loop (§6.5.4 step 4): after this many generate+compile
 # cycles without a clean compile, Build-MutSchemata throws.

@@ -187,6 +187,12 @@ Describe 'Invoke-MutFixApply' {
             Should -Throw "*Fix F008*Sub/Missing.Codeunit.al*"
     }
 
+    It 'matches the target file case-sensitively on Linux (Foo.al and foo.al are two files there)' -Skip:([System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT) {
+        $fix = New-FvFix -Id 'F009' -File 'sub/t.codeunit.al' -Procedure 'A' -After 8 -Code '        x;'
+        { Invoke-MutFixApply -SourcePath $script:Src -DestinationPath $script:Dst -Fixes @($fix) } |
+            Should -Throw "*Fix F009*sub/t.codeunit.al*"
+    }
+
     It 'never applies equivalent entries' {
         $eq = [pscustomobject]@{ fixId = 'F001'; mutantIds = @(1); verdict = 'equivalent'; target = $null; change = $null; anchor = $null; alCode = '' }
         $r = @(Invoke-MutFixApply -SourcePath $script:Src -DestinationPath $script:Dst -Fixes @($eq))

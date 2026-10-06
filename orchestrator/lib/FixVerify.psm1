@@ -57,7 +57,7 @@ function Invoke-MutFixApply {
 
     $src = (Resolve-Path -LiteralPath $SourcePath).Path.TrimEnd('\', '/')
     $dst = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($DestinationPath).TrimEnd('\', '/')
-    if ($src -ieq $dst) {
+    if ($src.Equals($dst, (Get-MutPathComparison))) {
         throw 'DestinationPath must differ from SourcePath'
     }
 
@@ -84,7 +84,7 @@ function Invoke-MutFixApply {
 
     foreach ($fix in $applicable) {
         $file = [string]$fix.target.file
-        $fileEntry = $index | Where-Object { $_.File -ieq $file } | Select-Object -First 1
+        $fileEntry = $index | Where-Object { ([string]$_.File).Equals($file, (Get-MutPathComparison)) } | Select-Object -First 1
         if ($null -eq $fileEntry) {
             throw "Fix $($fix.fixId): target file '$file' is not a test codeunit file of the test app"
         }
@@ -137,7 +137,7 @@ function Invoke-MutFixApply {
     # 3. Apply per file, bottom-up.
     $results = @()
     foreach ($relFile in @($opsByFile.Keys)) {
-        $full = Join-Path $dst ($relFile -replace '/', '\')
+        $full = Join-Path $dst $relFile
         $info = Get-MutFixText -Path $full
         $eol = Get-MutFixEol -Text $info.Text
         $list = New-Object 'System.Collections.Generic.List[string]'
@@ -560,7 +560,7 @@ function Invoke-MutFixVerify {
     )
 
     if ([string]::IsNullOrEmpty($RepoRoot)) {
-        $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
+        $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot '../..')).Path
     }
     $workDir = [string]$Config.workDir
     if (-not [System.IO.Path]::IsPathRooted($workDir)) { $workDir = Join-Path $RepoRoot $workDir }
@@ -686,11 +686,11 @@ function Invoke-MutFixVerify {
             $diags = Get-MutFixDiagnostics -Publish $pub
             $hit = @{}
             foreach ($d in $diags) {
-                $norm = $d.File.Replace('\', '/').ToLower()
+                $norm = $d.File.Replace('\', '/')
                 $mapped = $false
                 foreach ($e in $active) {
                     $r = $ranges[[string]$e.fixId]
-                    if ($norm.EndsWith(([string]$r.file).ToLower()) -and $d.Line -ge $r.insertedStartLine -and $d.Line -le $r.insertedEndLine) {
+                    if ($norm.EndsWith([string]$r.file, (Get-MutPathComparison)) -and $d.Line -ge $r.insertedStartLine -and $d.Line -le $r.insertedEndLine) {
                         if (-not $hit.ContainsKey([string]$e.fixId)) { $hit[[string]$e.fixId] = @() }
                         $hit[[string]$e.fixId] += $d.Text
                         $mapped = $true
@@ -865,7 +865,7 @@ function Export-MutFixDelivery {
     )
 
     if ([string]::IsNullOrEmpty($RepoRoot)) {
-        $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
+        $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot '../..')).Path
     }
     if ($Config -is [string]) {
         # A config path: load it like the run does (%VAR% and relative paths resolved, §6.9.2).

@@ -2,11 +2,11 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 # Repo root is two levels above this module file (orchestrator/backends/DemoPortal.psm1).
-$script:RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
+$script:RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot '../..')).Path
 
 # Backend-agnostic coverage CSV parser (T24, §6.5.5), imported by relative path so this backend
 # is the only place that wires it to the real CLI's coverage output.
-Import-Module (Join-Path $PSScriptRoot '..\lib\Coverage.psm1') -Force
+Import-Module (Join-Path $PSScriptRoot '../lib/Coverage.psm1') -Force
 
 # Poll loop tuning for env get / env stop-start status polling.
 $script:PollIntervalSec = 10

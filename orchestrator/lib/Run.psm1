@@ -1063,7 +1063,7 @@ function Invoke-MutRunPipeline {
     $runDir = $init.RunDir
 
     $repoRoot = Get-MutRepoRoot
-    $backendModulePath = Join-Path $repoRoot "orchestrator\backends\$($Config.backend).psm1"
+    $backendModulePath = Join-Path $repoRoot "orchestrator/backends/$($Config.backend).psm1"
 
     $env = Ensure-MutEnvironment -Config $Config -RunDir $runDir -SkipEnvironment:$SkipEnvironment
 

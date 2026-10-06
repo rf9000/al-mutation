@@ -205,7 +205,7 @@ function ConvertTo-MutRepoRelativePath {
 
     $full = [System.IO.Path]::GetFullPath($Path).TrimEnd('\', '/')
     $root = [System.IO.Path]::GetFullPath($RepoRoot).TrimEnd('\', '/')
-    if ($full.StartsWith($root + [System.IO.Path]::DirectorySeparatorChar, [System.StringComparison]::OrdinalIgnoreCase)) {
+    if ($full.StartsWith($root + [System.IO.Path]::DirectorySeparatorChar, (Get-MutPathComparison))) {
         return $full.Substring($root.Length + 1).Replace('\', '/')
     }
     return $full.Replace('\', '/')
