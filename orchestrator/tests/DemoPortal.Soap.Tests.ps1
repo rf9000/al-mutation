@@ -1224,3 +1224,66 @@ Describe 'Receive-MutSoapRunspace' {
         { Invoke-InModule { param($x) Receive-MutSoapRunspace -Handle $x } @($h) } | Should -Throw '*no result*could not load DemoPortal*second problem*'
     }
 }
+
+Describe 'Get-MutWebFailure on PowerShell 7 (Linux port)' {
+    <#
+        PowerShell 7's Invoke-WebRequest throws HttpResponseException (an HTTP error response),
+        HttpRequestException (no connection) or TaskCanceledException (timeout) instead of
+        5.1's WebException. Each must give the same Status/StatusCode as its 5.1 twin, so
+        Invoke-MutSoap's outage, timeout and drop handling works on Linux.
+    #>
+    BeforeAll {
+        function script:New-Record {
+            param([System.Exception]$Exception)
+            [System.Management.Automation.ErrorRecord]::new($Exception, 'x', 'InvalidOperation', $null)
+        }
+    }
+
+    It 'maps HttpResponseException <code> to a web error with that status code' -Skip:($PSVersionTable.PSVersion.Major -lt 6) -ForEach @(
+        @{ code = 503 }, @{ code = 401 }, @{ code = 500 }
+    ) {
+        $response = [System.Net.Http.HttpResponseMessage]::new([System.Net.HttpStatusCode]$code)
+        $ex = [Microsoft.PowerShell.Commands.HttpResponseException]::new('failed', $response)
+        $record = New-Record $ex
+        $record.ErrorDetails = [System.Management.Automation.ErrorDetails]::new('<faultstring>boom</faultstring>')
+
+        $f = Invoke-InModule { param($r) Get-MutWebFailure -ErrorRecord $r } @($record)
+
+        $f.IsWebError | Should -BeTrue
+        $f.Status | Should -Be 'ProtocolError'
+        $f.StatusCode | Should -Be $code
+        $f.Body | Should -Be '<faultstring>boom</faultstring>'
+    }
+
+    It 'maps HttpRequestException <error> to Status <status>' -Skip:($PSVersionTable.PSVersion.Major -lt 6) -ForEach @(
+        @{ error = 'NameResolutionError'; status = 'NameResolutionFailure' }
+        @{ error = 'ConnectionError'; status = 'ConnectFailure' }
+        @{ error = 'ResponseEnded'; status = 'ConnectionClosed' }
+    ) {
+        $ex = [System.Net.Http.HttpRequestException]::new([System.Net.Http.HttpRequestError]$error, 'no connection', $null)
+
+        $f = Invoke-InModule { param($r) Get-MutWebFailure -ErrorRecord $r } @((New-Record $ex))
+
+        $f.IsWebError | Should -BeTrue
+        $f.Status | Should -Be $status
+        $f.StatusCode | Should -BeNullOrEmpty
+    }
+
+    It 'maps an HttpRequestException wrapping a refused socket to ConnectFailure' -Skip:($PSVersionTable.PSVersion.Major -lt 6) {
+        $socket = [System.Net.Sockets.SocketException]::new([int][System.Net.Sockets.SocketError]::ConnectionRefused)
+        $ex = [System.Net.Http.HttpRequestException]::new('refused', $socket)
+
+        $f = Invoke-InModule { param($r) Get-MutWebFailure -ErrorRecord $r } @((New-Record $ex))
+
+        $f.Status | Should -Be 'ConnectFailure'
+    }
+
+    It 'maps a TaskCanceledException (Invoke-WebRequest -TimeoutSec elapsed) to Timeout' -Skip:($PSVersionTable.PSVersion.Major -lt 6) {
+        $ex = [System.Threading.Tasks.TaskCanceledException]::new('timed out', [System.TimeoutException]::new('elapsed'))
+
+        $f = Invoke-InModule { param($r) Get-MutWebFailure -ErrorRecord $r } @((New-Record $ex))
+
+        $f.IsWebError | Should -BeTrue
+        $f.Status | Should -Be 'Timeout'
+    }
+}

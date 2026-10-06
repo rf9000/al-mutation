@@ -1779,6 +1779,58 @@ $script:MutRunnerNamespace = 'urn:microsoft-dynamics-schemas/codeunit/MUTRunner'
 # they answer in well under a second, so the 600 s default must not hold up a stop or a poll.
 $script:MutSoapShortTimeoutSec = 30
 
+function ConvertFrom-MutPwsh7WebException {
+    <#
+        .SYNOPSIS
+        Private. Maps a PowerShell 7 web exception to the WebExceptionStatus name and HTTP status
+        that Windows PowerShell 5.1's WebException would give for the same failure:
+        HttpResponseException -> ProtocolError + status code; HttpRequestException ->
+        NameResolutionFailure, ConnectFailure, ConnectionClosed or ReceiveFailure;
+        TaskCanceledException / OperationCanceledException (the -TimeoutSec elapsed) -> Timeout.
+        Returns $null for any other exception.
+    #>
+    param([System.Exception]$Exception)
+
+    $typeName = $Exception.GetType().FullName
+    if ($typeName -eq 'Microsoft.PowerShell.Commands.HttpResponseException') {
+        $code = $null
+        if ($null -ne $Exception.Response) {
+            try { $code = [int]$Exception.Response.StatusCode } catch { }
+        }
+        return [pscustomobject]@{ Status = 'ProtocolError'; StatusCode = $code }
+    }
+    if ($typeName -in @('System.Threading.Tasks.TaskCanceledException', 'System.OperationCanceledException')) {
+        return [pscustomobject]@{ Status = 'Timeout'; StatusCode = $null }
+    }
+    if ($typeName -ne 'System.Net.Http.HttpRequestException') {
+        return $null
+    }
+
+    # .NET 8 (PowerShell 7.4) says what went wrong in HttpRequestError; older runtimes only
+    # through the inner SocketException.
+    $requestError = $null
+    if ($null -ne $Exception.PSObject.Properties['HttpRequestError']) {
+        $requestError = [string]$Exception.HttpRequestError
+    }
+    switch ($requestError) {
+        'NameResolutionError' { return [pscustomobject]@{ Status = 'NameResolutionFailure'; StatusCode = $null } }
+        'ConnectionError' { return [pscustomobject]@{ Status = 'ConnectFailure'; StatusCode = $null } }
+        'ProxyTunnelError' { return [pscustomobject]@{ Status = 'ConnectFailure'; StatusCode = $null } }
+        'ResponseEnded' { return [pscustomobject]@{ Status = 'ConnectionClosed'; StatusCode = $null } }
+    }
+    $inner = $Exception.InnerException
+    while ($null -ne $inner) {
+        if ($inner -is [System.Net.Sockets.SocketException]) {
+            switch ([string]$inner.SocketErrorCode) {
+                { $_ -in @('HostNotFound', 'NoData', 'TryAgain') } { return [pscustomobject]@{ Status = 'NameResolutionFailure'; StatusCode = $null } }
+                { $_ -in @('ConnectionRefused', 'NetworkUnreachable', 'HostUnreachable', 'TimedOut') } { return [pscustomobject]@{ Status = 'ConnectFailure'; StatusCode = $null } }
+            }
+        }
+        $inner = $inner.InnerException
+    }
+    return [pscustomobject]@{ Status = 'ReceiveFailure'; StatusCode = $null }
+}
+
 function Get-MutWebFailure {
     <#
         .SYNOPSIS
@@ -1800,7 +1852,18 @@ function Get-MutWebFailure {
     $statusCode = $null
     $body = $null
 
-    if ($isWebError) {
+    if (-not $isWebError) {
+        # PowerShell 7: Invoke-WebRequest throws HttpResponseException, HttpRequestException or
+        # TaskCanceledException instead of WebException. Matched by type name so Windows
+        # PowerShell 5.1, which lacks these types, never has to load them.
+        $pwsh7 = ConvertFrom-MutPwsh7WebException -Exception $exception
+        if ($null -ne $pwsh7) {
+            $isWebError = $true
+            $status = $pwsh7.Status
+            $statusCode = $pwsh7.StatusCode
+        }
+    }
+    elseif ($isWebError) {
         $status = [string]$exception.Status
         $response = $exception.Response
         if ($null -ne $response) {
@@ -1960,10 +2023,19 @@ function ConvertFrom-MutIsoUtc {
         Private. Parses an ISO-8601 UTC string from AL's Format(<DateTime>, 0, 9) (for example
         2026-10-04T20:43:43.0700000Z) to a UTC [datetime]. Invariant culture: this machine's
         Danish locale must not change the result. An empty or null string (a runner row that has
-        not started its first mutant) is $null.
+        not started its first mutant) is $null. PowerShell 7's ConvertFrom-Json already turns
+        such a string into a [datetime]; that value is taken as is (converted to UTC), because
+        casting it back to [string] would format it in the local culture and drop the fraction.
     #>
-    param([AllowNull()][AllowEmptyString()][string]$Text)
+    param([AllowNull()]$Text)
 
+    if ($Text -is [datetime]) {
+        if ($Text.Kind -eq [System.DateTimeKind]::Unspecified) {
+            return [datetime]::SpecifyKind($Text, [System.DateTimeKind]::Utc)
+        }
+        return $Text.ToUniversalTime()
+    }
+    $Text = [string]$Text
     if ([string]::IsNullOrWhiteSpace($Text)) {
         return $null
     }
@@ -2004,7 +2076,7 @@ function Get-MutRunnerState {
             SessionId       = [int]$row.sessionId
             RunNo           = [int]$row.runNo
             MutantId        = [int]$row.mutantId
-            MutantStartedAt = ConvertFrom-MutIsoUtc -Text ([string]$row.mutantStartedAt)
+            MutantStartedAt = ConvertFrom-MutIsoUtc -Text $row.mutantStartedAt
             MutantsDone     = [int]$row.mutantsDone
             Finished        = [bool]$row.finished
             StopRequested   = (Test-MutHasProperty $row 'stopRequested') -and [bool]$row.stopRequested
@@ -2012,7 +2084,7 @@ function Get-MutRunnerState {
     }
 
     return [pscustomobject]@{
-        ServerNowUtc = ConvertFrom-MutIsoUtc -Text ([string]$parsed.serverNowUtc)
+        ServerNowUtc = ConvertFrom-MutIsoUtc -Text $parsed.serverNowUtc
         Rows         = $rows
     }
 }
