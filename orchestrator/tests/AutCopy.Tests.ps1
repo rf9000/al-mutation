@@ -154,3 +154,69 @@ Describe 'Sync-MutAutCopy' {
         { Sync-MutAutCopy -Config $config } | Should -Throw
     }
 }
+
+Describe 'Copy-MutMirror (portable mirror, Linux port)' {
+    BeforeEach {
+        $script:Src = Join-Path $TestDrive ("msrc-" + [guid]::NewGuid().ToString('N'))
+        $script:Dst = Join-Path $TestDrive ("mdst-" + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path (Join-Path $script:Src 'Sub/Deep') -Force | Out-Null
+        Set-Content -LiteralPath (Join-Path $script:Src 'A.al') -Value 'a'
+        Set-Content -LiteralPath (Join-Path $script:Src 'Sub/Deep/B.al') -Value 'b'
+        $script:Mirror = @{ Source = $script:Src; Destination = $script:Dst; ExcludeDirectory = @('.alpackages', '.snapshots', '.git'); ExcludeFile = @('*.app', '.git') }
+    }
+
+    It 'copies files and nested folders' {
+        Copy-MutMirror @script:Mirror
+        Get-Content -LiteralPath (Join-Path $script:Dst 'A.al') | Should -Be 'a'
+        Get-Content -LiteralPath (Join-Path $script:Dst 'Sub/Deep/B.al') | Should -Be 'b'
+    }
+
+    It 'deletes destination files and folders that are not in the source' {
+        Copy-MutMirror @script:Mirror
+        Set-Content -LiteralPath (Join-Path $script:Dst 'Stale.al') -Value 'x'
+        New-Item -ItemType Directory -Path (Join-Path $script:Dst 'Gone/Inner') -Force | Out-Null
+        Remove-Item -LiteralPath (Join-Path $script:Src 'Sub/Deep/B.al')
+        Copy-MutMirror @script:Mirror
+        Test-Path -LiteralPath (Join-Path $script:Dst 'Stale.al') | Should -BeFalse
+        Test-Path -LiteralPath (Join-Path $script:Dst 'Gone') | Should -BeFalse
+        Test-Path -LiteralPath (Join-Path $script:Dst 'Sub/Deep/B.al') | Should -BeFalse
+    }
+
+    It 'reflects changed file contents on a second run' {
+        Copy-MutMirror @script:Mirror
+        Set-Content -LiteralPath (Join-Path $script:Src 'A.al') -Value 'changed'
+        Copy-MutMirror @script:Mirror
+        Get-Content -LiteralPath (Join-Path $script:Dst 'A.al') | Should -Be 'changed'
+    }
+
+    It 'excludes .git as a folder and as a file, and excluded folder and file patterns at any depth' {
+        New-Item -ItemType Directory -Path (Join-Path $script:Src '.git') -Force | Out-Null
+        Set-Content -LiteralPath (Join-Path $script:Src '.git/HEAD') -Value 'h'
+        Set-Content -LiteralPath (Join-Path $script:Src 'Sub/.git') -Value 'gitdir: elsewhere'
+        New-Item -ItemType Directory -Path (Join-Path $script:Src 'Sub/.alpackages') -Force | Out-Null
+        Set-Content -LiteralPath (Join-Path $script:Src 'Sub/Deep/X.app') -Value 'app'
+        Copy-MutMirror @script:Mirror
+        Test-Path -LiteralPath (Join-Path $script:Dst '.git') | Should -BeFalse
+        Test-Path -LiteralPath (Join-Path $script:Dst 'Sub/.git') | Should -BeFalse
+        Test-Path -LiteralPath (Join-Path $script:Dst 'Sub/.alpackages') | Should -BeFalse
+        Test-Path -LiteralPath (Join-Path $script:Dst 'Sub/Deep/X.app') | Should -BeFalse
+    }
+
+    It 'leaves excluded items that already exist in the destination alone, like robocopy /MIR' {
+        New-Item -ItemType Directory -Path (Join-Path $script:Dst '.alpackages') -Force | Out-Null
+        Set-Content -LiteralPath (Join-Path $script:Dst '.alpackages/Sym.app') -Value 's'
+        Copy-MutMirror @script:Mirror
+        Test-Path -LiteralPath (Join-Path $script:Dst '.alpackages/Sym.app') | Should -BeTrue
+    }
+
+    It 'keeps non-ASCII file names' {
+        Set-Content -LiteralPath (Join-Path $script:Src 'Bøger æå.al') -Value 'x'
+        Copy-MutMirror @script:Mirror
+        Test-Path -LiteralPath (Join-Path $script:Dst 'Bøger æå.al') | Should -BeTrue
+    }
+
+    It 'throws when the source folder does not exist' {
+        $script:Mirror.Source = Join-Path $TestDrive 'missing-source'
+        { Copy-MutMirror @script:Mirror } | Should -Throw '*missing-source*'
+    }
+}

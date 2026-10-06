@@ -7,6 +7,7 @@ $script:RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot '../..')).Path
 # Backend-agnostic coverage CSV parser (T24, §6.5.5), imported by relative path so this backend
 # is the only place that wires it to the real CLI's coverage output.
 Import-Module (Join-Path $PSScriptRoot '../lib/Coverage.psm1') -Force
+Import-Module (Join-Path $PSScriptRoot '../lib/Config.psm1')
 
 # Poll loop tuning for env get / env stop-start status polling.
 $script:PollIntervalSec = 10
@@ -1626,6 +1627,56 @@ function Get-MutCoverageRaw {
     return , [string[]]$csvDocuments
 }
 
+function Get-MutCliChildProcesses {
+    <#
+        .SYNOPSIS
+        Private. Direct child processes of this session ($PID) whose executable is the
+        configured CLI ($script:CliPath; `continia.exe` when unset). Returns objects with
+        ProcessId. Windows: Win32_Process through CIM. Linux: /proc/<pid>/stat, whose second
+        field is the executable name cut to 15 characters and whose fourth is the parent pid.
+    #>
+    $cliName = 'continia.exe'
+    if (-not [string]::IsNullOrEmpty($script:CliPath)) {
+        $cliName = [System.IO.Path]::GetFileName(($script:CliPath -replace '\\', '/'))
+    }
+
+    if (Test-MutIsWindows) {
+        return @(Get-CimInstance -ClassName Win32_Process -Filter "Name='$cliName'" -ErrorAction SilentlyContinue |
+            Where-Object { $_.ParentProcessId -eq $PID })
+    }
+
+    $comm = $cliName
+    if ($comm.Length -gt 15) {
+        $comm = $comm.Substring(0, 15)
+    }
+    $children = @()
+    foreach ($dir in @(Get-ChildItem -LiteralPath '/proc' -Directory -ErrorAction SilentlyContinue)) {
+        if ($dir.Name -notmatch '^\d+$') {
+            continue
+        }
+        try {
+            $stat = [System.IO.File]::ReadAllText((Join-Path $dir.FullName 'stat'))
+        }
+        catch {
+            continue
+        }
+        # "<pid> (<comm>) <state> <ppid> ...": comm may contain spaces and parentheses, so split
+        # on the LAST ')'.
+        $open = $stat.IndexOf('(')
+        $close = $stat.LastIndexOf(')')
+        if ($open -lt 0 -or $close -lt $open) {
+            continue
+        }
+        $name = $stat.Substring($open + 1, $close - $open - 1)
+        $rest = $stat.Substring($close + 1).Trim().Split(' ')
+        if ($rest.Count -lt 2 -or $name -cne $comm -or $rest[1] -ne [string]$PID) {
+            continue
+        }
+        $children += [pscustomobject]@{ ProcessId = [int]$dir.Name; ParentProcessId = $PID }
+    }
+    return $children
+}
+
 function Stop-MutBackendChildProcesses {
     <#
         .SYNOPSIS
@@ -1655,8 +1706,7 @@ function Stop-MutBackendChildProcesses {
     Assert-MutEnvironmentAllowed $Env
 
     $stopped = 0
-    $processes = @(Get-CimInstance -ClassName Win32_Process -Filter "Name='continia.exe'" -ErrorAction SilentlyContinue |
-        Where-Object { $_.ParentProcessId -eq $PID })
+    $processes = @(Get-MutCliChildProcesses)
 
     foreach ($process in $processes) {
         try {

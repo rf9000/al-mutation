@@ -581,13 +581,13 @@ Describe 'Stop-MutBackendChildProcesses' {
     #>
     It 'refuses an environment not named mut-*' {
         $env = [pscustomobject]@{ Id = 'E1'; Name = 'fix-auth-share-sibling-apply'; Url = 'https://x'; Backend = 'DemoPortal'; Shared = $false }
-        Mock -ModuleName DemoPortal Get-CimInstance { throw 'must not be called' }
+        Mock -ModuleName DemoPortal Stop-Process { throw 'must not be called' }
 
         { Stop-MutBackendChildProcesses -Env $env } | Should -Throw "*does not match '^mut-'*"
-        Should -Invoke -ModuleName DemoPortal Get-CimInstance -Times 0
+        Should -Invoke -ModuleName DemoPortal Stop-Process -Times 0
     }
 
-    It 'stops only continia.exe processes whose ParentProcessId is this session ($PID), and returns the count stopped' {
+    It 'stops only continia.exe processes whose ParentProcessId is this session ($PID), and returns the count stopped' -Skip:([System.Environment]::OSVersion.Platform -ne [System.PlatformID]::Win32NT) {
         $env = [pscustomobject]@{ Id = 'E1'; Name = 'mut-spike-01'; Url = 'https://x/E1'; Backend = 'DemoPortal'; Shared = $false }
 
         Mock -ModuleName DemoPortal Get-CimInstance -ParameterFilter { $Filter -eq "Name='continia.exe'" } {
@@ -605,7 +605,7 @@ Describe 'Stop-MutBackendChildProcesses' {
         $script:__stoppedIds | Should -Be @(1111)
     }
 
-    It 'returns 0 without throwing when no matching continia.exe process is found' {
+    It 'returns 0 without throwing when no matching continia.exe process is found' -Skip:([System.Environment]::OSVersion.Platform -ne [System.PlatformID]::Win32NT) {
         $env = [pscustomobject]@{ Id = 'E1'; Name = 'mut-spike-01'; Url = 'https://x/E1'; Backend = 'DemoPortal'; Shared = $false }
 
         Mock -ModuleName DemoPortal Get-CimInstance { @() }
@@ -614,6 +614,46 @@ Describe 'Stop-MutBackendChildProcesses' {
         $stopped = Stop-MutBackendChildProcesses -Env $env
 
         $stopped | Should -Be 0
+    }
+
+    It 'on Windows, looks for processes named after the configured CLI file' -Skip:([System.Environment]::OSVersion.Platform -ne [System.PlatformID]::Win32NT) {
+        $env = [pscustomobject]@{ Id = 'E1'; Name = 'mut-spike-01'; Url = 'https://x/E1'; Backend = 'DemoPortal'; Shared = $false }
+        Mock -ModuleName DemoPortal Get-CimInstance -ParameterFilter { $Filter -eq "Name='other-cli.exe'" } { @() }
+        InModuleScope DemoPortal -Parameters @{ E = $env } {
+            param($E)
+            $previous = $script:CliPath
+            try {
+                $script:CliPath = 'C:\tools\other-cli.exe'
+                Stop-MutBackendChildProcesses -Env $E | Should -Be 0
+            }
+            finally {
+                $script:CliPath = $previous
+            }
+        }
+        Should -Invoke -ModuleName DemoPortal Get-CimInstance -Times 1 -ParameterFilter { $Filter -eq "Name='other-cli.exe'" }
+    }
+
+    It 'on Linux, stops a real child process of this session named after the configured CLI file' -Skip:([System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT) {
+        $env = [pscustomobject]@{ Id = 'E1'; Name = 'mut-spike-01'; Url = 'https://x/E1'; Backend = 'DemoPortal'; Shared = $false }
+        $child = Start-Process -FilePath '/bin/sleep' -ArgumentList '60' -PassThru
+        try {
+            $stopped = InModuleScope DemoPortal -Parameters @{ E = $env } {
+                param($E)
+                $previous = $script:CliPath
+                try {
+                    $script:CliPath = '/usr/local/bin/sleep'
+                    Stop-MutBackendChildProcesses -Env $E
+                }
+                finally {
+                    $script:CliPath = $previous
+                }
+            }
+            $stopped | Should -Be 1
+            $child.WaitForExit(10000) | Should -BeTrue
+        }
+        finally {
+            Stop-Process -Id $child.Id -Force -ErrorAction SilentlyContinue
+        }
     }
 }
 
