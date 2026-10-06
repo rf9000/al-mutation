@@ -232,10 +232,10 @@ function Export-MutFixBriefs {
         }
     }
 
-    $results = Get-Content -Path $resultsPath -Raw | ConvertFrom-Json
+    $results = Read-MutTextFile -Path $resultsPath | ConvertFrom-Json
     # Windows PowerShell 5.1's ConvertFrom-Json emits a JSON array as ONE object; the extra
     # pipeline pass unrolls it into the individual entries.
-    $mutants = @((Get-Content -Path $mutantsPath -Raw | ConvertFrom-Json) | ForEach-Object { $_ })
+    $mutants = @((Read-MutTextFile -Path $mutantsPath | ConvertFrom-Json) | ForEach-Object { $_ })
 
     $autPath = Join-Path $Config.workDir 'aut-original'
     $testAppPath = Join-Path $Config.workDir 'test-app'
@@ -260,7 +260,7 @@ function Export-MutFixBriefs {
     }
 
     $outPath = Join-Path (Join-Path $RepoRoot 'results') "$RunNo-fix-briefs.json"
-    ($document | ConvertTo-Json -Depth 10) | Set-Content -Path $outPath -Encoding UTF8
+    Write-MutTextFile -Path $outPath -Text ((($document | ConvertTo-Json -Depth 10)) + [System.Environment]::NewLine)
     return $outPath
 }
 
@@ -291,7 +291,7 @@ function Test-MutFixText {
 function Read-MutFixJson {
     # Private. Parses a JSON file; arrays of the top level are not expected here (objects only).
     param([string]$Path)
-    return (Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json)
+    return (Read-MutTextFile -Path $Path | ConvertFrom-Json)
 }
 
 function Test-MutFixReport {
@@ -662,7 +662,7 @@ function Export-MutFixMarkdown {
     if ($directory -and -not (Test-Path -LiteralPath $directory)) {
         New-Item -ItemType Directory -Path $directory -Force | Out-Null
     }
-    Set-Content -Path $OutPath -Value ($lines.ToArray()) -Encoding UTF8
+    Write-MutTextFile -Path $OutPath -Text (($lines.ToArray() -join [System.Environment]::NewLine) + [System.Environment]::NewLine)
 }
 
 Export-ModuleMember -Function Get-MutOperatorHint, New-MutFixBriefs, Export-MutFixBriefs, Test-MutFixReport, Export-MutFixMarkdown

@@ -1,6 +1,8 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+Import-Module (Join-Path $PSScriptRoot 'Config.psm1')
+
 # Backend-agnostic: no CLI or container-tool names in this module (see spec §4 item 6). This
 # module never imports a backend module itself -- Invoke-MutApi and Reset-MutEnvironment are
 # called as plain command names, resolved at runtime against whatever backend module the
@@ -755,7 +757,7 @@ function Write-MutResultsJsonLine {
     $lastError = $null
     for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
         try {
-            $line | Add-Content -Path $jsonlPath
+            $line | Add-Content -Path $jsonlPath -Encoding UTF8
             return
         }
         catch {
@@ -827,7 +829,7 @@ function Get-MutRecordedResultsForRun {
         $coveringPath = Join-Path $RunDir 'covering.json'
         if (Test-Path -LiteralPath $coveringPath) {
             try {
-                $coveringRaw = Get-Content -LiteralPath $coveringPath -Raw | ConvertFrom-Json
+                $coveringRaw = Read-MutTextFile -Path $coveringPath | ConvertFrom-Json
                 if ($null -ne $coveringRaw) {
                     foreach ($property in $coveringRaw.PSObject.Properties) {
                         $coveringByMutantId[[int]$property.Name] = [int[]]@($property.Value)
@@ -861,7 +863,7 @@ function Get-MutRecordedResultsForRun {
 
     $jsonlPath = Join-Path $RunDir 'results.jsonl'
     if (Test-Path -LiteralPath $jsonlPath) {
-        foreach ($line in @(Get-Content -LiteralPath $jsonlPath)) {
+        foreach ($line in @(Get-Content -LiteralPath $jsonlPath -Encoding UTF8)) {
             if ([string]::IsNullOrWhiteSpace($line)) {
                 continue
             }

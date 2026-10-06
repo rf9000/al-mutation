@@ -685,3 +685,15 @@ Describe 'Test-MutFixReport.ps1' {
         ($output -join "`n") | Should -Match 'mutant 1'
     }
 }
+
+Describe 'Read-MutFixJson encoding (Linux port)' {
+    It 'reads non-ASCII text from a BOM-less UTF-8 file unchanged on every host' {
+        $name = 'CU ' + [string][char]0x00E6 + [string][char]0x00F8 + [string][char]0x00E5
+        $path = Join-Path $TestDrive 'nordic-fixes.json'
+        [System.IO.File]::WriteAllText($path, ('{"name":"' + $name + '"}'), (New-Object System.Text.UTF8Encoding $false))
+
+        $doc = InModuleScope FixBriefs -Parameters @{ P = $path } { param($P) Read-MutFixJson -Path $P }
+
+        $doc.name | Should -BeExactly $name
+    }
+}

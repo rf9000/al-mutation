@@ -1,6 +1,8 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+Import-Module (Join-Path $PSScriptRoot 'Config.psm1')
+
 # Backend-agnostic: no CLI or container-tool names in this module (see spec §4 item 6).
 
 # First non-comment line of an AL object file: `<type> <id> <quoted-or-bare-name>` (§6.5.5).
@@ -163,7 +165,7 @@ function Get-MutObjectHeader {
     #>
     param([Parameter(Mandatory = $true)][string]$Path)
 
-    $content = Get-Content -Path $Path -Raw -ErrorAction Stop
+    $content = Read-MutTextFile -Path $Path
     if ($null -eq $content) {
         $content = ''
     }
@@ -336,7 +338,7 @@ function Get-MutReferenceMap {
 
     $map = @{}
     foreach ($file in @(Get-ChildItem -Path $TestAppPath -Filter '*.al' -Recurse -File)) {
-        $content = Get-Content -Path $file.FullName -Raw
+        $content = Read-MutTextFile -Path $file.FullName
         if (-not (Test-MutIsTestCodeunit -Content $content)) {
             continue
         }
@@ -393,7 +395,7 @@ function Save-MutReferenceMap {
         $ordered["$key"] = @($Map[$key])
     }
 
-    ($ordered | ConvertTo-Json -Depth 10) | Set-Content -Path $Path -Encoding UTF8
+    Write-MutTextFile -Path $Path -Text ((($ordered | ConvertTo-Json -Depth 10)) + [System.Environment]::NewLine)
 }
 
 function Get-MutTestProcedureIndex {
@@ -424,7 +426,7 @@ function Get-MutTestProcedureIndex {
     $root = (Resolve-Path -Path $TestAppPath).Path.TrimEnd('\', '/')
     $entries = @()
     foreach ($file in @(Get-ChildItem -Path $root -Filter '*.al' -Recurse -File)) {
-        $content = Get-Content -Path $file.FullName -Raw
+        $content = Read-MutTextFile -Path $file.FullName
         if ($null -eq $content) {
             continue
         }

@@ -1,6 +1,8 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+Import-Module (Join-Path $PSScriptRoot 'Config.psm1')
+
 # Backend-agnostic: no CLI or container-tool names in this module (see spec §4 item 6).
 
 # Mutant status strings used throughout results/<RunNo>.json and results.jsonl (§7.3).
@@ -554,8 +556,8 @@ function Compare-MutExpectedResults {
         [string]$ExpectedPath
     )
 
-    $resultsDoc = Get-Content -Path $ResultsPath -Raw | ConvertFrom-Json
-    $expectedList = Get-Content -Path $ExpectedPath -Raw | ConvertFrom-Json
+    $resultsDoc = Read-MutTextFile -Path $ResultsPath | ConvertFrom-Json
+    $expectedList = Read-MutTextFile -Path $ExpectedPath | ConvertFrom-Json
 
     $mutantsByKey = @{}
     foreach ($mutant in @($resultsDoc.mutants)) {

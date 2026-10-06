@@ -1,6 +1,8 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+Import-Module (Join-Path $PSScriptRoot 'Config.psm1')
+
 # Repo root is two levels above this module file (orchestrator/lib/Schemata.psm1).
 $script:RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot '../..')).Path
 
@@ -421,8 +423,8 @@ function Build-MutSchemata {
         # proper System.Object[]; wrapping it again in @() would instead collect that one array
         # value into a further 1-element outer array (verified by direct experiment in this
         # task), so it is deliberately NOT re-wrapped here.
-        $mutants = Get-Content -Path (Join-Path $genDir 'mutants.json') -Raw | ConvertFrom-Json
-        $lineMap = Get-Content -Path (Join-Path $genDir 'linemap.json') -Raw | ConvertFrom-Json
+        $mutants = Read-MutTextFile -Path (Join-Path $genDir 'mutants.json') | ConvertFrom-Json
+        $lineMap = Read-MutTextFile -Path (Join-Path $genDir 'linemap.json') | ConvertFrom-Json
 
         # No style analyzer may gate the schemata compile at all (see Write-MutSchemataAnalyzerSettings);
         # the generator recreates the whole tree every iteration, so this is re-written every time too.
@@ -475,7 +477,7 @@ function Build-MutSchemata {
         if (-not (Test-Path -Path $genDir)) {
             New-Item -ItemType Directory -Path $genDir -Force | Out-Null
         }
-        [pscustomobject]@{ stableKeys = $excludedStableKeys } | ConvertTo-Json -Depth 10 | Set-Content -Path $excludeFile
+        Write-MutTextFile -Path $excludeFile -Text (([pscustomobject]@{ stableKeys = $excludedStableKeys } | ConvertTo-Json -Depth 10) + [System.Environment]::NewLine)
         $excludeFileWritten = $excludeFile
     }
 

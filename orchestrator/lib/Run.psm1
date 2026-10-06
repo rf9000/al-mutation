@@ -85,7 +85,7 @@ function Write-MutDoneMarker {
         [string]$MarkerPath
     )
 
-    Set-Content -Path $MarkerPath -Value ([datetime]::UtcNow.ToString('o')) -Encoding UTF8
+    Write-MutTextFile -Path $MarkerPath -Text ([datetime]::UtcNow.ToString('o') + [System.Environment]::NewLine)
 }
 
 function Get-MutJsonContent {
@@ -100,7 +100,7 @@ function Get-MutJsonContent {
     #>
     param([Parameter(Mandatory = $true)][string]$Path)
 
-    return Get-Content -Path $Path -Raw | ConvertFrom-Json
+    return Read-MutTextFile -Path $Path | ConvertFrom-Json
 }
 
 function Get-MutNextRunNo {
@@ -375,7 +375,7 @@ function Ensure-MutEnvironment {
 
     Sync-MutAutCopy -Config $Config | Out-Null
 
-    ($env | ConvertTo-Json -Depth 10) | Set-Content -Path $statePath -Encoding UTF8
+    Write-MutTextFile -Path $statePath -Text ((($env | ConvertTo-Json -Depth 10)) + [System.Environment]::NewLine)
     Write-MutDoneMarker -MarkerPath $markerPath
 
     return $env
@@ -535,7 +535,7 @@ function Publish-MutBaseline {
     }
 
     $baselineDoc = [pscustomobject]@{ tests = $allTests; durationsByCodeunit = $durationsByCodeunit }
-    ($baselineDoc | ConvertTo-Json -Depth 10) | Set-Content -Path $baselinePath -Encoding UTF8
+    Write-MutTextFile -Path $baselinePath -Text ((($baselineDoc | ConvertTo-Json -Depth 10)) + [System.Environment]::NewLine)
 
     $anyJobIds = $false
     foreach ($codeunitId in $testCodeunits) {
@@ -554,11 +554,11 @@ function Publish-MutBaseline {
             }
         }
         $coverageDoc = [pscustomobject]@{ byTestCodeunit = $byTestCodeunit }
-        ($coverageDoc | ConvertTo-Json -Depth 10) | Set-Content -Path $coveragePath -Encoding UTF8
+        Write-MutTextFile -Path $coveragePath -Text ((($coverageDoc | ConvertTo-Json -Depth 10)) + [System.Environment]::NewLine)
     }
     else {
         Write-Warning 'Publish-MutBaseline: no job ids were returned by any baseline test run; coverage.json is empty ({}). Covering-test selection will fall back to the static reference map for every mutant (§6.5.5).'
-        '{}' | Set-Content -Path $coveragePath -Encoding UTF8
+        Write-MutTextFile -Path $coveragePath -Text (('{}') + [System.Environment]::NewLine)
     }
 
     $references = Get-MutReferenceMap -AutPath $autPath -TestAppPath $testAppPath
@@ -660,7 +660,7 @@ function Build-MutSchemataStep {
         iterations      = $result.Iterations
         excludeFile     = $result.ExcludeFile
     }
-    ($summary | ConvertTo-Json -Depth 10) | Set-Content -Path $summaryPath -Encoding UTF8
+    Write-MutTextFile -Path $summaryPath -Text ((($summary | ConvertTo-Json -Depth 10)) + [System.Environment]::NewLine)
     Write-MutDoneMarker -MarkerPath $markerPath
 
     return [pscustomobject]@{
@@ -883,7 +883,7 @@ function Get-MutCoveringTestsStep {
         $map["$([int]$mutant.id)"] = [int[]]@($covering)
     }
 
-    ($map | ConvertTo-Json -Depth 10) | Set-Content -Path $coveringPath -Encoding UTF8
+    Write-MutTextFile -Path $coveringPath -Text ((($map | ConvertTo-Json -Depth 10)) + [System.Environment]::NewLine)
     Write-MutDoneMarker -MarkerPath $markerPath
 
     return $map
@@ -934,7 +934,7 @@ function Invoke-MutMutantLoopStep {
     $rows = Invoke-MutMutantLoop -Config $Config -Env $Env -Mutants $Mutants -Baseline $Baseline `
         -Coverage $Coverage -References $References -RunNo $RunNo -RunDir $RunDir -BackendModulePath $BackendModulePath
 
-    (@($rows) | ConvertTo-Json -Depth 10) | Set-Content -Path $loopResultsPath -Encoding UTF8
+    Write-MutTextFile -Path $loopResultsPath -Text (((@($rows) | ConvertTo-Json -Depth 10)) + [System.Environment]::NewLine)
     Write-MutDoneMarker -MarkerPath $markerPath
 
     return @($rows)

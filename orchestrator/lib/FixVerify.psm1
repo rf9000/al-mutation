@@ -578,7 +578,7 @@ function Invoke-MutFixVerify {
 
     # 1. Select the entries.
     if (-not (Test-Path -LiteralPath $fixesPath)) { throw "Invoke-MutFixVerify: $fixesPath not found" }
-    $report = ConvertFrom-Json -InputObject (Get-Content -LiteralPath $fixesPath -Raw)
+    $report = ConvertFrom-Json -InputObject (Read-MutTextFile -Path $fixesPath)
     $allFixes = @($report.fixes)
     $selected = @()
     if ($null -ne $FixIds -and @($FixIds).Count -gt 0) {
@@ -823,7 +823,7 @@ function Invoke-MutFixVerify {
     $mine = @{}
     foreach ($fix in $selected) { $mine[[string]$fix.fixId] = $true }
     if (Test-Path -LiteralPath $verifiedPath) {
-        $old = ConvertFrom-Json -InputObject (Get-Content -LiteralPath $verifiedPath -Raw)
+        $old = ConvertFrom-Json -InputObject (Read-MutTextFile -Path $verifiedPath)
         foreach ($oe in @($old.entries)) {
             if ($null -eq $oe -or $mine.ContainsKey([string]$oe.fixId)) { continue }
             # Windows PowerShell turns ISO date strings into DateTime on load; write them back as strings.
@@ -874,7 +874,7 @@ function Export-MutFixDelivery {
     if ($null -eq $Config) {
         $cfgPath = Join-Path $RepoRoot 'mutation.config.json'
         if (-not (Test-Path -LiteralPath $cfgPath)) { throw "Export-MutFixDelivery: no -Config given and $cfgPath not found" }
-        $Config = ConvertFrom-Json -InputObject (Get-Content -LiteralPath $cfgPath -Raw)
+        $Config = ConvertFrom-Json -InputObject (Read-MutTextFile -Path $cfgPath)
     }
     $workDir = [string]$Config.workDir
     if (-not [System.IO.Path]::IsPathRooted($workDir)) { $workDir = Join-Path $RepoRoot $workDir }
@@ -889,8 +889,8 @@ function Export-MutFixDelivery {
         if (-not (Test-Path -LiteralPath $p)) { throw "Export-MutFixDelivery: $p not found" }
     }
 
-    $report = ConvertFrom-Json -InputObject (Get-Content -LiteralPath $fixesPath -Raw)
-    $verified = ConvertFrom-Json -InputObject (Get-Content -LiteralPath $verifiedPath -Raw)
+    $report = ConvertFrom-Json -InputObject (Read-MutTextFile -Path $fixesPath)
+    $verified = ConvertFrom-Json -InputObject (Read-MutTextFile -Path $verifiedPath)
     $allFixes = @($report.fixes)
     $entries = @(@($verified.entries) | Sort-Object -Property fixId)
 

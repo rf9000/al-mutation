@@ -85,6 +85,39 @@ public static class MutFinalPathNative
 '@ -Language CSharp
 }
 
+function Write-MutTextFile {
+    <#
+        .SYNOPSIS
+        Writes $Text to $Path as UTF-8 without a BOM, the same bytes on Windows PowerShell 5.1
+        and PowerShell 7 (Set-Content -Encoding UTF8 adds a BOM on 5.1 only). Creates the parent
+        folder when missing. Replaces the file.
+    #>
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Text
+    )
+
+    $full = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Path)
+    $parent = [System.IO.Path]::GetDirectoryName($full)
+    if (-not [string]::IsNullOrEmpty($parent) -and -not (Test-Path -LiteralPath $parent)) {
+        New-Item -ItemType Directory -Path $parent -Force | Out-Null
+    }
+    [System.IO.File]::WriteAllText($full, $Text, (New-Object System.Text.UTF8Encoding $false))
+}
+
+function Read-MutTextFile {
+    <#
+        .SYNOPSIS
+        Reads $Path as UTF-8 and drops a BOM when there is one. Windows PowerShell 5.1's
+        Get-Content -Raw decodes a BOM-less UTF-8 file in the ANSI code page, which garbles
+        non-ASCII text such as AL object names with Danish letters.
+    #>
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    $full = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Path)
+    return [System.IO.File]::ReadAllText($full, [System.Text.Encoding]::UTF8)
+}
+
 function Get-MutRepoRoot {
     <#
         .SYNOPSIS
@@ -564,7 +597,7 @@ function Get-MutConfig {
         throw "Get-MutConfig: config file not found: '$Path'."
     }
 
-    $raw = Get-Content -LiteralPath $Path -Raw
+    $raw = Read-MutTextFile -Path $Path
     $config = $raw | ConvertFrom-Json
 
     Assert-MutConfigShape $config
@@ -611,4 +644,4 @@ function Get-MutConfig {
     return $config
 }
 
-Export-ModuleMember -Function Get-MutConfig, Get-MutRepoRoot, Test-MutIsWindows, Get-MutPathComparison, Get-MutShellPath
+Export-ModuleMember -Function Get-MutConfig, Get-MutRepoRoot, Test-MutIsWindows, Get-MutPathComparison, Get-MutShellPath, Write-MutTextFile, Read-MutTextFile

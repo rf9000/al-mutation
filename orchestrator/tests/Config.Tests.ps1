@@ -754,3 +754,37 @@ Describe 'Paths on Linux (Linux port)' {
         { Get-MutConfig -Path $path } | Should -Not -Throw
     }
 }
+
+Describe 'Write-MutTextFile / Read-MutTextFile (Linux port)' {
+    BeforeAll {
+        # Built from code points so the test file's own encoding cannot change the text.
+        $script:Nordic = 'Bank ' + [string][char]0x00E6 + [string][char]0x00F8 + [string][char]0x00E5 + ' ' + [string][char]0x00C6 + [string][char]0x00D8 + [string][char]0x00C5
+    }
+
+    It 'round-trips non-ASCII text' {
+        $path = Join-Path $TestDrive 'roundtrip.json'
+        Write-MutTextFile -Path $path -Text $script:Nordic
+        Read-MutTextFile -Path $path | Should -BeExactly $script:Nordic
+    }
+
+    It 'writes UTF-8 without a BOM' {
+        $path = Join-Path $TestDrive 'nobom.json'
+        Write-MutTextFile -Path $path -Text $script:Nordic
+        $bytes = [System.IO.File]::ReadAllBytes($path)
+        $bytes[0] | Should -Not -Be 0xEF
+        $bytes.Length | Should -Be ([System.Text.Encoding]::UTF8.GetByteCount($script:Nordic))
+    }
+
+    It 'reads a file that has a BOM without a leading U+FEFF' {
+        $path = Join-Path $TestDrive 'bom.json'
+        [System.IO.File]::WriteAllText($path, $script:Nordic, (New-Object System.Text.UTF8Encoding $true))
+        $text = Read-MutTextFile -Path $path
+        $text | Should -BeExactly $script:Nordic
+    }
+
+    It 'creates the parent folder when it is missing' {
+        $path = Join-Path $TestDrive 'new-folder/sub/file.txt'
+        Write-MutTextFile -Path $path -Text 'x'
+        Read-MutTextFile -Path $path | Should -Be 'x'
+    }
+}
