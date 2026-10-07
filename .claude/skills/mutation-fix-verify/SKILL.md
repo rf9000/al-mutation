@@ -30,6 +30,7 @@ The paths and commands in this skill use the defaults. Two environment variables
   This applies to every `results/<N>-...` path below, including the ones in python snippets.
 - `out/` means the work folder: `$MUT_WORK_DIR` when that variable is set, else the config's `workDir`.
 - `powershell` means Windows PowerShell on Windows. On Linux, run the same command with `pwsh`.
+- `python` is Python 3 (`python3` on Linux). The brief files are UTF-8; reading them with `utf-8-sig` works with and without a BOM.
 
 Check them once at the start, for example with `pwsh -NoProfile -Command '$env:MUT_RESULTS_DIR; $env:MUT_WORK_DIR'` (or
 `powershell` on Windows).

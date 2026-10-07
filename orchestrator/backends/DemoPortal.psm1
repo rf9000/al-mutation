@@ -673,12 +673,12 @@ function Resolve-MutProfileId {
     if ($null -ne $listRaw -and $null -ne $listRaw.PSObject.Properties['profiles']) { $listRaw = $listRaw.profiles }
     $rows = @($listRaw | ForEach-Object { $_ } | Where-Object { $null -ne $_ -and -not [string]::IsNullOrEmpty([string]$_.id) })
     $enabled = @($rows | Where-Object { $null -eq $_.PSObject.Properties['isEnabled'] -or $_.isEnabled -ne $false })
-    # The rows' own bcVersion is re-checked: a list the server did not filter must not hand back
-    # a lower version that looks just as valid.
+    # The rows' own bcVersion is re-checked against the chosen version: a list the server did not
+    # filter must not hand back a lower version, or a higher one with a lower id.
     $fitting = @($enabled | Where-Object {
             $rowVersion = $null
             if ($null -ne $_.PSObject.Properties['bcVersion']) { $rowVersion = ConvertTo-MutBcVersion ([string]$_.bcVersion) }
-            $null -ne $rowVersion -and (Compare-MutBcVersion $rowVersion $requiredParsed) -ge 0
+            $null -ne $rowVersion -and (Compare-MutBcVersion $rowVersion $chosenParsed) -eq 0
         })
     $candidates = @($fitting | Where-Object { [string]::Equals([string]$_.localization, $localization, [System.StringComparison]::OrdinalIgnoreCase) })
     if ($candidates.Count -eq 0) {

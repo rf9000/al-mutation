@@ -913,6 +913,17 @@ Describe 'Resolve-MutProfileId: DemoPortal profile from app.json (Linux port)' {
         InModuleScope DemoPortal -Parameters @{ C = $cfg } { param($C) Resolve-MutProfileId -Config $C } | Should -Be 'p-dk'
     }
 
+    It 'takes only profiles of the chosen version, even when the server ignores --bc-version' {
+        $rows = @(
+            [pscustomobject]@{ id = 'a-30'; bcVersion = '30.0.0.0'; localization = 'base'; isEnabled = $true }
+            [pscustomobject]@{ id = 'b-29'; bcVersion = '29.0.0.0'; localization = 'base'; isEnabled = $true }
+        )
+        Mock -ModuleName DemoPortal Invoke-Continia -ParameterFilter { $Arguments[2] -eq 'versions' } { @('29.0.0.0', '30.0.0.0') }
+        Mock -ModuleName DemoPortal Invoke-Continia -ParameterFilter { $Arguments[2] -eq 'list' } ({ $rows }.GetNewClosure())
+
+        $cfg = New-ProfileConfig
+        InModuleScope DemoPortal -Parameters @{ C = $cfg } { param($C) Resolve-MutProfileId -Config $C } | Should -Be 'b-29'
+    }
     It 'throws naming the required version when no profile version is high enough' {
         Mock -ModuleName DemoPortal Invoke-Continia -ParameterFilter { $Arguments[2] -eq 'versions' } { @('27.0.0.0', '28.1.0.0') }
         $cfg = New-ProfileConfig
