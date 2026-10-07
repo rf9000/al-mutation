@@ -220,3 +220,39 @@ Describe 'Copy-MutMirror (portable mirror, Linux port)' {
         { Copy-MutMirror @script:Mirror } | Should -Throw '*missing-source*'
     }
 }
+
+Describe 'Invoke-MutRobocopyMirror on Linux' {
+    BeforeEach {
+        $script:Src = Join-Path $TestDrive ("lsrc-" + [guid]::NewGuid().ToString('N'))
+        $script:Dst = Join-Path $TestDrive ("ldst-" + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $script:Src -Force | Out-Null
+        Mock -ModuleName AutCopy Test-MutIsWindows { $false }
+        Mock -ModuleName AutCopy Invoke-MutRsyncMirror { }
+        Mock -ModuleName AutCopy Copy-MutMirror { }
+    }
+
+    It 'uses rsync when it is installed (file-by-file Copy-MutMirror is too slow for a full app)' {
+        Mock -ModuleName AutCopy Get-Command { [pscustomobject]@{ Name = 'rsync' } } -ParameterFilter { $Name -eq 'rsync' }
+
+        InModuleScope AutCopy -Parameters @{ S = $script:Src; D = $script:Dst } { param($S, $D) Invoke-MutRobocopyMirror -Source $S -Destination $D | Out-Null }
+
+        Should -Invoke -ModuleName AutCopy Invoke-MutRsyncMirror -Times 1 -ParameterFilter { $Source -eq $script:Src -and $Destination -eq $script:Dst }
+        Should -Invoke -ModuleName AutCopy Copy-MutMirror -Times 0
+    }
+
+    It 'falls back to Copy-MutMirror without rsync' {
+        Mock -ModuleName AutCopy Get-Command { $null } -ParameterFilter { $Name -eq 'rsync' }
+
+        InModuleScope AutCopy -Parameters @{ S = $script:Src; D = $script:Dst } { param($S, $D) Invoke-MutRobocopyMirror -Source $S -Destination $D | Out-Null }
+
+        Should -Invoke -ModuleName AutCopy Copy-MutMirror -Times 1
+        Should -Invoke -ModuleName AutCopy Invoke-MutRsyncMirror -Times 0
+    }
+}
+
+Describe 'Get-MutRsyncArguments' {
+    It 'mirrors with --delete and protects the excluded names like robocopy /XD /XF' {
+        $rsyncArgs = InModuleScope AutCopy { Get-MutRsyncArguments -Source '/src/app' -Destination '/out/aut-original' }
+        $rsyncArgs | Should -Be @('-a', '--delete', '--exclude=.alpackages', '--exclude=.snapshots', '--exclude=.git', '--exclude=*.app', '/src/app/', '/out/aut-original/')
+    }
+}

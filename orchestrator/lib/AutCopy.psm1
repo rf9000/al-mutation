@@ -88,6 +88,45 @@ function Copy-MutMirror {
     }
 }
 
+function Get-MutRsyncArguments {
+    <#
+        .SYNOPSIS
+        rsync arguments equivalent to the robocopy mirror below: --delete without
+        --delete-excluded leaves excluded names in the destination alone, like /XD and /XF.
+        Trailing slashes copy the folder contents, not the folder itself.
+    #>
+    param(
+        [Parameter(Mandatory = $true)][string]$Source,
+        [Parameter(Mandatory = $true)][string]$Destination
+    )
+
+    return @(
+        '-a', '--delete',
+        '--exclude=.alpackages', '--exclude=.snapshots', '--exclude=.git', '--exclude=*.app',
+        ($Source.TrimEnd('/') + '/'), ($Destination.TrimEnd('/') + '/')
+    )
+}
+
+function Invoke-MutRsyncMirror {
+    <#
+        .SYNOPSIS
+        Mirrors $Source into $Destination with rsync (Linux). Copy-MutMirror does the same in
+        PowerShell but copies one file at a time, which takes minutes for a full app.
+    #>
+    param(
+        [Parameter(Mandatory = $true)][string]$Source,
+        [Parameter(Mandatory = $true)][string]$Destination
+    )
+
+    if (-not (Test-Path -LiteralPath $Source -PathType Container)) {
+        throw "Invoke-MutRsyncMirror: source folder not found: '$Source'."
+    }
+    $output = & rsync @(Get-MutRsyncArguments -Source $Source -Destination $Destination) 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        throw "Sync-MutAutCopy: rsync failed mirroring '$Source' -> '$Destination' with exit code $($LASTEXITCODE): $($output | Out-String)"
+    }
+}
+
 function Invoke-MutRobocopyMirror {
     <#
         .SYNOPSIS
@@ -122,6 +161,9 @@ function Invoke-MutRobocopyMirror {
         if ($code -ge 8) {
             throw "Sync-MutAutCopy: robocopy failed mirroring '$Source' -> '$Destination' with exit code $code (codes 0-7 are success, 8+ is failure)."
         }
+    }
+    elseif (Get-Command -Name 'rsync' -CommandType Application -ErrorAction SilentlyContinue) {
+        Invoke-MutRsyncMirror -Source $Source -Destination $Destination
     }
     else {
         Copy-MutMirror -Source $Source -Destination $Destination -ExcludeDirectory @('.alpackages', '.snapshots', '.git') -ExcludeFile @('*.app', '.git')

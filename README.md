@@ -119,7 +119,9 @@ as under Windows PowerShell 5.1. Three environment variables move what a contain
 | `MUT_RESULTS_DIR` | `<repo>/results` for every `results/<N>*` file | `/data/al-mutation/results` |
 | `MUT_CLI_PATH` | config `demoPortal.cliPath` | `/usr/local/bin/continia` (the `continia-linux` build) |
 
-Relative values resolve against the repo root. On Linux the AUT copy uses a built-in mirror instead of robocopy, and
+Relative values resolve against the repo root. On Linux the AUT copy uses `rsync` instead of robocopy (install it: the built-in
+PowerShell fallback copies one file at a time and takes minutes for a full app). The CLI's `compile` and `deploy`
+get `--workspace-root` set to the app folder's parent, because the CLI only accepts app paths under it. And
 a killed lock holder leaves its lock file behind; the next script replaces it with a warning. The tests run on both
 hosts: `powershell -NoProfile -File orchestrator/tests/Invoke-Tests.ps1` and
 `pwsh -NoProfile -File orchestrator/tests/Invoke-Tests.ps1` (Pester 5).
