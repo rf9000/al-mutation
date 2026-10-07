@@ -76,5 +76,5 @@ foreach ($entry in @($result.entries)) {
     Write-Output ('{0,-6} {1,-18} original={2,-5} killed={3}/{4}' -f $entry.fixId, $entry.verdict, $original, $killed, @($entry.mutants).Count)
 }
 Write-Output ('Environment: {0}; wall clock {1:N1} min' -f $result.environmentName, $stopwatch.Elapsed.TotalMinutes)
-Write-Output ('Results:  {0}' -f (Join-Path $repoRoot "results/$RunNo-verified.json"))
+Write-Output ('Results:  {0}' -f (Join-Path (Get-MutResultsDir -RepoRoot $repoRoot) "$RunNo-verified.json"))
 exit 0

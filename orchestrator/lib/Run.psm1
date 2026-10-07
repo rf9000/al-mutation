@@ -249,7 +249,7 @@ function Initialize-MutRun {
     )
 
     $repoRoot = Get-MutRepoRoot
-    $resultsDir = Join-Path $repoRoot 'results'
+    $resultsDir = Get-MutResultsDir -RepoRoot $repoRoot
 
     $resolvedRunNo = $RunNo
     if ($resolvedRunNo -le 0) {
@@ -994,7 +994,7 @@ function Export-MutResultsStep {
 
     $markerPath = Join-Path $RunDir 'export.done'
     $repoRoot = Get-MutRepoRoot
-    $outDir = Join-Path $repoRoot 'results'
+    $outDir = Get-MutResultsDir -RepoRoot $repoRoot
 
     if (Test-Path -Path $markerPath) {
         return [pscustomobject]@{

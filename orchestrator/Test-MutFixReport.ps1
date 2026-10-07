@@ -17,10 +17,12 @@ $ErrorActionPreference = 'Stop'
 
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 Import-Module (Join-Path (Join-Path $PSScriptRoot 'lib') 'FixBriefs.psm1') -Force
+Import-Module (Join-Path (Join-Path $PSScriptRoot 'lib') 'Config.psm1')
+$resultsDir = Get-MutResultsDir -RepoRoot $repoRoot
 
-$briefsPath = Join-Path $repoRoot "results/$RunNo-fix-briefs.json"
-$fixesPath = Join-Path $repoRoot "results/$RunNo-fixes.json"
-$markdownPath = Join-Path $repoRoot "results/$RunNo-fixes.md"
+$briefsPath = Join-Path $resultsDir "$RunNo-fix-briefs.json"
+$fixesPath = Join-Path $resultsDir "$RunNo-fixes.json"
+$markdownPath = Join-Path $resultsDir "$RunNo-fixes.md"
 
 # Test-MutFixReport returns its [string[]] with the unary comma; wrapping it in @() again would
 # make a one-element array holding an empty array, so a valid report would still exit 1.

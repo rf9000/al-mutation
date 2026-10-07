@@ -224,7 +224,7 @@ function Export-MutFixBriefs {
         [string]$RepoRoot = (Get-MutRepoRoot)
     )
 
-    $resultsPath = Join-Path (Join-Path $RepoRoot 'results') "$RunNo.json"
+    $resultsPath = Join-Path (Get-MutResultsDir -RepoRoot $RepoRoot) "$RunNo.json"
     $mutantsPath = Join-Path $Config.workDir "runs/$RunNo/gen/mutants.json"
     foreach ($required in @($resultsPath, $mutantsPath)) {
         if (-not (Test-Path -LiteralPath $required -PathType Leaf)) {
@@ -259,7 +259,7 @@ function Export-MutFixBriefs {
         survivors         = $brief.survivors
     }
 
-    $outPath = Join-Path (Join-Path $RepoRoot 'results') "$RunNo-fix-briefs.json"
+    $outPath = Join-Path (Get-MutResultsDir -RepoRoot $RepoRoot) "$RunNo-fix-briefs.json"
     Write-MutTextFile -Path $outPath -Text ((($document | ConvertTo-Json -Depth 10)) + [System.Environment]::NewLine)
     return $outPath
 }

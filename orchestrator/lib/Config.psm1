@@ -449,6 +449,38 @@ function Assert-MutWorkDirOutsideSources {
     }
 }
 
+function Set-MutConfigOverrides {
+    <#
+        .SYNOPSIS
+        Applies the environment overrides to a parsed (not yet resolved) config, in place:
+        MUT_WORK_DIR replaces workDir and MUT_CLI_PATH replaces demoPortal.cliPath. A container
+        sets them because its repo folder is replaced on every image rebuild and the CLI binary
+        differs per platform. Relative values resolve against the repo root like config paths.
+    #>
+    param([Parameter(Mandatory = $true)]$Config)
+
+    if (-not [string]::IsNullOrWhiteSpace($env:MUT_WORK_DIR)) {
+        $Config | Add-Member -NotePropertyName 'workDir' -NotePropertyValue $env:MUT_WORK_DIR -Force
+    }
+    if (-not [string]::IsNullOrWhiteSpace($env:MUT_CLI_PATH) -and (Test-MutHasProperty $Config 'demoPortal') -and ($null -ne $Config.demoPortal)) {
+        $Config.demoPortal | Add-Member -NotePropertyName 'cliPath' -NotePropertyValue $env:MUT_CLI_PATH -Force
+    }
+}
+
+function Get-MutResultsDir {
+    <#
+        .SYNOPSIS
+        The results folder: MUT_RESULTS_DIR when set (relative values against $RepoRoot),
+        otherwise <RepoRoot>/results. Every reader and writer of results/<N>*.* goes through it.
+    #>
+    param([string]$RepoRoot = (Get-MutRepoRoot))
+
+    if (-not [string]::IsNullOrWhiteSpace($env:MUT_RESULTS_DIR)) {
+        return Resolve-MutConfigPath -RepoRoot $RepoRoot -Path $env:MUT_RESULTS_DIR
+    }
+    return Join-Path $RepoRoot 'results'
+}
+
 function Assert-MutConfigShape {
     <#
         .SYNOPSIS
@@ -599,6 +631,7 @@ function Get-MutConfig {
 
     $raw = Read-MutTextFile -Path $Path
     $config = $raw | ConvertFrom-Json
+    Set-MutConfigOverrides $config
 
     Assert-MutConfigShape $config
 
@@ -644,4 +677,4 @@ function Get-MutConfig {
     return $config
 }
 
-Export-ModuleMember -Function Get-MutConfig, Get-MutRepoRoot, Test-MutIsWindows, Get-MutPathComparison, Get-MutShellPath, Write-MutTextFile, Read-MutTextFile
+Export-ModuleMember -Function Get-MutConfig, Get-MutRepoRoot, Test-MutIsWindows, Get-MutPathComparison, Get-MutShellPath, Write-MutTextFile, Read-MutTextFile, Get-MutResultsDir, Set-MutConfigOverrides

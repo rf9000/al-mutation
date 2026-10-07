@@ -788,3 +788,49 @@ Describe 'Write-MutTextFile / Read-MutTextFile (Linux port)' {
         Read-MutTextFile -Path $path | Should -Be 'x'
     }
 }
+
+Describe 'Environment overrides MUT_WORK_DIR, MUT_CLI_PATH, MUT_RESULTS_DIR (Linux port)' {
+    AfterEach {
+        Remove-Item Env:\MUT_WORK_DIR, Env:\MUT_CLI_PATH, Env:\MUT_RESULTS_DIR -ErrorAction SilentlyContinue
+    }
+
+    It 'MUT_WORK_DIR replaces workDir' {
+        $work = Join-Path $TestDrive 'env-work'
+        $env:MUT_WORK_DIR = $work
+        $cfg = Get-MutConfig -Path (New-MutTestConfigFile)
+        $cfg.workDir | Should -Be $work
+    }
+
+    It 'MUT_WORK_DIR relative to the repo root' {
+        $env:MUT_WORK_DIR = 'env-relative-out'
+        $cfg = Get-MutConfig -Path (New-MutTestConfigFile)
+        $cfg.workDir | Should -Be ([System.IO.Path]::GetFullPath((Join-Path $script:RepoRoot 'env-relative-out')))
+    }
+
+    It 'MUT_WORK_DIR is checked against the source folders like workDir' {
+        $autSrc = Join-Path $TestDrive ('env-aut-' + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $autSrc -Force | Out-Null
+        $path = New-MutTestConfigFile -Overrides @{ aut = @{ sourcePath = $autSrc; appId = '8b3f4e5c-ad6a-4f7b-9c8d-9e0f1a2b3c4d'; version = '1.0.0.0' } }
+        $env:MUT_WORK_DIR = Join-Path $autSrc 'out'
+        { Get-MutConfig -Path $path } | Should -Throw '*workDir*aut.sourcePath*'
+    }
+
+    It 'MUT_CLI_PATH replaces demoPortal.cliPath' {
+        $cli = Join-Path $TestDrive 'bin/continia-cli'
+        $env:MUT_CLI_PATH = $cli
+        $cfg = Get-MutConfig -Path (New-MutTestConfigFile)
+        $cfg.demoPortal.cliPath | Should -Be $cli
+    }
+
+    It 'Get-MutResultsDir is <RepoRoot>/results without MUT_RESULTS_DIR' {
+        Get-MutResultsDir | Should -Be (Join-Path $script:RepoRoot 'results')
+        Get-MutResultsDir -RepoRoot (Join-Path $TestDrive 'other') | Should -Be (Join-Path (Join-Path $TestDrive 'other') 'results')
+    }
+
+    It 'Get-MutResultsDir is MUT_RESULTS_DIR when set, relative values against the repo root' {
+        $env:MUT_RESULTS_DIR = Join-Path $TestDrive 'env-results'
+        Get-MutResultsDir | Should -Be (Join-Path $TestDrive 'env-results')
+        $env:MUT_RESULTS_DIR = 'rel-results'
+        Get-MutResultsDir -RepoRoot (Join-Path $TestDrive 'r') | Should -Be ([System.IO.Path]::GetFullPath((Join-Path (Join-Path $TestDrive 'r') 'rel-results')))
+    }
+}

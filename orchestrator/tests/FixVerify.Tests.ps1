@@ -914,3 +914,45 @@ Describe 'Export-MutFixDelivery' {
         { Export-MutFixDelivery -RunNo 7 -RepoRoot $script:Repo -Config $script:Cfg } | Should -Throw '*7-verified.json*'
     }
 }
+
+Describe 'Export-MutFixDelivery with MUT_RESULTS_DIR and MUT_WORK_DIR (Linux port)' {
+    BeforeEach {
+        $id = [guid]::NewGuid().ToString('N')
+        $script:Repo = Join-Path $TestDrive "repo$id"
+        $script:Work = Join-Path $TestDrive "work$id"
+        $script:EnvResults = Join-Path $TestDrive "results$id"
+        New-Item -ItemType Directory -Force -Path (Join-Path $script:Repo 'results'), $script:EnvResults | Out-Null
+        Write-FvFile -Path (Join-Path $script:Work 'test-app/Sub/T.Codeunit.al') -Lines $script:BaseLines
+
+        $f1 = New-FvFix -Id 'F001' -Procedure 'A' -After 8 -Code '        Assert.AreEqual(1, X, ''one'');'
+        [pscustomobject]@{ runNo = 7; generatedUtc = '2026-10-01T00:00:00Z'; fixes = @($f1) } |
+            ConvertTo-Json -Depth 10 | Set-Content -LiteralPath (Join-Path $script:EnvResults '7-fixes.json') -Encoding UTF8
+        [ordered]@{
+            runNo = 7; verifyRunNo = -7; updatedUtc = '2026-10-02T10:00:00Z'; environmentName = 'mut-x'
+            entries = @([ordered]@{ fixId = 'F001'; revision = 0; verdict = 'verified'; verifiedUtc = '2026-10-02T09:58:00Z'
+                    compile = [ordered]@{ ok = $true; diagnostics = @() }; original = [ordered]@{ result = 'Pass'; error = $null; durationMs = 1 }
+                    mutants = @([ordered]@{ mutantId = 5; outcome = 'killed'; error = 'x'; durationMs = 1 }) })
+            unmappedDiagnostics = @()
+        } | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath (Join-Path $script:EnvResults '7-verified.json') -Encoding UTF8
+        $env:MUT_RESULTS_DIR = $script:EnvResults
+    }
+
+    AfterEach {
+        Remove-Item Env:\MUT_RESULTS_DIR -ErrorAction SilentlyContinue
+        Remove-Item Env:\MUT_WORK_DIR -ErrorAction SilentlyContinue
+    }
+
+    It 'reads the reports from and writes the patch to MUT_RESULTS_DIR' {
+        Export-MutFixDelivery -RunNo 7 -RepoRoot $script:Repo -Config ([pscustomobject]@{ workDir = $script:Work }) | Out-Null
+        Test-Path -LiteralPath (Join-Path $script:EnvResults '7-tests.patch') | Should -BeTrue
+        Test-Path -LiteralPath (Join-Path $script:EnvResults '7-verified.md') | Should -BeTrue
+        Test-Path -LiteralPath (Join-Path $script:Repo 'results/7-tests.patch') | Should -BeFalse
+    }
+
+    It 'applies MUT_WORK_DIR to the repo config it falls back to when no -Config is given' {
+        '{ "workDir": "./does-not-exist" }' | Set-Content -LiteralPath (Join-Path $script:Repo 'mutation.config.json') -Encoding UTF8
+        $env:MUT_WORK_DIR = $script:Work
+        Export-MutFixDelivery -RunNo 7 -RepoRoot $script:Repo | Out-Null
+        (Get-Content -LiteralPath (Join-Path $script:EnvResults '7-tests.patch') -Raw) | Should -Match 'one'
+    }
+}

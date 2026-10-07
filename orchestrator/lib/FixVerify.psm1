@@ -568,8 +568,8 @@ function Invoke-MutFixVerify {
     $sourceTestApp = Join-Path $workDir 'test-app'
     $patchedRoot = Join-Path (Join-Path $workDir 'fix-verify') ([string]$RunNo)
     $patchedTestApp = Join-Path $patchedRoot 'test-app'
-    $fixesPath = Join-Path $RepoRoot "results/$RunNo-fixes.json"
-    $verifiedPath = Join-Path $RepoRoot "results/$RunNo-verified.json"
+    $fixesPath = Join-Path (Get-MutResultsDir -RepoRoot $RepoRoot) "$RunNo-fixes.json"
+    $verifiedPath = Join-Path (Get-MutResultsDir -RepoRoot $RepoRoot) "$RunNo-verified.json"
 
     $ruleset = $null
     if ($Config.PSObject.Properties['rulesets'] -and $null -ne $Config.rulesets) {
@@ -875,16 +875,17 @@ function Export-MutFixDelivery {
         $cfgPath = Join-Path $RepoRoot 'mutation.config.json'
         if (-not (Test-Path -LiteralPath $cfgPath)) { throw "Export-MutFixDelivery: no -Config given and $cfgPath not found" }
         $Config = ConvertFrom-Json -InputObject (Read-MutTextFile -Path $cfgPath)
+        Set-MutConfigOverrides $Config
     }
     $workDir = [string]$Config.workDir
     if (-not [System.IO.Path]::IsPathRooted($workDir)) { $workDir = Join-Path $RepoRoot $workDir }
     $workDir = [System.IO.Path]::GetFullPath($workDir)
     $sourceTestApp = Join-Path $workDir 'test-app'
     $deliveryApp = Join-Path (Join-Path (Join-Path (Join-Path $workDir 'fix-verify') ([string]$RunNo)) 'delivery') 'test-app'
-    $fixesPath = Join-Path $RepoRoot "results/$RunNo-fixes.json"
-    $verifiedPath = Join-Path $RepoRoot "results/$RunNo-verified.json"
-    $patchPath = Join-Path $RepoRoot "results/$RunNo-tests.patch"
-    $mdPath = Join-Path $RepoRoot "results/$RunNo-verified.md"
+    $fixesPath = Join-Path (Get-MutResultsDir -RepoRoot $RepoRoot) "$RunNo-fixes.json"
+    $verifiedPath = Join-Path (Get-MutResultsDir -RepoRoot $RepoRoot) "$RunNo-verified.json"
+    $patchPath = Join-Path (Get-MutResultsDir -RepoRoot $RepoRoot) "$RunNo-tests.patch"
+    $mdPath = Join-Path (Get-MutResultsDir -RepoRoot $RepoRoot) "$RunNo-verified.md"
     foreach ($p in @($fixesPath, $verifiedPath)) {
         if (-not (Test-Path -LiteralPath $p)) { throw "Export-MutFixDelivery: $p not found" }
     }
@@ -951,7 +952,7 @@ function Export-MutFixDelivery {
     }
 
     [void]$sb.Append("## Applying the patch$nl$nl")
-    [void]$sb.Append("Patch: results/$RunNo-tests.patch ($($okIds.Count) verified entries). In the test-app root run:$nl$nl")
+    [void]$sb.Append("Patch: $patchPath ($($okIds.Count) verified entries). In the test-app root run:$nl$nl")
     [void]$sb.Append("    git apply -p1 <path-to>/$RunNo-tests.patch$nl$nl")
     [void]$sb.Append("Line numbers in the fixes come from the out/test-app snapshot (SPEC 6.7.5); procedures are located by name, so a drifted repository may still need a manual merge. After applying, re-run each changed test.$nl")
 

@@ -19,6 +19,18 @@ schema), §7.8 (report schema). This skill is the working summary.
 - The only files you write are `results/<N>-fixes.json`, `results/<N>-fixes.md` (by the validator) and scratch part files
   outside the repo (use the session scratchpad).
 
+## Paths and shell
+
+The paths and commands in this skill use the defaults. Two environment variables, and the platform, change them:
+
+- `results/` means the results folder: `$MUT_RESULTS_DIR` when that variable is set, else `results/` under the repo root.
+  This applies to every `results/<N>-...` path below, including the ones in python snippets.
+- `out/` means the work folder: `$MUT_WORK_DIR` when that variable is set, else the config's `workDir`.
+- `powershell` means Windows PowerShell on Windows. On Linux, run the same command with `pwsh`.
+
+Check them once at the start, for example with `pwsh -NoProfile -Command '$env:MUT_RESULTS_DIR; $env:MUT_WORK_DIR'` (or
+`powershell` on Windows).
+
 ## Headless runs
 
 If the prompt contains `HEADLESS RUN`, nobody is watching. Run unattended (SPEC §6.9.6):

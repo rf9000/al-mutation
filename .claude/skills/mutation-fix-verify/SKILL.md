@@ -22,6 +22,18 @@ the entry names is killed by that test. Full rules: `docs/SPEC.md` §6.8 (proced
 - `equivalent` entries are never applied (verdict `skipped-equivalent`).
 - Repair agents edit only their own entry in `fixes.json`. Never use more than 2 repair rounds.
 
+## Paths and shell
+
+The paths and commands in this skill use the defaults. Two environment variables, and the platform, change them:
+
+- `results/` means the results folder: `$MUT_RESULTS_DIR` when that variable is set, else `results/` under the repo root.
+  This applies to every `results/<N>-...` path below, including the ones in python snippets.
+- `out/` means the work folder: `$MUT_WORK_DIR` when that variable is set, else the config's `workDir`.
+- `powershell` means Windows PowerShell on Windows. On Linux, run the same command with `pwsh`.
+
+Check them once at the start, for example with `pwsh -NoProfile -Command '$env:MUT_RESULTS_DIR; $env:MUT_WORK_DIR'` (or
+`powershell` on Windows).
+
 ## Headless runs
 
 If the prompt contains `HEADLESS RUN`, nobody is watching. Run unattended (SPEC §6.9.6):

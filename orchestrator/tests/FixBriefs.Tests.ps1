@@ -697,3 +697,55 @@ Describe 'Read-MutFixJson encoding (Linux port)' {
         $doc.name | Should -BeExactly $name
     }
 }
+
+Describe 'Results dir override MUT_RESULTS_DIR (Linux port)' {
+    AfterEach {
+        Remove-Item Env:\MUT_RESULTS_DIR -ErrorAction SilentlyContinue
+    }
+
+    It 'Export-MutFixBriefs reads <N>.json from and writes the briefs to MUT_RESULTS_DIR' {
+        $repo = Join-Path $TestDrive ('envrepo-' + [guid]::NewGuid().ToString('N'))
+        $results = Join-Path $TestDrive ('envresults-' + [guid]::NewGuid().ToString('N'))
+        $work = Join-Path $repo 'out'
+        New-Item -ItemType Directory -Path $results, (Join-Path $work 'runs/4/gen'), (Join-Path $work 'aut-original'), (Join-Path $work 'test-app') -Force | Out-Null
+        Set-Content -Path (Join-Path $work 'aut-original/A.Codeunit.al') -Value @('l1', 'if alpha then', 'l3') -Encoding UTF8
+        ConvertTo-Json -InputObject @((New-FbMutant 1 2 'alpha'), (New-FbMutant 2 3 'l3')) -Depth 10 | Set-Content -Path (Join-Path $work 'runs/4/gen/mutants.json') -Encoding UTF8
+        ConvertTo-Json -InputObject ([pscustomobject]@{ runNo = 4; mutants = @((New-FbRow 1 'Survived')) }) -Depth 10 | Set-Content -Path (Join-Path $results '4.json') -Encoding UTF8
+        $cfg = [pscustomobject]@{ workDir = $work; aut = [pscustomobject]@{ sourcePath = 'C:/src/aut' }; testApp = [pscustomobject]@{ sourcePath = 'C:/src/test' } }
+        $env:MUT_RESULTS_DIR = $results
+
+        $path = Export-MutFixBriefs -RunNo 4 -Config $cfg -RepoRoot $repo
+
+        $path | Should -Be (Join-Path $results '4-fix-briefs.json')
+        Test-Path -LiteralPath $path | Should -BeTrue
+    }
+
+    It 'Test-MutFixReport.ps1 validates against and writes the markdown to MUT_RESULTS_DIR' {
+        $repo = Join-Path $TestDrive ('envscript-' + [guid]::NewGuid().ToString('N'))
+        $orch = Join-Path $repo 'orchestrator'
+        New-Item -ItemType Directory -Path (Join-Path $orch 'lib') -Force | Out-Null
+        Copy-Item -Path "$PSScriptRoot/../Test-MutFixReport.ps1" -Destination $orch
+        Copy-Item -Path "$PSScriptRoot/../lib/*.psm1" -Destination (Join-Path $orch 'lib')
+        $app = Join-Path $repo 'out/test-app'
+        New-Item -ItemType Directory -Path $app -Force | Out-Null
+        Set-Content -Path (Join-Path $app 'T50300.Codeunit.al') -Value @('codeunit 50300 "CU 50300"', '{', '    Subtype = Test;', '', '    [Test]', '    procedure Test_A()', '    begin', '    end;', '}') -Encoding UTF8
+        $results = Join-Path $TestDrive ('envresults-' + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $results -Force | Out-Null
+        $survivor = [pscustomobject]@{
+            mutantId = 1; file = 'Aut/A.Codeunit.al'; line = 11; resolvedLine = 11; original = 'orig1'; mutated = 'mut1'
+            coveringTests = @([pscustomobject]@{ codeunitId = 50300 })
+        }
+        ConvertTo-Json -InputObject @{ runNo = 7; testAppPath = 'out/test-app'; survivors = @($survivor) } -Depth 10 | Set-Content -Path (Join-Path $results '7-fix-briefs.json') -Encoding UTF8
+        $fix = @{ fixId = 'F001'; mutantIds = @(1); verdict = 'fix'
+            target = @{ codeunitId = 50300; codeunitName = 'CU 50300'; file = 'T50300.Codeunit.al'; procedure = 'Test_A'; isNewProcedure = $false }
+            change = 'modify-test'; anchor = $null; alCode = 'x'; rationale = 'r'; expectedEffect = 'e'; confidence = 'high' }
+        ConvertTo-Json -InputObject @{ runNo = 7; fixes = @($fix) } -Depth 10 | Set-Content -Path (Join-Path $results '7-fixes.json') -Encoding UTF8
+        $env:MUT_RESULTS_DIR = $results
+
+        $output = & (Get-Process -Id $PID).Path -NoProfile -File (Join-Path $orch 'Test-MutFixReport.ps1') -RunNo 7
+
+        $LASTEXITCODE | Should -Be 0
+        ($output -join "`n") | Should -Match '(?m)^ok$'
+        Test-Path -LiteralPath (Join-Path $results '7-fixes.md') | Should -BeTrue
+    }
+}
