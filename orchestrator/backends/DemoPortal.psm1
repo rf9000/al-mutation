@@ -761,6 +761,75 @@ function Remove-MutEnvironment {
     }
 }
 
+function Remove-MutRunEnvironment {
+    <#
+        .SYNOPSIS
+        Deletes the environment named by $Config.environmentName, whatever keepEnvironment says:
+        mutant-fixer keeps a per-PR environment through the run and the verify, then deletes it
+        with this. Refuses a name not matching '^mut-' and a Shared environment.
+        .OUTPUTS
+        The deleted environment's name, or $null when it was already gone.
+    #>
+    param([Parameter(Mandatory = $true)]$Config)
+
+    $name = [string]$Config.environmentName
+    if ($name -cnotmatch '^mut-') {
+        throw "Remove-MutRunEnvironment: environment name '$name' does not match '^mut-'; refusing to delete it."
+    }
+
+    $envHandle = Get-MutEnvironment -Name $name -Config $Config
+    if ($null -eq $envHandle) {
+        return $null
+    }
+    Assert-MutEnvironmentAllowed $envHandle
+    Invoke-Continia -Arguments @('env', 'delete', $envHandle.Id) -ExpectJson:$false | Out-Null
+    return $envHandle.Name
+}
+
+function Remove-MutOrphanEnvironments {
+    <#
+        .SYNOPSIS
+        Deletes every environment whose name starts with $Prefix (case-sensitive), except $Keep
+        and except Shared ones. $Prefix must start with 'mut-' and be longer than it, so a sweep
+        can never reach the hand-made 'mut-spike-*' environments by accident. A failed delete is
+        a warning and the sweep goes on; a failed listing throws.
+        .OUTPUTS
+        The names of the deleted environments.
+    #>
+    param(
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Prefix,
+        [string]$Keep = '',
+        [Parameter(Mandatory = $true)]$Config
+    )
+
+    if (-not $Prefix.StartsWith('mut-', [System.StringComparison]::Ordinal) -or $Prefix.Length -le 'mut-'.Length) {
+        throw "Remove-MutOrphanEnvironments: prefix '$Prefix' must start with 'mut-' and name more than 'mut-' itself; refusing to sweep."
+    }
+
+    $script:CliPath = Resolve-MutCliPath -Config $Config
+    $list = @(Invoke-Continia -Arguments @('env', 'list', '--json') | ForEach-Object { $_ })
+
+    $deleted = @()
+    foreach ($raw in $list) {
+        $name = [string]$raw.description
+        if (-not $name.StartsWith($Prefix, [System.StringComparison]::Ordinal) -or $name -ceq $Keep) {
+            continue
+        }
+        $envHandle = ConvertTo-MutEnvironmentHandle -Raw $raw
+        if ($envHandle.Shared) {
+            continue
+        }
+        try {
+            Invoke-Continia -Arguments @('env', 'delete', $envHandle.Id) -ExpectJson:$false | Out-Null
+            $deleted += $name
+        }
+        catch {
+            Write-Warning "Remove-MutOrphanEnvironments: deleting '$name' ($($envHandle.Id)) failed: $($_.Exception.Message)"
+        }
+    }
+    return $deleted
+}
+
 function Reset-MutEnvironment {
     <#
         .SYNOPSIS
@@ -2858,4 +2927,4 @@ function Invoke-MutMutantBatch {
     }
 }
 
-Export-ModuleMember -Function Get-MutEnvironment, New-MutEnvironment, Start-MutEnvironment, Remove-MutEnvironment, Reset-MutEnvironment, Assert-MutEnvironmentAllowed, Get-MutApiBase, Get-MutCompanyId, Get-MutCompanyName, Get-MutRunnerState, Stop-MutRunnerBatch, Remove-MutRunnerState, Invoke-MutMutantBatch, Test-MutSoapRunner, Grant-MutPermissionSet, Invoke-MutApi, Install-MutDependencies, Compile-MutApp, Publish-MutApp, Publish-MutAppFile, Unpublish-MutApp, Invoke-MutTests, Get-MutCoverageRaw, Get-MutCoverage, Stop-MutBackendChildProcesses
+Export-ModuleMember -Function Get-MutEnvironment, New-MutEnvironment, Start-MutEnvironment, Remove-MutEnvironment, Remove-MutRunEnvironment, Remove-MutOrphanEnvironments, Reset-MutEnvironment, Assert-MutEnvironmentAllowed, Get-MutApiBase, Get-MutCompanyId, Get-MutCompanyName, Get-MutRunnerState, Stop-MutRunnerBatch, Remove-MutRunnerState, Invoke-MutMutantBatch, Test-MutSoapRunner, Grant-MutPermissionSet, Invoke-MutApi, Install-MutDependencies, Compile-MutApp, Publish-MutApp, Publish-MutAppFile, Unpublish-MutApp, Invoke-MutTests, Get-MutCoverageRaw, Get-MutCoverage, Stop-MutBackendChildProcesses

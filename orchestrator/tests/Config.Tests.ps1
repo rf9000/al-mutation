@@ -564,6 +564,7 @@ Describe 'Docker backend' {
                     'PermissionSetId' { $callParams['PermissionSetId'] = 'x' }
                     'Targets' { $callParams['Targets'] = @([pscustomobject]@{ CodeunitId = 1; Function = $null }) }
                     'JobIds' { $callParams['JobIds'] = @('x') }
+                    'Prefix' { $callParams['Prefix'] = 'mut-pr-' }
                     default { }
                 }
             }
