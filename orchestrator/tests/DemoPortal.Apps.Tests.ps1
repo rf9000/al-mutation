@@ -62,6 +62,20 @@ Describe 'Install-MutDependencies' {
 }
 
 Describe 'Compile-MutApp' {
+    It 'passes --env with the environment id (the workspace default is not found under a moved --workspace-root)' {
+        $dir = "$TestDrive/env-compile/app"
+        New-Item -ItemType Directory -Path $dir -Force | Out-Null
+        Mock -ModuleName DemoPortal Invoke-Continia {
+            [pscustomobject]@{ exitCode = 0; diagnosticCounts = [pscustomobject]@{ error = 0; warning = 0; info = 0 }; diagnostics = @() }
+        }
+
+        Compile-MutApp -Env $envHandle -Path $dir | Out-Null
+
+        Should -Invoke -ModuleName DemoPortal Invoke-Continia -ParameterFilter {
+            $Arguments -contains '--env' -and ($Arguments[$Arguments.IndexOf('--env') + 1]) -eq $envHandle.Id
+        } -Times 1
+    }
+
     It 'passes --workspace-root as the parent of the app folder (CLI only accepts paths under it)' {
         $dir = "$TestDrive/ws-compile/app"
         New-Item -ItemType Directory -Path $dir -Force | Out-Null

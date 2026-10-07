@@ -1248,8 +1248,9 @@ function Compile-MutApp {
 
     # The CLI only accepts app paths under --workspace-root (default: cwd = the al-mutation
     # repo). On Linux the work dir is outside the repo (MUT_WORK_DIR), so anchor it at the
-    # app folder's parent.
-    $arguments = @('compile', $Path, '--json', '--workspace-root', (Split-Path -Parent $Path))
+    # app folder's parent. That also hides the workspace default env (`env use`), so the
+    # environment is passed explicitly.
+    $arguments = @('compile', $Path, '--json', '--workspace-root', (Split-Path -Parent $Path), '--env', $Env.Id)
     if ($PSBoundParameters.ContainsKey('Ruleset') -and $Ruleset) {
         $arguments += @('--ruleset', $Ruleset)
     }
