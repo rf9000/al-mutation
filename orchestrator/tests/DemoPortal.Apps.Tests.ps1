@@ -62,6 +62,21 @@ Describe 'Install-MutDependencies' {
 }
 
 Describe 'Compile-MutApp' {
+    It 'passes --workspace-root as the parent of the app folder (CLI only accepts paths under it)' {
+        $dir = "$TestDrive/ws-compile/app"
+        New-Item -ItemType Directory -Path $dir -Force | Out-Null
+        Mock -ModuleName DemoPortal Invoke-Continia {
+            [pscustomobject]@{ exitCode = 0; diagnosticCounts = [pscustomobject]@{ error = 0; warning = 0; info = 0 }; diagnostics = @() }
+        }
+
+        Compile-MutApp -Env $envHandle -Path $dir | Out-Null
+
+        $expected = Split-Path -Parent $dir
+        Should -Invoke -ModuleName DemoPortal Invoke-Continia -ParameterFilter {
+            $Arguments -contains '--workspace-root' -and ($Arguments[$Arguments.IndexOf('--workspace-root') + 1]) -eq $expected
+        } -Times 1
+    }
+
     It 'maps diagnostics to PascalCase properties and reports Success=$false when diagnosticCounts.error > 0' {
         $dir = "$TestDrive/compile-fail"
         New-Item -ItemType Directory -Path $dir | Out-Null
@@ -232,6 +247,19 @@ Describe 'Publish-MutApp' {
     BeforeEach {
         $script:dir = "$TestDrive/publish-$(New-Guid)"
         New-Item -ItemType Directory -Path $script:dir | Out-Null
+    }
+
+    It 'passes --workspace-root as the parent of the app folder (CLI only accepts paths under it)' {
+        Mock -ModuleName DemoPortal Invoke-Continia {
+            @([pscustomobject]@{ app = 'X'; compiled = $true; published = $true; code = $null })
+        }
+
+        Publish-MutApp -Env $envHandle -Path $script:dir | Out-Null
+
+        $expected = Split-Path -Parent $script:dir
+        Should -Invoke -ModuleName DemoPortal Invoke-Continia -ParameterFilter {
+            $Arguments -contains '--workspace-root' -and ($Arguments[$Arguments.IndexOf('--workspace-root') + 1]) -eq $expected
+        } -Times 1
     }
 
     It 'passes neither --allow-downgrade nor --ruleset when neither is given' {

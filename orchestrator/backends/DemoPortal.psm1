@@ -1246,7 +1246,10 @@ function Compile-MutApp {
 
     $script:CliPath = $Env.CliPath
 
-    $arguments = @('compile', $Path, '--json')
+    # The CLI only accepts app paths under --workspace-root (default: cwd = the al-mutation
+    # repo). On Linux the work dir is outside the repo (MUT_WORK_DIR), so anchor it at the
+    # app folder's parent.
+    $arguments = @('compile', $Path, '--json', '--workspace-root', (Split-Path -Parent $Path))
     if ($PSBoundParameters.ContainsKey('Ruleset') -and $Ruleset) {
         $arguments += @('--ruleset', $Ruleset)
     }
@@ -1342,7 +1345,8 @@ function Publish-MutApp {
 
     $script:CliPath = $Env.CliPath
 
-    $arguments = @('deploy', $Env.Id, $Path, '--json')
+    # --workspace-root: see Compile-MutApp.
+    $arguments = @('deploy', $Env.Id, $Path, '--json', '--workspace-root', (Split-Path -Parent $Path))
     if ($PSBoundParameters.ContainsKey('Ruleset') -and $Ruleset) {
         $arguments += @('--ruleset', $Ruleset)
     }
