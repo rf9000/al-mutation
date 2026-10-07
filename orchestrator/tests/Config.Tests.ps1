@@ -834,3 +834,15 @@ Describe 'Environment overrides MUT_WORK_DIR, MUT_CLI_PATH, MUT_RESULTS_DIR (Lin
         Get-MutResultsDir -RepoRoot (Join-Path $TestDrive 'r') | Should -Be ([System.IO.Path]::GetFullPath((Join-Path (Join-Path $TestDrive 'r') 'rel-results')))
     }
 }
+
+Describe 'demoPortal.profileId is optional (Linux port)' {
+    It 'loads a DemoPortal config without profileId (derived from app.json at environment creation)' {
+        $path = New-MutTestConfigFile -Overrides @{ demoPortal = [ordered]@{ activationAppId = 'c3755ece-dab0-4d16-987d-040661f18522'; cliPath = './.tools/continia.exe'; settleProbe = [ordered]@{ codeunitId = 50300; functionName = 'IsLargeOrder_Twelve_IsTrue' } } }
+        { Get-MutConfig -Path $path } | Should -Not -Throw
+    }
+
+    It 'rejects a demoPortal.localization that is not a non-empty string' {
+        $path = New-MutTestConfigFile -Overrides @{ demoPortal = [ordered]@{ activationAppId = 'c3755ece-dab0-4d16-987d-040661f18522'; cliPath = './.tools/continia.exe'; localization = ''; settleProbe = [ordered]@{ codeunitId = 50300; functionName = 'IsLargeOrder_Twelve_IsTrue' } } }
+        { Get-MutConfig -Path $path } | Should -Throw '*demoPortal.localization*'
+    }
+}

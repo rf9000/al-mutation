@@ -587,7 +587,15 @@ function Assert-MutConfigShape {
 
     if ($Config.backend -eq 'DemoPortal') {
         Assert-MutRequiredKey $Config 'demoPortal' 'demoPortal'
-        Assert-MutNonEmptyString $Config.demoPortal 'profileId' 'demoPortal.profileId'
+        # profileId is optional: absent or empty, the backend derives it from the AUT's and test
+        # app's app.json (application/platform BC version) when it creates the environment.
+        if ((Test-MutHasProperty $Config.demoPortal 'profileId') -and ($null -ne $Config.demoPortal.profileId) -and ($Config.demoPortal.profileId -isnot [string])) {
+            throw "Get-MutConfig: config key 'demoPortal.profileId' must be a string. Got '$($Config.demoPortal.profileId)'."
+        }
+        # localization: optional, the DemoPortal profile localization to pick ('base' when absent).
+        if (Test-MutHasProperty $Config.demoPortal 'localization') {
+            Assert-MutNonEmptyString $Config.demoPortal 'localization' 'demoPortal.localization'
+        }
         Assert-MutNonEmptyString $Config.demoPortal 'activationAppId' 'demoPortal.activationAppId'
         Assert-MutNonEmptyString $Config.demoPortal 'cliPath' 'demoPortal.cliPath'
 

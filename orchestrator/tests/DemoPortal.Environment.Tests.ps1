@@ -860,3 +860,76 @@ Describe 'env start retry (run 11, 2026-10-01)' {
         $script:StartCalls | Should -Be 2
     }
 }
+
+Describe 'Resolve-MutProfileId: DemoPortal profile from app.json (Linux port)' {
+    BeforeAll {
+        function script:New-ProfileConfig {
+            param([string]$ProfileId = '', [string]$Localization = $null, [string]$AutJson = '{ "application": "28.0.0.0", "platform": "28.0.0.0" }', [string]$TestJson = '{ "application": "29.0.0.0" }')
+            $root = Join-Path $TestDrive ('profile-' + [guid]::NewGuid().ToString('N'))
+            $aut = Join-Path $root 'aut'
+            $test = Join-Path $root 'test'
+            New-Item -ItemType Directory -Path $aut, $test -Force | Out-Null
+            if ($AutJson) { Set-Content -LiteralPath (Join-Path $aut 'app.json') -Value $AutJson }
+            if ($TestJson) { Set-Content -LiteralPath (Join-Path $test 'app.json') -Value $TestJson }
+            $demo = [pscustomobject]@{ profileId = $ProfileId; activationAppId = 'a'; cliPath = 'x' }
+            if ($Localization) { $demo | Add-Member -NotePropertyName localization -NotePropertyValue $Localization }
+            [pscustomobject]@{
+                aut        = [pscustomobject]@{ sourcePath = $aut }
+                testApp    = [pscustomobject]@{ sourcePath = $test }
+                demoPortal = $demo
+            }
+        }
+
+        $script:Profiles = @(
+            [pscustomobject]@{ id = 'p-dk'; bcVersion = '29.0.0.0'; localization = 'dk'; isEnabled = $true }
+            [pscustomobject]@{ id = 'p-base-b'; bcVersion = '29.0.0.0'; localization = 'base'; isEnabled = $true }
+            [pscustomobject]@{ id = 'p-base-a'; bcVersion = '29.0.0.0'; localization = 'BASE'; isEnabled = $true }
+            [pscustomobject]@{ id = 'p-base-0'; bcVersion = '29.0.0.0'; localization = 'base'; isEnabled = $false }
+            [pscustomobject]@{ id = 'p-base-old'; bcVersion = '28.1.0.0'; localization = 'base'; isEnabled = $true }
+        )
+    }
+
+    It 'returns a pinned profileId without calling the CLI' {
+        Mock -ModuleName DemoPortal Invoke-Continia { throw 'must not be called' }
+        $cfg = New-ProfileConfig -ProfileId 'pinned-id'
+        InModuleScope DemoPortal -Parameters @{ C = $cfg } { param($C) Resolve-MutProfileId -Config $C } | Should -Be 'pinned-id'
+    }
+
+    It 'takes the lowest version at least the highest application/platform of the app.json files, then the lowest enabled base id' {
+        $profiles = $script:Profiles
+        Mock -ModuleName DemoPortal Invoke-Continia -ParameterFilter { ($Arguments -join ' ') -eq 'env profiles versions --json' } { @('28.1.0.0', '30.0.0.0', '29.0.0.0') }
+        Mock -ModuleName DemoPortal Invoke-Continia -ParameterFilter { ($Arguments -join ' ') -eq 'env profiles list --bc-version 29.0.0.0 --json' } ({ $profiles }.GetNewClosure())
+
+        $cfg = New-ProfileConfig
+        InModuleScope DemoPortal -Parameters @{ C = $cfg } { param($C) Resolve-MutProfileId -Config $C } | Should -Be 'p-base-a'
+    }
+
+    It 'accepts the wrapped {versions} and {profiles} output shapes and a configured localization' {
+        $profiles = $script:Profiles
+        Mock -ModuleName DemoPortal Invoke-Continia -ParameterFilter { $Arguments[2] -eq 'versions' } { [pscustomobject]@{ versions = @('29.0.0.0') } }
+        Mock -ModuleName DemoPortal Invoke-Continia -ParameterFilter { $Arguments[2] -eq 'list' } ({ [pscustomobject]@{ profiles = $profiles } }.GetNewClosure())
+
+        $cfg = New-ProfileConfig -Localization 'DK'
+        InModuleScope DemoPortal -Parameters @{ C = $cfg } { param($C) Resolve-MutProfileId -Config $C } | Should -Be 'p-dk'
+    }
+
+    It 'throws naming the required version when no profile version is high enough' {
+        Mock -ModuleName DemoPortal Invoke-Continia -ParameterFilter { $Arguments[2] -eq 'versions' } { @('27.0.0.0', '28.1.0.0') }
+        $cfg = New-ProfileConfig
+        { InModuleScope DemoPortal -Parameters @{ C = $cfg } { param($C) Resolve-MutProfileId -Config $C } } | Should -Throw '*29.0.0.0*'
+    }
+
+    It 'throws naming the localization when no enabled profile matches it' {
+        $profiles = $script:Profiles
+        Mock -ModuleName DemoPortal Invoke-Continia -ParameterFilter { $Arguments[2] -eq 'versions' } { @('29.0.0.0') }
+        Mock -ModuleName DemoPortal Invoke-Continia -ParameterFilter { $Arguments[2] -eq 'list' } ({ $profiles }.GetNewClosure())
+        $cfg = New-ProfileConfig -Localization 'nl'
+        { InModuleScope DemoPortal -Parameters @{ C = $cfg } { param($C) Resolve-MutProfileId -Config $C } } | Should -Throw "*'nl'*"
+    }
+
+    It 'throws asking for demoPortal.profileId when no app.json declares a version' {
+        Mock -ModuleName DemoPortal Invoke-Continia { throw 'must not be called' }
+        $cfg = New-ProfileConfig -AutJson '{ "name": "x" }' -TestJson ''
+        { InModuleScope DemoPortal -Parameters @{ C = $cfg } { param($C) Resolve-MutProfileId -Config $C } } | Should -Throw '*demoPortal.profileId*'
+    }
+}

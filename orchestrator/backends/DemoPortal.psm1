@@ -562,6 +562,138 @@ function Start-MutEnvironment {
     return $handle
 }
 
+function ConvertTo-MutBcVersion {
+    <#
+        .SYNOPSIS
+        Private. A dotted BC version ('29.0', '29.0.0.0') as four ints, or $null when it is not
+        one. Compared numerically: as strings, '9.0' would sort above '29.0'.
+    #>
+    param([AllowNull()][string]$Text)
+
+    if ([string]::IsNullOrWhiteSpace($Text)) { return $null }
+    $parts = $Text.Trim().Split('.')
+    if ($parts.Count -gt 4) { return $null }
+    $numbers = New-Object 'System.Collections.Generic.List[int]'
+    foreach ($part in $parts) {
+        if ($part -notmatch '^\d+$') { return $null }
+        $numbers.Add([int]$part)
+    }
+    while ($numbers.Count -lt 4) { $numbers.Add(0) }
+    return , $numbers.ToArray()
+}
+
+function Compare-MutBcVersion {
+    <# Private. Negative when $A < $B, 0 when equal, positive when $A > $B (four-int arrays). #>
+    param([int[]]$A, [int[]]$B)
+
+    for ($i = 0; $i -lt 4; $i++) {
+        if ($A[$i] -ne $B[$i]) { return $A[$i] - $B[$i] }
+    }
+    return 0
+}
+
+function Get-MutRequiredBcVersion {
+    <#
+        .SYNOPSIS
+        Private. The highest `application` or `platform` version declared by any app.json under
+        aut.sourcePath and testApp.sourcePath (folders named .alpackages, .git or .snapshots
+        skipped), in its original spelling; $null when none declares one.
+    #>
+    param([Parameter(Mandatory = $true)]$Config)
+
+    $best = $null
+    $bestParsed = $null
+    foreach ($root in @([string]$Config.aut.sourcePath, [string]$Config.testApp.sourcePath)) {
+        if ([string]::IsNullOrEmpty($root) -or -not (Test-Path -LiteralPath $root -PathType Container)) { continue }
+        $files = @(Get-ChildItem -LiteralPath $root -Filter 'app.json' -Recurse -File -ErrorAction SilentlyContinue |
+                Where-Object { $_.FullName -notmatch '[\\/](\.alpackages|\.git|\.snapshots)[\\/]' })
+        foreach ($file in $files) {
+            try { $app = Read-MutTextFile -Path $file.FullName | ConvertFrom-Json } catch { continue }
+            if ($null -eq $app) { continue }
+            foreach ($key in @('application', 'platform')) {
+                if ($null -eq $app.PSObject.Properties[$key]) { continue }
+                $parsed = ConvertTo-MutBcVersion ([string]$app.$key)
+                if ($null -eq $parsed) { continue }
+                if ($null -eq $bestParsed -or (Compare-MutBcVersion $parsed $bestParsed) -gt 0) {
+                    $best = [string]$app.$key
+                    $bestParsed = $parsed
+                }
+            }
+        }
+    }
+    return $best
+}
+
+function Resolve-MutProfileId {
+    <#
+        .SYNOPSIS
+        Private. The DemoPortal profile for a new environment. demoPortal.profileId when set (an
+        explicit pin). Otherwise derived like DevOpsCoder's env-provision stage: the BC version
+        the apps require (Get-MutRequiredBcVersion), the lowest published profile version at
+        least that high (env profiles versions), then the enabled profile of that version in
+        demoPortal.localization ('base' by default) with the lowest id (env profiles list).
+        A pinned profile once built BC 28.1 for a branch that needed 29.0.
+    #>
+    param([Parameter(Mandatory = $true)]$Config)
+
+    $demo = $Config.demoPortal
+    if ($null -ne $demo.PSObject.Properties['profileId'] -and -not [string]::IsNullOrWhiteSpace([string]$demo.profileId)) {
+        return [string]$demo.profileId
+    }
+
+    $required = Get-MutRequiredBcVersion -Config $Config
+    if ($null -eq $required) {
+        throw "Resolve-MutProfileId: no app.json under aut.sourcePath or testApp.sourcePath declares 'application' or 'platform', so the BC version cannot be derived. Set demoPortal.profileId to pin a profile."
+    }
+    $requiredParsed = ConvertTo-MutBcVersion $required
+
+    $versionsRaw = Invoke-Continia -Arguments @('env', 'profiles', 'versions', '--json')
+    if ($null -ne $versionsRaw -and $null -ne $versionsRaw.PSObject.Properties['versions']) { $versionsRaw = $versionsRaw.versions }
+    $available = @($versionsRaw | ForEach-Object { [string]$_ })
+    $chosen = $null
+    $chosenParsed = $null
+    foreach ($version in $available) {
+        $parsed = ConvertTo-MutBcVersion $version
+        if ($null -eq $parsed -or (Compare-MutBcVersion $parsed $requiredParsed) -lt 0) { continue }
+        if ($null -eq $chosenParsed -or (Compare-MutBcVersion $parsed $chosenParsed) -lt 0) {
+            $chosen = $version
+            $chosenParsed = $parsed
+        }
+    }
+    if ($null -eq $chosen) {
+        throw "Resolve-MutProfileId: no DemoPortal profile version is at least BC $required, which the app.json files require (available: $($available -join ', ')). Set demoPortal.profileId to pin a profile."
+    }
+
+    $localization = 'base'
+    if ($null -ne $demo.PSObject.Properties['localization'] -and -not [string]::IsNullOrWhiteSpace([string]$demo.localization)) {
+        $localization = [string]$demo.localization
+    }
+
+    $listRaw = Invoke-Continia -Arguments @('env', 'profiles', 'list', '--bc-version', $chosen, '--json')
+    if ($null -ne $listRaw -and $null -ne $listRaw.PSObject.Properties['profiles']) { $listRaw = $listRaw.profiles }
+    $rows = @($listRaw | ForEach-Object { $_ } | Where-Object { $null -ne $_ -and -not [string]::IsNullOrEmpty([string]$_.id) })
+    $enabled = @($rows | Where-Object { $null -eq $_.PSObject.Properties['isEnabled'] -or $_.isEnabled -ne $false })
+    # The rows' own bcVersion is re-checked: a list the server did not filter must not hand back
+    # a lower version that looks just as valid.
+    $fitting = @($enabled | Where-Object {
+            $rowVersion = $null
+            if ($null -ne $_.PSObject.Properties['bcVersion']) { $rowVersion = ConvertTo-MutBcVersion ([string]$_.bcVersion) }
+            $null -ne $rowVersion -and (Compare-MutBcVersion $rowVersion $requiredParsed) -ge 0
+        })
+    $candidates = @($fitting | Where-Object { [string]::Equals([string]$_.localization, $localization, [System.StringComparison]::OrdinalIgnoreCase) })
+    if ($candidates.Count -eq 0) {
+        $have = (@($fitting | ForEach-Object { [string]$_.localization }) | Sort-Object -Unique) -join ', '
+        throw "Resolve-MutProfileId: BC $chosen publishes no enabled '$localization' profile (available localizations: $have). Set demoPortal.localization to one of those, or demoPortal.profileId to pin a profile."
+    }
+    # Ordinal order, not culture order, so the pick does not depend on the host.
+    $ids = [string[]]@($candidates | ForEach-Object { [string]$_.id })
+    [System.Array]::Sort($ids, [System.StringComparer]::Ordinal)
+    if ($ids.Count -gt 1) {
+        Write-Warning "Resolve-MutProfileId: BC $chosen publishes $($ids.Count) enabled '$localization' profiles ($($ids -join ', ')); taking the lowest id."
+    }
+    return $ids[0]
+}
+
 function New-MutEnvironment {
     <#
         .SYNOPSIS
@@ -591,7 +723,7 @@ function New-MutEnvironment {
     $script:CliPath = Resolve-MutCliPath -Config $Config
 
     $createStart = Get-Date
-    $created = Invoke-Continia -Arguments @('env', 'create', '--name', $Name, '--profile', $Config.demoPortal.profileId, '--json')
+    $created = Invoke-Continia -Arguments @('env', 'create', '--name', $Name, '--profile', (Resolve-MutProfileId -Config $Config), '--json')
     $envId = $created.id
 
     $appeared = Wait-MutEnvironmentAppears -Id $envId
