@@ -1066,6 +1066,19 @@ are relative to the test-app root (`testApp.sourcePath`), as `a/<file>` and `b/<
 from the repository root that contains the test app (§6.8.1). Renaming a file or a field is a breaking change: tell the callers
 first. Optional fields may be added.
 
+#### 6.9.8 Linux, environment overrides and cleanup
+The orchestrator runs under PowerShell 7 on Linux as well as Windows PowerShell 5.1 (platform helpers in
+`lib/Config.psm1`: `Test-MutIsWindows`, `Get-MutPathComparison`, `Read-MutTextFile`, `Write-MutTextFile`).
+- `MUT_WORK_DIR` replaces `workDir` and `MUT_CLI_PATH` replaces `demoPortal.cliPath` (`Set-MutConfigOverrides`, applied
+  by `Get-MutConfig` before validation). `MUT_RESULTS_DIR` replaces `<repo>/results` for every reader and writer
+  (`Get-MutResultsDir`). Relative values resolve against the repo root.
+- `demoPortal.profileId` is optional; without it the backend derives the profile from the apps' `app.json`
+  (`Resolve-MutProfileId`). `demoPortal.localization` (default `base`) picks the localization.
+- `Remove-MutRunEnvironment.ps1 -ConfigPath <cfg>` deletes the config's environment regardless of
+  `keepEnvironment`; exit 0 also when it is already gone. `Remove-MutOrphanEnvironments.ps1 -Prefix <p> [-Keep <n>]`
+  deletes every non-Shared environment named `<p>*` (case-sensitive, `<p>` starts with `mut-` and is longer than it);
+  exit 1 only when the prefix is refused or listing fails.
+
 ### 6.10 SOAP test transport (mutant loop without DemoPortal test jobs)
 
 **Why.** A `continia test run` job costs a median of 10.5 s, while the tests one mutant needs run in a median of

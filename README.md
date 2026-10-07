@@ -56,7 +56,7 @@ the baseline, coverage, the settle probe and fix verification still use the CLI.
 | `continia.exe` | 0.24.0 (`.tools/continia.exe`) |
 | Node | 22.19 |
 | npm | 11.10 |
-| PowerShell | Windows PowerShell 5.1 |
+| PowerShell | Windows PowerShell 5.1; PowerShell 7.4 on Linux |
 | Pester | 5.9.1 (installed per user with `-MaximumVersion 5.99`; import with `Import-Module Pester -MinimumVersion 5.0 -MaximumVersion 5.99`; the preinstalled 3.4.0 is too old) |
 
 ## Headless use
@@ -70,7 +70,7 @@ The two skills run unattended when the prompt contains `HEADLESS RUN`. The promp
 mode (SPEC §6.9.6).
 
 `Invoke-MutationRun.ps1` and `Invoke-MutFixVerify.ps1` hold the lock file `<workDir>/.environment.lock` while they
-run. The lock is an open file handle, so Windows deletes the file when the holder ends, even when it is killed. A
+run. The lock is an open file handle, so Windows deletes the file when the holder ends, even when it is killed (Linux leaves it; see below). A
 second script on the same work directory fails with `environment locked by ...`. A leftover file that nobody holds is
 replaced with a warning. Every config for one environment must use the same `workDir`.
 
@@ -89,3 +89,37 @@ root of the repository that contains it.
 | `Export-MutFixBriefs.ps1` | Briefs written | Any error |
 | `Test-MutFixReport.ps1` | Prints `ok` | Validation errors or any other error |
 | `Invoke-MutFixVerify.ps1` | Verify completed, whatever the verdicts | Config or environment error; restore failure; lock held |
+| `Remove-MutRunEnvironment.ps1` | Environment deleted, or already gone | Refused (`^mut-` name, Shared) or any error |
+| `Remove-MutOrphanEnvironments.ps1` | Sweep ran (a failed single delete is only a warning) | Prefix refused or environments could not be listed |
+
+### Environment cleanup
+
+A caller that creates one environment per job (mutant-fixer: `mut-pr-<prId>-<sha7>` with `keepEnvironment: true`)
+removes it with `Remove-MutRunEnvironment.ps1 -ConfigPath <cfg>`, which deletes the config's environment even though
+`keepEnvironment` is set. `Remove-MutOrphanEnvironments.ps1 -Prefix mut-pr- [-Keep <name>] [-ConfigPath <cfg>]`
+deletes every non-Shared environment whose name starts with the prefix. The prefix must start with `mut-` and be
+longer than it, so a sweep never reaches the `mut-spike-*` environments. `-ConfigPath` only supplies the backend and
+CLI path and defaults to `mutation.config.json`.
+
+### DemoPortal profile
+
+`demoPortal.profileId` is optional. Without it, the environment is created on the profile that fits the apps: the
+highest `application`/`platform` version in the `app.json` files under `aut.sourcePath` and `testApp.sourcePath`, the
+lowest published profile version at least that high, and the enabled profile of that version in
+`demoPortal.localization` (default `base`) with the lowest id. Set `profileId` only to pin a profile on purpose.
+
+## Linux and containers
+
+Every orchestrator script runs under PowerShell 7 on Linux (`pwsh -NoProfile -File orchestrator/<script>.ps1`) as well
+as under Windows PowerShell 5.1. Three environment variables move what a container must keep outside the repo folder:
+
+| Variable | Replaces | Example (mutant-fixer image) |
+|---|---|---|
+| `MUT_WORK_DIR` | config `workDir` | `/data/al-mutation/out` |
+| `MUT_RESULTS_DIR` | `<repo>/results` for every `results/<N>*` file | `/data/al-mutation/results` |
+| `MUT_CLI_PATH` | config `demoPortal.cliPath` | `/usr/local/bin/continia` (the `continia-linux` build) |
+
+Relative values resolve against the repo root. On Linux the AUT copy uses a built-in mirror instead of robocopy, and
+a killed lock holder leaves its lock file behind; the next script replaces it with a warning. The tests run on both
+hosts: `powershell -NoProfile -File orchestrator/tests/Invoke-Tests.ps1` and
+`pwsh -NoProfile -File orchestrator/tests/Invoke-Tests.ps1` (Pester 5).
