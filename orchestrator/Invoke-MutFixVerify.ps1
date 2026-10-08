@@ -16,8 +16,10 @@
     .NOTES
     Strictly one test job at a time. Always ends by republishing the unpatched
     <workDir>/test-app and confirming activeMutantId 0. Exit code 0 when the step completed
-    (whatever the per-entry verdicts), 1 on a thrown error.
+    (whatever the per-entry verdicts), 1 on a thrown error. -Verbose prints one timestamped
+    progress line per publish, test job and verdict.
 #>
+[CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)]
     [string]$ConfigPath,
@@ -59,6 +61,8 @@ try {
     Enter-MutEnvLock -WorkDir $config.workDir -RunNo $RunNo -Owner 'Invoke-MutFixVerify.ps1'
     $params = @{ Config = $config; RunNo = $RunNo; RepoRoot = $repoRoot }
     if ($ids.Count -gt 0) { $params['FixIds'] = $ids }
+    # The module function runs in the module's scope: pass -Verbose on explicitly.
+    if ($PSBoundParameters.ContainsKey('Verbose')) { $params['Verbose'] = $PSBoundParameters['Verbose'] }
     $result = Invoke-MutFixVerify @params
 }
 catch {

@@ -805,6 +805,28 @@ Describe 'Invoke-MutFixVerify' {
         $global:FvLog | Should -Contain 'ACT:10:-15'
         $global:FvLog | Should -Contain 'ACT:20:-15'
     }
+
+    It 'writes progress lines to the verbose stream when called with -Verbose' {
+        $out = Invoke-MutFixVerify -Config $script:Cfg -RunNo 15 -RepoRoot $script:Repo -Verbose 4>&1
+        $lines = @($out | Where-Object { $_ -is [System.Management.Automation.VerboseRecord] } | ForEach-Object { $_.Message })
+        ($lines -join "`n") | Should -Match 'verify 15: 3 fix\(es\): F001,F002,F003'
+        ($lines -join "`n") | Should -Match 'publishing the patched test app \(round 1, 2 fix\(es\)\)'
+        ($lines -join "`n") | Should -Match 'F001 original: Pass \(100 ms\)'
+        ($lines -join "`n") | Should -Match 'F001 mutant 10: killed \(120 ms\)'
+        ($lines -join "`n") | Should -Match 'F001: verified'
+        ($lines -join "`n") | Should -Match 'restoring the unpatched test app'
+        $lines[0] | Should -Match '^\[\d{4}-\d\d-\d\d \d\d:\d\d:\d\d\] '
+    }
+
+    It 'writes no verbose records without -Verbose' {
+        $out = Invoke-MutFixVerify -Config $script:Cfg -RunNo 15 -RepoRoot $script:Repo 4>&1
+        @($out | Where-Object { $_ -is [System.Management.Automation.VerboseRecord] }).Count | Should -Be 0
+    }
+
+    It 'the entry script accepts -Verbose' {
+        # Only an advanced script ([CmdletBinding()]) gets the common parameters.
+        (Get-Command (Join-Path $PSScriptRoot '../Invoke-MutFixVerify.ps1')).Parameters.ContainsKey('Verbose') | Should -BeTrue
+    }
 }
 
 Describe 'Export-MutFixDelivery' {

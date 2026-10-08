@@ -592,6 +592,7 @@ function Invoke-MutFixVerify {
         $selected = $allFixes
     }
     $selected = @($selected | Sort-Object -Property fixId -Unique)
+    Write-MutFixLog ("verify {0}: {1} fix(es): {2}" -f $RunNo, @($selected).Count, ((@($selected) | ForEach-Object { [string]$_.fixId }) -join ','))
 
     $now = { (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ') }
     $state = @{}
@@ -674,7 +675,9 @@ function Invoke-MutFixVerify {
             }
 
             $rounds++
+            Write-MutFixLog ("publishing the patched test app (round {0}, {1} fix(es))" -f $rounds, @($active).Count)
             $pub = Invoke-MutFixPublish -Ctx $ctx -Path $patchedTestApp -Ruleset $ruleset -What 'publishing the patched test app'
+            if ($pub.Success) { Write-MutFixLog 'publish ok' } else { Write-MutFixLog "publish failed: $($pub.ErrorMessage)" }
             if ($pub.Success) {
                 foreach ($e in $active) {
                     $state[[string]$e.fixId].compile = [ordered]@{ ok = $true; diagnostics = @() }
@@ -734,6 +737,7 @@ function Invoke-MutFixVerify {
                 $s = $state[[string]$fix.fixId]
                 $target = [pscustomobject]@{ CodeunitId = [int]$fix.target.codeunitId; Function = [string]$fix.target.procedure }
                 $job = Invoke-MutFixJob -Ctx $ctx -Target $target -MutantId 0
+                Write-MutFixLog ("{0} original: {1} ({2} ms)" -f $fix.fixId, $job.Outcome, $job.DurationMs)
                 if ($job.Outcome -eq 'Pass') {
                     $s.original = [ordered]@{ result = 'Pass'; error = $null; durationMs = $job.DurationMs }
                     $survivors += $fix
@@ -761,6 +765,8 @@ function Invoke-MutFixVerify {
                         continue
                     }
                     $job = Invoke-MutFixJob -Ctx $ctx -Target $target -MutantId $mid
+                    $outcomeName = switch ($job.Outcome) { 'Fail' { 'killed' } 'Timeout' { 'timeout' } 'Pass' { 'survived' } default { 'not-run' } }
+                    Write-MutFixLog ("{0} mutant {1}: {2} ({3} ms)" -f $fix.fixId, $mid, $outcomeName, $job.DurationMs)
                     if ($job.Outcome -eq 'Fail') {
                         $s.mutants += [ordered]@{ mutantId = $mid; outcome = 'killed'; error = $job.Error; durationMs = $job.DurationMs }
                     }
@@ -780,6 +786,7 @@ function Invoke-MutFixVerify {
                 elseif ($notKilled) { $s.verdict = 'not-killed' }
                 else { $s.verdict = 'verified' }
                 $s.verifiedUtc = & $now
+                Write-MutFixLog ("{0}: {1}" -f $fix.fixId, $s.verdict)
             }
         }
     }
@@ -792,6 +799,7 @@ function Invoke-MutFixVerify {
     if ($null -ne $ctx.Env -and $touched) {
         try { Set-MutFixActive -Ctx $ctx -MutantId 0 } catch { Write-MutFixLog "final deactivate failed: $($_.Exception.Message)" }
         try {
+            Write-MutFixLog 'restoring the unpatched test app'
             $restored = Invoke-MutFixPublish -Ctx $ctx -Path $sourceTestApp -Ruleset $ruleset -What 'restoring the unpatched test app'
             if (-not $restored.Success) {
                 throw "republishing the unpatched test app failed. Code: $($restored.Code); Message: $($restored.ErrorMessage)"
