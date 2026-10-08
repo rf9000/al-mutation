@@ -65,8 +65,9 @@ Another program can call al-mutation with no human in the loop. The call sequenc
 [`docs/SPEC.md`](docs/SPEC.md) §6.9.1. Every call runs with the repository root as working directory, and the config
 file may live anywhere.
 
-The two skills run unattended when the prompt contains `HEADLESS RUN`. The prompt must also contain the line
-`Config file: <cfg>`. `mutation-fix-verify` also gets the fix ids to verify. The skills never ask questions in this
+The skills run unattended when the prompt contains `HEADLESS RUN`. The prompt must also contain the line
+`Config file: <cfg>`. `mutation-fix-verify` also gets the fix ids to verify, and `mutation-fix-repair` the fix ids to
+repair (it only edits `fixes.json` and never touches the environment; the caller re-verifies). The skills never ask questions in this
 mode (SPEC §6.9.6).
 
 `Invoke-MutationRun.ps1` and `Invoke-MutFixVerify.ps1` hold the lock file `<workDir>/.environment.lock` while they
