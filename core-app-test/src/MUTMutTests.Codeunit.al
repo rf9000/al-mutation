@@ -56,7 +56,26 @@ codeunit 50400 "MUT Mut Tests"
     [Test]
     procedure FormatKillReason_OverLong_CutTo250()
     begin
-        Assert.AreEqual(250, StrLen(MutationCore.FormatKillReason(PadStr('', 400, 'x'))), 'The reason should be cut to 250 characters.');
+        Assert.AreEqual(PadStr('', 250, 'x'), MutationCore.FormatKillReason(PadStr('', 400, 'x')), 'The reason should be cut to 250 characters.');
+    end;
+
+    [Test]
+    procedure FormatKillReason_BlankOnly_Empty()
+    begin
+        Assert.AreEqual('', MutationCore.FormatKillReason('   '), 'A blank message should give an empty reason.');
+    end;
+
+    [Test]
+    procedure FormatKillReason_LeadingBreaks_FirstNonBlankLine()
+    var
+        LineFeed: Text[1];
+        CarriageReturn: Text[1];
+    begin
+        LineFeed[1] := 10;
+        CarriageReturn[1] := 13;
+
+        Assert.AreEqual('abc', MutationCore.FormatKillReason(LineFeed + 'abc'), 'A leading LF should be skipped.');
+        Assert.AreEqual('abc', MutationCore.FormatKillReason('   ' + CarriageReturn + LineFeed + 'abc'), 'Leading blanks and CR LF should be skipped.');
     end;
 
     [Test]
