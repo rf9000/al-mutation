@@ -391,6 +391,12 @@ Describe 'Format-MutKillReason' {
         Format-MutKillReason -Text "First`rSecond" | Should -Be 'First'
         Format-MutKillReason -Text '   ' | Should -BeNullOrEmpty
     }
+
+    It 'skips only CR, LF, space and tab at the start, as the AL twin does (not other Unicode whitespace)' {
+        Format-MutKillReason -Text "`t `r`n abc" | Should -Be 'abc'
+        # A leading no-break space is not skipped, so the first line is blank (the AL Trim set differs per char; this pins the TrimStart set).
+        Format-MutKillReason -Text ("{0}`nabc" -f [char]0xA0) | Should -BeNullOrEmpty
+    }
 }
 
 Describe 'Export-MutResults reason (§6.11.1)' {

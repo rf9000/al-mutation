@@ -249,6 +249,43 @@ Describe 'Invoke-MutMutantLoop' {
         $line.PSObject.Properties.Name | Should -Not -Contain 'FailingTests'
     }
 
+    It 'omits killingError from the Killed POST when the killing test has no error text (§6.11.1)' {
+        Mock -ModuleName MutantLoop Invoke-MutTestsWithBudget {
+            [pscustomobject]@{
+                TimedOut = $false; ErrorMessage = $null
+                Result   = [pscustomobject]@{
+                    Passed = 0; Failed = 1; DurationMs = 50
+                    Tests  = @([pscustomobject]@{ Codeunit = 'C'; Function = 'F'; Result = 'Fail'; DurationMs = 50; Error = '  ' })
+                }
+            }
+        }
+        $mutant = [pscustomobject]@{ id = 7; objectId = 50000; line = 4 }
+        $results = Invoke-MutMutantLoop -Config $script:Config -Env $script:EnvHandle -Mutants @($mutant) `
+            -Baseline $script:Baseline -Coverage $script:Coverage -References $script:References `
+            -RunNo 3 -RunDir $script:RunDir -BackendModulePath 'unused.psm1'
+        $results[0].Status | Should -Be 'Killed'
+        $results[0].KillingError | Should -BeNullOrEmpty
+        Should -Invoke -ModuleName MutantLoop Invoke-MutApi -ParameterFilter {
+            $Method -eq 'POST' -and $Body.status -eq 'Killed' -and -not $Body.ContainsKey('killingError')
+        } -Times 1
+    }
+
+    It 'resume: a killingError of empty text from the API gives a null KillingError (§6.11.1)' {
+        Mock -ModuleName MutantLoop Invoke-MutApi {
+            param($Env, $Method, $Path, $Body)
+            if ($Method -eq 'GET' -and $Path -notlike '*mutantId*') {
+                return [pscustomobject]@{ value = @([pscustomobject]@{ mutantId = 1; status = 'Killed'; killingTest = 'C:F'; killingError = ''; durationMs = 1 }) }
+            }
+            if ($Method -eq 'GET') { return [pscustomobject]@{ value = @() } }
+            return $null
+        }
+        $mutants = @([pscustomobject]@{ id = 1; objectId = 50000; line = 4 })
+        $results = Invoke-MutMutantLoop -Config $script:Config -Env $script:EnvHandle -Mutants $mutants `
+            -Baseline $script:Baseline -Coverage $script:Coverage -References $script:References `
+            -RunNo 20 -RunDir $script:RunDir -BackendModulePath 'unused.psm1'
+        $null -eq $results[0].KillingError | Should -BeTrue
+    }
+
     It 'gives a Survived row a null KillingError (§6.11.1)' {
         Mock -ModuleName MutantLoop Invoke-MutTestsWithBudget {
             [pscustomobject]@{
@@ -1957,8 +1994,8 @@ Describe 'Invoke-MutMutantLoop (testTransport soap)' {
             [pscustomobject]@{ Results = @($Results); HungMutantId = $Hung; FaultMutantId = $Fault; Fault = $FaultText; Stopped = ($null -ne $Hung -or $null -ne $Fault) }
         }
         function script:New-MutBatchEntry {
-            param([int]$Id, [string]$Status = 'Survived', [string]$Killing = '', [int]$Ms = 100)
-            [pscustomobject]@{ MutantId = $Id; Status = $Status; KillingTest = $Killing; DurationMs = $Ms; Passed = 1; Failed = 0 }
+            param([int]$Id, [string]$Status = 'Survived', [string]$Killing = '', [int]$Ms = 100, $KillingError = $null, $Failures = @())
+            [pscustomobject]@{ MutantId = $Id; Status = $Status; KillingTest = $Killing; KillingError = $KillingError; Failures = @($Failures); DurationMs = $Ms; Passed = 1; Failed = 0 }
         }
     }
 
@@ -2536,6 +2573,44 @@ Describe 'Invoke-MutMutantLoop (testTransport soap)' {
         $global:SoapScript.Add({ param($ids) New-MutBatchRes -Results @((New-MutBatchEntry -Id 1)) -Hung 2 }) | Out-Null
         $rows = Invoke-SoapLoop -Mutants (New-SoapMutants -Ids 1, 2)
         $rows[1].KillingError | Should -Be 'hook text'
+    }
+
+    It 'carries KillingError and Failures from the re-run of a hung mutant (Resolve-MutSoapHang, §6.11.1)' {
+        $global:SoapScript.Add({ param($ids) New-MutBatchRes -Results @((New-MutBatchEntry -Id 1)) -Hung 2 }) | Out-Null
+        $global:SoapScript.Add({ param($ids) New-MutBatchRes -Results @((New-MutBatchEntry -Id 2 -Status 'Killed' -Killing 'T:R' -KillingError 'rerun reason' -Failures @([pscustomobject]@{ Test = 'T:R'; Error = 'rerun reason' }))) }) | Out-Null
+        $rows = Invoke-SoapLoop -Mutants (New-SoapMutants -Ids 1, 2)
+        $rows[1].KillingError | Should -Be 'rerun reason'
+        @($rows[1].Failures).Count | Should -Be 1
+        $rows[1].Failures[0].Test | Should -Be 'T:R'
+    }
+
+    It 'carries KillingError and Failures from a fault culprit re-run alone (Resolve-MutSoapAlone, §6.11.1)' {
+        $global:SoapScript.Add({ param($ids) New-MutBatchRes -Results @((New-MutBatchEntry -Id 1)) -Fault 2 -FaultText 'boom' }) | Out-Null
+        $global:SoapScript.Add({ param($ids) New-MutBatchRes -Results @((New-MutBatchEntry -Id 2 -Status 'Killed' -Killing 'T:K' -KillingError 'alone reason' -Failures @([pscustomobject]@{ Test = 'T:K'; Error = 'alone reason' }))) }) | Out-Null
+        $rows = Invoke-SoapLoop -Mutants (New-SoapMutants -Ids 1, 2)
+        $rows[1].KillingError | Should -Be 'alone reason'
+        @($rows[1].Failures).Count | Should -Be 1
+    }
+
+    It 'carries KillingError and Failures on a result after the culprit (§6.11.1)' {
+        $global:SoapScript.Add({ param($ids) New-MutBatchRes -Results @(
+                    (New-MutBatchEntry -Id 1)
+                    (New-MutBatchEntry -Id 3 -Status 'Killed' -Killing 'T:Z' -KillingError 'after culprit' -Failures @([pscustomobject]@{ Test = 'T:Z'; Error = 'after culprit' }))) -Hung 2 }) | Out-Null
+        $global:SoapScript.Add({ param($ids) New-MutBatchRes -Results @((New-MutBatchEntry -Id 2)) }) | Out-Null
+        $rows = Invoke-SoapLoop -Mutants (New-SoapMutants -Ids 1, 2, 3)
+        @($global:SoapCalls | ForEach-Object { $_.MutantIds -join ',' }) | Should -Be @('1,2,3', '2')
+        $rows[2].Status | Should -Be 'Killed'
+        $rows[2].KillingError | Should -Be 'after culprit'
+        @($rows[2].Failures).Count | Should -Be 1
+    }
+
+    It 'resume: a killingError of empty text from the API (BC returns "" for an empty field) gives a null KillingError (§6.11.1)' {
+        $global:SoapResumeRows = @(
+            [pscustomobject]@{ mutantId = 1; status = 'Killed'; killingTest = 'T:A'; killingError = ''; durationMs = 3 }
+        )
+        $rows = Invoke-SoapLoop -Mutants (New-SoapMutants -Ids 1)
+        $rows[0].KillingError | Should -BeNullOrEmpty
+        $null -eq $rows[0].KillingError | Should -BeTrue
     }
 
     It 'resume: rows rebuilt from the API carry killingError, a missing one gives null (§6.11.1)' {

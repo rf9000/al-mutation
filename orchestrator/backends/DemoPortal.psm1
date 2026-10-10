@@ -2641,6 +2641,7 @@ function ConvertTo-MutBatchResult {
     # Both are put through the shared reason format, which is a no-op on text the runner already shaped.
     $failures = @()
     foreach ($failure in @(& $get 'failures' @())) {
+        if ($null -eq $failure) { continue }
         $failureTest = ''
         if (Test-MutHasProperty $failure 'test') { $failureTest = [string]$failure.test }
         $failureError = $null

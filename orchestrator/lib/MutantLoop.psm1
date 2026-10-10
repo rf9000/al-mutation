@@ -856,7 +856,7 @@ function Get-MutRecordedResultsForRun {
 
             # §6.11.1: killingError is absent on an older Mutation Core; null then.
             $apiKillingError = $null
-            if (Test-MutHasProperty $apiRow 'killingError') { $apiKillingError = $apiRow.killingError }
+            if (Test-MutHasProperty $apiRow 'killingError') { $apiKillingError = Format-MutKillReason -Text $apiRow.killingError }
 
             $recorded[$mutantId] = [pscustomobject]@{
                 Status        = $apiRow.status
@@ -891,7 +891,7 @@ function Get-MutRecordedResultsForRun {
             }
 
             $jsonKillingError = $null
-            if (Test-MutHasProperty $parsed 'KillingError') { $jsonKillingError = $parsed.KillingError }
+            if (Test-MutHasProperty $parsed 'KillingError') { $jsonKillingError = Format-MutKillReason -Text $parsed.KillingError }
 
             $recorded[[int]$parsed.Id] = [pscustomobject]@{
                 Status        = $parsed.Status

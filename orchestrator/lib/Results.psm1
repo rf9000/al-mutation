@@ -53,7 +53,7 @@ function Format-MutKillReason {
         return $null
     }
     # Leading CR, LF and whitespace are skipped, so the first non-blank line is used.
-    $firstLine = (([string]$Text).TrimStart() -split '[\r\n]', 2)[0].Trim()
+    $firstLine = (([string]$Text).TrimStart([char[]]@("`r", "`n", ' ', "`t")) -split '[\r\n]', 2)[0].Trim()
     if ($firstLine.Length -eq 0) {
         return $null
     }

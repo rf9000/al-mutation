@@ -782,6 +782,17 @@ Describe 'Invoke-MutMutantBatch' {
         @($r.Results[2].Failures).Count | Should -Be 0
     }
 
+    It 'a RunMutants entry with "failures": null gives an empty list, not one bogus entry (§6.11.1)' {
+        $script:stateFn = { param($poll, $batchId) New-RunnerStateJson -Rows @((New-StateRow -BatchId $batchId -Finished $true)) }
+        $script:doneAtPoll = 1
+        $script:callResult = New-SoapResult -Value '[{"mutantId":11,"status":"Killed","killingTest":"C:F","killingError":null,"failures":null,"durationMs":5,"passed":0,"failed":1}]'
+
+        $r = Invoke-MutMutantBatch -Env $envHandle -CodeunitIds 95155 -MutantIds 11 -RunNo 5 -MutantBudgetSec 30 @fast
+
+        @($r.Results[0].Failures).Count | Should -Be 0
+        $r.Results[0].KillingError | Should -BeNullOrEmpty
+    }
+
     It 'a single-entry RunMutants result is still an array' {
         $script:stateFn = { param($poll, $batchId) New-RunnerStateJson -Rows @((New-StateRow -BatchId $batchId -Finished $true)) }
         $script:doneAtPoll = 1
