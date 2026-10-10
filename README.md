@@ -49,6 +49,17 @@ caps the mutants per SOAP call. `"soap"` needs Mutation Core 1.1.1.0 or later on
 not. Only the mutant loop moves to SOAP;
 the baseline, coverage, the settle probe and fix verification still use the CLI.
 
+`baseline.repeats` (a positive integer, default 3, set explicitly in every shipped config) is the number of
+baseline passes (SPEC §6.11.2). Pass 1 is the coverage run; passes 2 and later run the tests again without
+coverage. A test that fails in every pass aborts the run, as before. A test that fails in some passes only is
+**flaky**: it is warned about and listed in `baseline.json` (`repeats`, `flakyTests`) and in the summary's
+"Flaky baseline tests" table. `1` turns the repeats off and gives the old single baseline. Each `Killed` row in
+`results/<RunNo>.json` carries a `reason`, the first line of the killing test's error message. When a mutant
+is killed only by flaky tests, the row is `unreliable: true` and the killing test is the first failing test that
+is not flaky when there is one (SPEC §6.11.3). `score` is unchanged. `strictScore` counts those unreliable kills
+as survived, `totals.unreliableKills` counts them, and the summary lists them in an "Unreliable kills" table. With
+`baseline.repeats` 1 there are no flaky tests, so `strictScore` equals `score`.
+
 ## Toolchain
 
 | Tool | Version |

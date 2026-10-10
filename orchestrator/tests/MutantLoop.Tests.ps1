@@ -286,6 +286,144 @@ Describe 'Invoke-MutMutantLoop' {
         $null -eq $results[0].KillingError | Should -BeTrue
     }
 
+    It 'picks the first non-flaky failing test as killing test (flaky key cut to 30 characters) and POSTs it with its error (§6.11.3)' {
+        $longName = 'CTS-CB Test Auth Share Detection Extra'
+        Mock -ModuleName MutantLoop Invoke-MutTestsWithBudget {
+            [pscustomobject]@{
+                TimedOut = $false; ErrorMessage = $null
+                Result   = [pscustomobject]@{
+                    Passed = 1; Failed = 2; DurationMs = 100
+                    Tests  = @(
+                        [pscustomobject]@{ Codeunit = 'CTS-CB Test Auth Share Detection Extra'; Function = 'Flaky'; Result = 'Fail'; DurationMs = 5; Error = 'flaky text' }
+                        [pscustomobject]@{ Codeunit = 'C2'; Function = 'Stable'; Result = 'Fail'; DurationMs = 5; Error = 'stable text' }
+                        [pscustomobject]@{ Codeunit = 'C3'; Function = 'Ok'; Result = 'Pass'; DurationMs = 5; Error = $null }
+                    )
+                }
+            }
+        }
+        # The baseline names the test by its cut codeunit name (as the Mutation Core's killingTest does).
+        $flaky = @([pscustomobject]@{ test = ($longName.Substring(0, 30) + ':Flaky'); passed = 2; failed = 1; error = 'x' })
+        $mutant = [pscustomobject]@{ id = 7; objectId = 50000; line = 4 }
+
+        $results = Invoke-MutMutantLoop -Config $script:Config -Env $script:EnvHandle -Mutants @($mutant) `
+            -Baseline $script:Baseline -Coverage $script:Coverage -References $script:References `
+            -RunNo 3 -RunDir $script:RunDir -BackendModulePath 'unused.psm1' -FlakyTests $flaky
+
+        $results[0].KillingTest | Should -Be 'C2:Stable'
+        $results[0].KillingError | Should -Be 'stable text'
+        $results[0].Unreliable | Should -BeFalse
+        Should -Invoke -ModuleName MutantLoop Invoke-MutApi -ParameterFilter {
+            $Method -eq 'POST' -and $Body.status -eq 'Killed' -and $Body.killingTest -eq 'C2:Stable' -and $Body.killingError -eq 'stable text'
+        } -Times 1
+        $line = Get-Content -Path (Join-Path $script:RunDir 'results.jsonl') | ForEach-Object { $_ | ConvertFrom-Json }
+        $line.KillingTest | Should -Be 'C2:Stable'
+        $line.Unreliable | Should -BeFalse
+    }
+
+    It 'when every failing test is flaky the first one is the killing test and the row is unreliable (§6.11.3)' {
+        Mock -ModuleName MutantLoop Invoke-MutTestsWithBudget {
+            [pscustomobject]@{
+                TimedOut = $false; ErrorMessage = $null
+                Result   = [pscustomobject]@{
+                    Passed = 0; Failed = 2; DurationMs = 100
+                    Tests  = @(
+                        [pscustomobject]@{ Codeunit = 'C1'; Function = 'A'; Result = 'Fail'; DurationMs = 5; Error = 'first' }
+                        [pscustomobject]@{ Codeunit = 'C2'; Function = 'B'; Result = 'Fail'; DurationMs = 5; Error = 'second' }
+                    )
+                }
+            }
+        }
+        $flaky = @([pscustomobject]@{ test = 'C1:A'; passed = 2; failed = 1; error = 'x' }, [pscustomobject]@{ test = 'C2:B'; passed = 1; failed = 2; error = 'y' })
+        $mutant = [pscustomobject]@{ id = 7; objectId = 50000; line = 4 }
+
+        $results = Invoke-MutMutantLoop -Config $script:Config -Env $script:EnvHandle -Mutants @($mutant) `
+            -Baseline $script:Baseline -Coverage $script:Coverage -References $script:References `
+            -RunNo 3 -RunDir $script:RunDir -BackendModulePath 'unused.psm1' -FlakyTests $flaky
+
+        $results[0].KillingTest | Should -Be 'C1:A'
+        $results[0].KillingError | Should -Be 'first'
+        $results[0].Unreliable | Should -BeTrue
+        Should -Invoke -ModuleName MutantLoop Invoke-MutApi -ParameterFilter {
+            $Method -eq 'POST' -and $Body.status -eq 'Killed' -and $Body.killingTest -eq 'C1:A'
+        } -Times 1
+        $line = Get-Content -Path (Join-Path $script:RunDir 'results.jsonl') | ForEach-Object { $_ | ConvertFrom-Json }
+        $line.Unreliable | Should -BeTrue
+    }
+
+    It 'without a flaky set nothing is unreliable and the first failing test stays the killing test (repeats 1)' {
+        Mock -ModuleName MutantLoop Invoke-MutTestsWithBudget {
+            [pscustomobject]@{
+                TimedOut = $false; ErrorMessage = $null
+                Result   = [pscustomobject]@{
+                    Passed = 0; Failed = 2; DurationMs = 100
+                    Tests  = @(
+                        [pscustomobject]@{ Codeunit = 'C1'; Function = 'A'; Result = 'Fail'; DurationMs = 5; Error = 'first' }
+                        [pscustomobject]@{ Codeunit = 'C2'; Function = 'B'; Result = 'Fail'; DurationMs = 5; Error = 'second' }
+                    )
+                }
+            }
+        }
+        $mutant = [pscustomobject]@{ id = 7; objectId = 50000; line = 4 }
+        $results = Invoke-MutMutantLoop -Config $script:Config -Env $script:EnvHandle -Mutants @($mutant) `
+            -Baseline $script:Baseline -Coverage $script:Coverage -References $script:References `
+            -RunNo 3 -RunDir $script:RunDir -BackendModulePath 'unused.psm1'
+        $results[0].KillingTest | Should -Be 'C1:A'
+        $results[0].Unreliable | Should -BeFalse
+    }
+
+    It 'a Survived row is never unreliable, whatever the flaky set' {
+        Mock -ModuleName MutantLoop Invoke-MutTestsWithBudget {
+            [pscustomobject]@{
+                TimedOut = $false; ErrorMessage = $null
+                Result   = [pscustomobject]@{ Passed = 1; Failed = 0; DurationMs = 50; Tests = @([pscustomobject]@{ Codeunit = 'C'; Function = 'F'; Result = 'Pass'; DurationMs = 50; Error = $null }) }
+            }
+        }
+        $mutant = [pscustomobject]@{ id = 7; objectId = 50000; line = 4 }
+        $results = Invoke-MutMutantLoop -Config $script:Config -Env $script:EnvHandle -Mutants @($mutant) `
+            -Baseline $script:Baseline -Coverage $script:Coverage -References $script:References `
+            -RunNo 3 -RunDir $script:RunDir -BackendModulePath 'unused.psm1' -FlakyTests @([pscustomobject]@{ test = 'C:F'; passed = 1; failed = 1; error = 'x' })
+        $results[0].Status | Should -Be 'Survived'
+        $results[0].Unreliable | Should -BeFalse
+    }
+
+    It 'resume: results.jsonl rows use their stored flag, else are judged on KillingTest alone (§6.11.3)' {
+        $flaky = @([pscustomobject]@{ test = 'C:F'; passed = 2; failed = 1; error = 'x' })
+        $jsonl = Join-Path $script:RunDir 'results.jsonl'
+        @(
+            '{"Id":1,"Status":"Killed","KillingTest":"C:F","DurationMs":1,"CoveringTests":[95155],"Unreliable":false}'
+            '{"Id":2,"Status":"Killed","KillingTest":"C:F","DurationMs":1,"CoveringTests":[95155]}'
+            '{"Id":3,"Status":"Killed","KillingTest":"C:G","DurationMs":1,"CoveringTests":[95155],"Unreliable":true}'
+            '{"Id":4,"Status":"Survived","KillingTest":null,"DurationMs":1,"CoveringTests":[95155],"Unreliable":false}'
+        ) | Set-Content -Path $jsonl -Encoding UTF8
+        $mutants = @(1..4 | ForEach-Object { [pscustomobject]@{ id = $_; objectId = 50000; line = 4 } })
+        $results = Invoke-MutMutantLoop -Config $script:Config -Env $script:EnvHandle -Mutants $mutants `
+            -Baseline $script:Baseline -Coverage $script:Coverage -References $script:References `
+            -RunNo 20 -RunDir $script:RunDir -BackendModulePath 'unused.psm1' -FlakyTests $flaky
+        @($results | ForEach-Object { $_.Unreliable }) | Should -Be @($false, $true, $true, $false)
+    }
+
+    It 'resume: rows rebuilt from the API are judged on killingTest alone (§6.11.3)' {
+        Mock -ModuleName MutantLoop Invoke-MutApi {
+            param($Env, $Method, $Path, $Body)
+            if ($Method -eq 'GET' -and $Path -notlike '*mutantId*') {
+                return [pscustomobject]@{
+                    value = @(
+                        [pscustomobject]@{ mutantId = 1; status = 'Killed'; killingTest = 'C:F'; killingError = ''; durationMs = 1 }
+                        [pscustomobject]@{ mutantId = 2; status = 'Killed'; killingTest = 'C:G'; durationMs = 2 }
+                    )
+                }
+            }
+            if ($Method -eq 'GET') { return [pscustomobject]@{ value = @() } }
+            return $null
+        }
+        $flaky = @([pscustomobject]@{ test = 'C:F'; passed = 2; failed = 1; error = 'x' })
+        $mutants = @(1, 2 | ForEach-Object { [pscustomobject]@{ id = $_; objectId = 50000; line = 4 } })
+        $results = Invoke-MutMutantLoop -Config $script:Config -Env $script:EnvHandle -Mutants $mutants `
+            -Baseline $script:Baseline -Coverage $script:Coverage -References $script:References `
+            -RunNo 20 -RunDir $script:RunDir -BackendModulePath 'unused.psm1' -FlakyTests $flaky
+        @($results | ForEach-Object { $_.Unreliable }) | Should -Be @($true, $false)
+    }
+
     It 'gives a Survived row a null KillingError (§6.11.1)' {
         Mock -ModuleName MutantLoop Invoke-MutTestsWithBudget {
             [pscustomobject]@{
@@ -2100,10 +2238,10 @@ Describe 'Invoke-MutMutantLoop (testTransport soap)' {
         New-Item -ItemType Directory -Path $script:RunDir -Force | Out-Null
 
         function script:Invoke-SoapLoop {
-            param($Mutants, [int]$RunNo = 1)
+            param($Mutants, [int]$RunNo = 1, $FlakyTests = @())
             Invoke-MutMutantLoop -Config $script:Config -Env $script:EnvHandle -Mutants $Mutants `
                 -Baseline $script:Baseline -Coverage $script:Coverage -References $script:References `
-                -RunNo $RunNo -RunDir $script:RunDir -BackendModulePath 'unused.psm1' -WarningAction SilentlyContinue
+                -RunNo $RunNo -RunDir $script:RunDir -BackendModulePath 'unused.psm1' -FlakyTests $FlakyTests -WarningAction SilentlyContinue
         }
         function script:New-SoapMutants {
             param([int[]]$Ids, [int]$ObjectId = 50000)
@@ -2621,6 +2759,82 @@ Describe 'Invoke-MutMutantLoop (testTransport soap)' {
         $rows = Invoke-SoapLoop -Mutants (New-SoapMutants -Ids 1, 2)
         $rows[0].KillingError | Should -Be 'api reason'
         $rows[1].KillingError | Should -BeNullOrEmpty
+    }
+
+    It 'soap: the killing test is the first non-flaky failing test and only the row changes (no POST, §6.11.3)' {
+        $flaky = @([pscustomobject]@{ test = 'T:F'; passed = 2; failed = 1; error = 'x' })
+        $global:SoapScript.Add({ param($ids) New-MutBatchRes -Results @(
+                    (New-MutBatchEntry -Id 1 -Status 'Killed' -Killing 'T:F' -KillingError 'flaky text' -Failures @([pscustomobject]@{ Test = 'T:F'; Error = 'flaky text' }, [pscustomobject]@{ Test = 'T:G'; Error = 'stable text' }))) }) | Out-Null
+
+        $rows = Invoke-SoapLoop -Mutants (New-SoapMutants -Ids 1) -FlakyTests $flaky
+
+        $rows[0].KillingTest | Should -Be 'T:G'
+        $rows[0].KillingError | Should -Be 'stable text'
+        $rows[0].Unreliable | Should -BeFalse
+        $global:SoapPosts.Count | Should -Be 0
+        $line = Get-Content -Path (Join-Path $script:RunDir 'results.jsonl') | ForEach-Object { $_ | ConvertFrom-Json }
+        $line.KillingTest | Should -Be 'T:G'
+        $line.Unreliable | Should -BeFalse
+    }
+
+    It 'soap: when every failing test is flaky the first one is the killing test and the row is unreliable (also stored in results.jsonl)' {
+        $flaky = @([pscustomobject]@{ test = 'T:F'; passed = 2; failed = 1; error = 'x' }, [pscustomobject]@{ test = 'T:G'; passed = 2; failed = 1; error = 'y' })
+        $global:SoapScript.Add({ param($ids) New-MutBatchRes -Results @(
+                    (New-MutBatchEntry -Id 1 -Status 'Killed' -Killing 'T:F' -KillingError 'one' -Failures @([pscustomobject]@{ Test = 'T:F'; Error = 'one' }, [pscustomobject]@{ Test = 'T:G'; Error = 'two' }))
+                    (New-MutBatchEntry -Id 2 -Status 'Survived')) }) | Out-Null
+
+        $rows = Invoke-SoapLoop -Mutants (New-SoapMutants -Ids 1, 2) -FlakyTests $flaky
+
+        $rows[0].KillingTest | Should -Be 'T:F'
+        $rows[0].KillingError | Should -Be 'one'
+        $rows[0].Unreliable | Should -BeTrue
+        $rows[1].Unreliable | Should -BeFalse
+        $lines = @(Get-Content -Path (Join-Path $script:RunDir 'results.jsonl') | ForEach-Object { $_ | ConvertFrom-Json })
+        $lines[0].Unreliable | Should -BeTrue
+        $lines[1].Unreliable | Should -BeFalse
+    }
+
+    It 'soap: without a flaky set (repeats 1) nothing is unreliable and the first failure stays the killing test' {
+        $global:SoapScript.Add({ param($ids) New-MutBatchRes -Results @(
+                    (New-MutBatchEntry -Id 1 -Status 'Killed' -Killing 'T:F' -KillingError 'one' -Failures @([pscustomobject]@{ Test = 'T:F'; Error = 'one' }, [pscustomobject]@{ Test = 'T:G'; Error = 'two' }))) }) | Out-Null
+
+        $rows = Invoke-SoapLoop -Mutants (New-SoapMutants -Ids 1)
+
+        $rows[0].KillingTest | Should -Be 'T:F'
+        $rows[0].Unreliable | Should -BeFalse
+    }
+
+    It 'soap: the flaky choice also applies to a hung mutant re-run alone' {
+        $flaky = @([pscustomobject]@{ test = 'T:F'; passed = 2; failed = 1; error = 'x' })
+        $global:SoapScript.Add({ param($ids) New-MutBatchRes -Results @((New-MutBatchEntry -Id 1)) -Hung 2 }) | Out-Null
+        $global:SoapScript.Add({ param($ids) New-MutBatchRes -Results @((New-MutBatchEntry -Id 2 -Status 'Killed' -Killing 'T:F' -KillingError 'a' -Failures @([pscustomobject]@{ Test = 'T:F'; Error = 'a' }, [pscustomobject]@{ Test = 'T:H'; Error = 'b' }))) }) | Out-Null
+
+        $rows = Invoke-SoapLoop -Mutants (New-SoapMutants -Ids 1, 2) -FlakyTests $flaky
+
+        $rows[1].KillingTest | Should -Be 'T:H'
+        $rows[1].Unreliable | Should -BeFalse
+    }
+
+    It 'soap: an existing API row that stands is judged on its killingTest alone' {
+        $flaky = @([pscustomobject]@{ test = 'T:H'; passed = 2; failed = 1; error = 'x' })
+        $global:SoapExisting[2] = [pscustomobject]@{ status = 'Killed'; killingTest = 'T:H'; killingError = 'hook text'; durationMs = 55 }
+        $global:SoapScript.Add({ param($ids) New-MutBatchRes -Results @((New-MutBatchEntry -Id 1)) -Hung 2 }) | Out-Null
+
+        $rows = Invoke-SoapLoop -Mutants (New-SoapMutants -Ids 1, 2) -FlakyTests $flaky
+
+        $rows[1].KillingTest | Should -Be 'T:H'
+        $rows[1].Unreliable | Should -BeTrue
+    }
+
+    It 'soap resume: rows rebuilt from the API are judged on killingTest alone' {
+        $flaky = @([pscustomobject]@{ test = 'T:A'; passed = 2; failed = 1; error = 'x' })
+        $global:SoapResumeRows = @(
+            [pscustomobject]@{ mutantId = 1; status = 'Killed'; killingTest = 'T:A'; durationMs = 3 }
+            [pscustomobject]@{ mutantId = 2; status = 'Killed'; killingTest = 'T:B'; durationMs = 3 }
+            [pscustomobject]@{ mutantId = 3; status = 'Survived'; killingTest = ''; durationMs = 3 }
+        )
+        $rows = Invoke-SoapLoop -Mutants (New-SoapMutants -Ids 1, 2, 3) -FlakyTests $flaky
+        @($rows | ForEach-Object { $_.Unreliable }) | Should -Be @($true, $false, $false)
     }
 
     It 'resume: skips recorded mutants (no batch for them) and still returns their rows' {

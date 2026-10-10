@@ -10,6 +10,7 @@
   "permissionSets": [ { "id": "MUT Core All", "appId": "6f1d2c3a-8b4e-4d5f-9a6b-7c8d9e0f1a2b" }, { "id": "MUT Fx All", "appId": "8b3f4e5c-ad6a-4f7b-9c8d-9e0f1a2b3c4d" } ],
   "workDir": "./out",
   "generator": { "maxMutants": 0, "onlyObjects": [], "seed": 1, "operators": ["REL", "BOOL", "NOT", "COND", "DEL", "INSFLAG"], "includeBreak": false },
+  "baseline": { "repeats": 3 },
   "schemata": { "publishStrategy": "same-version" },
   "timeouts": { "perTestFactor": 5, "minSeconds": 120, "jobOverheadSeconds": 0 },
   "demoPortal": { "profileId": "cc557829-71df-40ee-9516-98ca954d4b2f", "activationAppId": "c3755ece-dab0-4d16-987d-040661f18522", "cliPath": "./.tools/continia.exe", "settleProbe": { "codeunitId": 50300, "functionName": "IsLargeOrder_Twelve_IsTrue" } }

@@ -695,6 +695,32 @@ Describe 'Get-MutConfig testTransport and soap.batchSize (§6.10.4)' {
         }
     }
 
+    It 'defaults baseline.repeats to 3 when absent, and reads a custom value (§6.11.2)' {
+        (Get-MutConfig -Path (New-MutTestConfigFile)).baseline.repeats | Should -Be 3
+        (Get-MutConfig -Path (New-MutTestConfigFile -Overrides @{ baseline = @{} })).baseline.repeats | Should -Be 3
+        (Get-MutConfig -Path (New-MutTestConfigFile -Overrides @{ baseline = @{ repeats = 1 } })).baseline.repeats | Should -Be 1
+        (Get-MutConfig -Path (New-MutTestConfigFile -Overrides @{ baseline = @{ repeats = 5 } })).baseline.repeats | Should -Be 5
+    }
+
+    It 'rejects a baseline.repeats that is not a positive integer, naming the key' {
+        foreach ($bad in 0, -1, 2.5, 'many', $null) {
+            { Get-MutConfig -Path (New-MutTestConfigFile -Overrides @{ baseline = @{ repeats = $bad } }) } | Should -Throw '*baseline.repeats*'
+        }
+    }
+
+    It 'rejects a baseline value that is not an object, naming baseline' {
+        foreach ($bad in 5, 'text', $true) {
+            { Get-MutConfig -Path (New-MutTestConfigFile -Overrides @{ baseline = $bad }) } | Should -Throw '*baseline*object*'
+        }
+    }
+
+    It 'sets baseline.repeats 3 explicitly in every shipped config' {
+        foreach ($name in 'mutation.config.json', 'mutation.fixture.config.json', 'mutation.u2.config.json') {
+            $raw = Get-Content -Raw -Path (Join-Path $script:RepoRoot $name) | ConvertFrom-Json
+            $raw.baseline.repeats | Should -Be 3 -Because $name
+        }
+    }
+
     It 'puts every shipped config on the soap transport (owner decision 2026-10-06, after runs 16/17)' {
         foreach ($name in 'mutation.config.json', 'mutation.fixture.config.json', 'mutation.u2.config.json') {
             (Get-MutConfig -Path (Join-Path $script:RepoRoot $name)).testTransport | Should -Be 'soap' -Because $name

@@ -775,6 +775,92 @@ function Write-MutResultsJsonLine {
     Write-Warning "Invoke-MutMutantLoop: failed to append mutant $($Row.Id)'s result to results.jsonl after $maxAttempts attempts (the API already holds the authoritative result): $($lastError.Exception.Message)"
 }
 
+function Get-MutFlakyKeySet {
+    <#
+        .SYNOPSIS
+        Private. §6.11.2/§6.11.3: the set of flaky-test keys ("<codeunit cut to 30>:<function>",
+        Get-MutTestKey) of the baseline's flakyTests ([ {test; ...} ] or plain test strings).
+        Empty (or $null) input gives an empty set, so nothing is ever unreliable.
+    #>
+    param([AllowNull()] $FlakyTests = @())
+
+    $set = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::Ordinal)
+    foreach ($flaky in @($FlakyTests)) {
+        if ($null -eq $flaky) { continue }
+        $name = $flaky
+        if (Test-MutHasProperty $flaky 'test') { $name = $flaky.test }
+        if ([string]::IsNullOrEmpty([string]$name)) { continue }
+        [void]$set.Add((Get-MutTestKey ([string]$name)))
+    }
+    return , $set
+}
+
+function Get-MutKillVerdict {
+    <#
+        .SYNOPSIS
+        Private. §6.11.3 for one Killed row: the killing test/error and the unreliable flag.
+        With known failing tests ([{Test; Error}]), the killing test comes from the first failing
+        test that is not flaky, else from the first failing test (every failing test is flaky,
+        which also makes the kill unreliable). Without failing tests the row is judged on its
+        KillingTest alone and keeps its values. An empty flaky set leaves everything as it was.
+    #>
+    param(
+        [AllowNull()] $FailingTests = @(),
+        [AllowNull()] $KillingTest = $null,
+        [AllowNull()] $KillingError = $null,
+        [Parameter(Mandatory = $true)] $FlakyKeys
+    )
+
+    $verdict = [pscustomobject]@{ KillingTest = $KillingTest; KillingError = $KillingError; Unreliable = $false }
+    if ($FlakyKeys.Count -eq 0) {
+        return $verdict
+    }
+
+    $failing = @(@($FailingTests) | Where-Object { ($null -ne $_) -and (-not [string]::IsNullOrEmpty([string]$_.Test)) })
+    if ($failing.Count -gt 0) {
+        $chosen = $null
+        foreach ($failure in $failing) {
+            if (-not $FlakyKeys.Contains((Get-MutTestKey ([string]$failure.Test)))) {
+                $chosen = $failure
+                break
+            }
+        }
+        if ($null -eq $chosen) {
+            $verdict.Unreliable = $true
+            $chosen = $failing[0]
+        }
+        $verdict.KillingTest = $chosen.Test
+        $verdict.KillingError = $chosen.Error
+        return $verdict
+    }
+
+    if (-not [string]::IsNullOrEmpty([string]$KillingTest)) {
+        $verdict.Unreliable = $FlakyKeys.Contains((Get-MutTestKey ([string]$KillingTest)))
+    }
+    return $verdict
+}
+
+function Get-MutResumedUnreliable {
+    <#
+        .SYNOPSIS
+        Private. The Unreliable flag of a row rebuilt on resume (§6.11.3): a results.jsonl row's
+        stored flag when it has one, else the row's KillingTest alone judged against the flaky set
+        (a Killed row only). Rows rebuilt from the API carry no stored flag.
+    #>
+    param(
+        [Parameter(Mandatory = $true)] $Prior,
+        [Parameter(Mandatory = $true)] $FlakyKeys
+    )
+
+    if ($null -ne $Prior.Unreliable) {
+        return [bool]$Prior.Unreliable
+    }
+    if ($Prior.Status -ne 'Killed') {
+        return $false
+    }
+    return [bool](Get-MutKillVerdict -KillingTest $Prior.KillingTest -KillingError $Prior.KillingError -FlakyKeys $FlakyKeys).Unreliable
+}
+
 function Get-MutRecordedResultsForRun {
     <#
         .SYNOPSIS
@@ -862,6 +948,7 @@ function Get-MutRecordedResultsForRun {
                 Status        = $apiRow.status
                 KillingTest   = $apiRow.killingTest
                 KillingError  = $apiKillingError
+                Unreliable    = $null
                 DurationMs    = $apiRow.durationMs
                 CoveringTests = $coveringTests
                 Error         = $null
@@ -893,10 +980,15 @@ function Get-MutRecordedResultsForRun {
             $jsonKillingError = $null
             if (Test-MutHasProperty $parsed 'KillingError') { $jsonKillingError = Format-MutKillReason -Text $parsed.KillingError }
 
+            # §6.11.3: the stored flag, when the line has one (an older line: judged on KillingTest alone).
+            $jsonUnreliable = $null
+            if ((Test-MutHasProperty $parsed 'Unreliable') -and ($null -ne $parsed.Unreliable)) { $jsonUnreliable = [bool]$parsed.Unreliable }
+
             $recorded[[int]$parsed.Id] = [pscustomobject]@{
                 Status        = $parsed.Status
                 KillingTest   = $parsed.KillingTest
                 KillingError  = $jsonKillingError
+                Unreliable    = $jsonUnreliable
                 DurationMs    = $parsed.DurationMs
                 CoveringTests = @($parsed.CoveringTests)
                 Error         = $errorText
@@ -930,6 +1022,15 @@ function Add-MutSoapRow {
         [Parameter(Mandatory = $true)]
         $Row
     )
+
+    # §6.11.3: on a Killed row the loop picks the killing test from the first non-flaky failing test
+    # and sets the unreliable flag; the API row (written by the runner) is not rewritten.
+    if (($Row.Status -eq 'Killed') -and ($Ctx.FlakyKeys.Count -gt 0)) {
+        $verdict = Get-MutKillVerdict -FailingTests $Row.Failures -KillingTest $Row.KillingTest -KillingError $Row.KillingError -FlakyKeys $Ctx.FlakyKeys
+        $Row.KillingTest = $verdict.KillingTest
+        $Row.KillingError = $verdict.KillingError
+        $Row.Unreliable = $verdict.Unreliable
+    }
 
     Write-MutResultsJsonLine -RunDir $Ctx.RunDir -Row $Row
     $Ctx.Rows[[int]$Row.Id] = $Row
@@ -969,6 +1070,7 @@ function New-MutSoapRow {
         KillingTest   = $KillingTest
         KillingError  = $KillingError
         DurationMs    = $DurationMs
+        Unreliable    = $false
         CoveringTests = @($Item.Covering)
         Failures      = @($Failures)
     }
@@ -1607,10 +1709,12 @@ function Invoke-MutSoapMutantLoop {
         [Parameter(Mandatory = $true)] $Coverage,
         [Parameter(Mandatory = $true)] $References,
         [Parameter(Mandatory = $true)] [int]$RunNo,
-        [Parameter(Mandatory = $true)] [string]$RunDir
+        [Parameter(Mandatory = $true)] [string]$RunDir,
+        [AllowNull()] [object[]]$FlakyTests = @()
     )
 
     $testCodeunits = [int[]]@($Config.testApp.testCodeunits)
+    $flakyKeys = Get-MutFlakyKeySet -FlakyTests $FlakyTests
     $batchSize = $script:SoapDefaultBatchSize
     if ((Test-MutHasProperty $Config 'soap') -and (Test-MutHasProperty $Config.soap 'batchSize') -and ($null -ne $Config.soap.batchSize)) {
         $batchSize = [int]$Config.soap.batchSize
@@ -1622,6 +1726,7 @@ function Invoke-MutSoapMutantLoop {
         RunNo               = $RunNo
         RunDir              = $RunDir
         TestCodeunits       = $testCodeunits
+        FlakyKeys           = $flakyKeys
         Rows                = @{}
         ConsecutiveErrors   = 0
         ConsecutiveTimeouts = 0
@@ -1667,6 +1772,7 @@ function Invoke-MutSoapMutantLoop {
                     Status        = $prior.Status
                     KillingTest   = $prior.KillingTest
                     KillingError  = $prior.KillingError
+                    Unreliable    = (Get-MutResumedUnreliable -Prior $prior -FlakyKeys $flakyKeys)
                     DurationMs    = $prior.DurationMs
                     CoveringTests = @($prior.CoveringTests)
                 }
@@ -1809,6 +1915,12 @@ function Invoke-MutMutantLoop {
         .PARAMETER BackendModulePath
         Path to the backend module the Start-Job wrapper imports to call Invoke-MutTests.
 
+        .PARAMETER FlakyTests
+        The baseline's flaky tests ([ {test; ...} ], §6.11.2). Optional; the default (empty)
+        means nothing is ever unreliable and the killing test is the first failing one, as
+        before. With it, a Killed row's killing test is the first non-flaky failing test and the
+        row's Unreliable flag is true when every known failing test is flaky (§6.11.3).
+
         .OUTPUTS
         [pscustomobject[]] one row per mutant, in id order: {Id; Status; KillingTest;
         DurationMs; CoveringTests}. A row with Status 'Error' additionally carries an `Error`
@@ -1851,10 +1963,13 @@ function Invoke-MutMutantLoop {
         [Parameter(Mandatory = $true)]
         [string]$RunDir,
         [Parameter(Mandatory = $true)]
-        [string]$BackendModulePath
+        [string]$BackendModulePath,
+        [AllowNull()]
+        [object[]]$FlakyTests = @()
     )
 
     $testCodeunits = [int[]]@($Config.testApp.testCodeunits)
+    $flakyKeys = Get-MutFlakyKeySet -FlakyTests $FlakyTests
     $orderedMutants = $Mutants | Sort-Object -Property id
 
     # FIX (F3, run 8 -- finding I6): reset per run invocation -- see Confirm-MutEnvironmentServing.
@@ -1875,7 +1990,7 @@ function Invoke-MutMutantLoop {
     # absent key) runs everything below exactly as before.
     if ((Test-MutHasProperty $Config 'testTransport') -and ([string]$Config.testTransport -eq 'soap')) {
         $soapRows = Invoke-MutSoapMutantLoop -Config $Config -Env $Env -Mutants $orderedMutants -Baseline $Baseline `
-            -Coverage $Coverage -References $References -RunNo $RunNo -RunDir $RunDir
+            -Coverage $Coverage -References $References -RunNo $RunNo -RunDir $RunDir -FlakyTests $FlakyTests
         return , $soapRows
     }
 
@@ -1891,6 +2006,7 @@ function Invoke-MutMutantLoop {
                 Status        = $prior.Status
                 KillingTest   = $prior.KillingTest
                 KillingError  = $prior.KillingError
+                Unreliable    = (Get-MutResumedUnreliable -Prior $prior -FlakyKeys $flakyKeys)
                 DurationMs    = $prior.DurationMs
                 CoveringTests = @($prior.CoveringTests)
             }
@@ -1925,6 +2041,7 @@ function Invoke-MutMutantLoop {
                         Status        = 'Uncovered'
                         KillingTest   = $null
                         KillingError  = $null
+                        Unreliable    = $false
                         DurationMs    = $null
                         CoveringTests = @($covering)
                     }
@@ -2004,6 +2121,7 @@ function Invoke-MutMutantLoop {
                 $status = $null
                 $killingTest = $null
                 $killingError = $null
+                $unreliable = $false
                 $failingTests = @()
                 $durationMs = $null
                 $errorMessage = $null
@@ -2095,6 +2213,12 @@ function Invoke-MutMutantLoop {
                             $killingTest = $failingTests[0].Test
                             $killingError = $failingTests[0].Error
                         }
+                        # §6.11.3: the killing test is the first non-flaky failing test (the first one
+                        # when every failing test is flaky, which also makes the kill unreliable).
+                        $verdict = Get-MutKillVerdict -FailingTests $failingTests -KillingTest $killingTest -KillingError $killingError -FlakyKeys $flakyKeys
+                        $killingTest = $verdict.KillingTest
+                        $killingError = $verdict.KillingError
+                        $unreliable = $verdict.Unreliable
 
                         $filterPath = 'mutantResults?$filter=runNo eq {0} and mutantId eq {1}' -f $RunNo, $mutant.id
                         $existing = Invoke-MutApi -Env $Env -Method 'GET' -Path $filterPath
@@ -2168,6 +2292,7 @@ function Invoke-MutMutantLoop {
                     Status        = $status
                     KillingTest   = $killingTest
                     KillingError  = $killingError
+                    Unreliable    = $unreliable
                     DurationMs    = $durationMs
                     CoveringTests = @($covering)
                     FailingTests  = @($failingTests)
@@ -2239,6 +2364,7 @@ function Invoke-MutMutantLoop {
                     Status        = 'Error'
                     KillingTest   = $null
                     KillingError  = $null
+                    Unreliable    = $false
                     DurationMs    = $null
                     CoveringTests = @($covering)
                 }

@@ -63,6 +63,43 @@ function Format-MutKillReason {
     return $firstLine
 }
 
+function Get-MutTestKey {
+    <#
+        .SYNOPSIS
+        The §6.11.2 flaky-test key of one test: "<codeunit name cut to 30 characters>:<function>".
+        Takes either a "<codeunit>:<function>" string (a killingTest, or what the CLI test rows
+        carry, whose codeunit is the full name) or -Codeunit and -Function. The codeunit name is
+        cut to 30 characters, as the Mutation Core's Text[30] killingTest is, so the key matches
+        from every writer. The string form splits at the LAST colon (a function name has none).
+    #>
+    param(
+        [Parameter(Position = 0)]
+        [AllowNull()]
+        [AllowEmptyString()]
+        [string]$Test,
+        [string]$Codeunit,
+        [string]$Function
+    )
+
+    if ($PSBoundParameters.ContainsKey('Codeunit')) {
+        $name = $Codeunit
+        $functionName = $Function
+    }
+    else {
+        $text = [string]$Test
+        $colon = $text.LastIndexOf(':')
+        if ($colon -lt 0) {
+            return $text
+        }
+        $name = $text.Substring(0, $colon)
+        $functionName = $text.Substring($colon + 1)
+    }
+    if ($name.Length -gt 30) {
+        $name = $name.Substring(0, 30)
+    }
+    return ('{0}:{1}' -f $name, $functionName)
+}
+
 function Get-MutScore {
     <#
         .SYNOPSIS
@@ -96,7 +133,10 @@ function Get-MutScore {
     #>
     param(
         [Parameter(Mandatory = $true)]
-        $Totals
+        $Totals,
+        # §6.11.3: strictScore counts the unreliable kills (totals.unreliableKills, a subset of
+        # killed) as survived; every other term, and the denominator, are the score's.
+        [switch]$Strict
     )
 
     $errorCount = 0
@@ -114,6 +154,9 @@ function Get-MutScore {
     }
 
     $numerator = [double]$Totals.killed + [double]$Totals.timeout
+    if ($Strict -and (Test-MutHasProperty $Totals 'unreliableKills')) {
+        $numerator -= [double]$Totals.unreliableKills
+    }
 
     return [math]::Round($numerator / $denominator, 4)
 }
@@ -159,6 +202,7 @@ function Get-MutMergedMutantRows {
             $durationMs = $null
             $coveringTests = @()
             $reason = $null
+            $unreliable = $false
         }
         elseif ($resultsById.ContainsKey($id)) {
             $result = $resultsById[$id]
@@ -178,6 +222,8 @@ function Get-MutMergedMutantRows {
             elseif (($status -eq 'Killed') -and (Test-MutHasProperty $result 'KillingError')) {
                 $reason = $result.KillingError
             }
+            # §6.11.3: only a Killed row can be unreliable.
+            $unreliable = ($status -eq 'Killed') -and (Test-MutHasProperty $result 'Unreliable') -and ([bool]$result.Unreliable)
         }
         else {
             $status = 'Pending'
@@ -185,6 +231,7 @@ function Get-MutMergedMutantRows {
             $durationMs = $null
             $coveringTests = @()
             $reason = $null
+            $unreliable = $false
         }
 
         Assert-MutKnownStatus -Status $status -MutantId $id
@@ -203,6 +250,7 @@ function Get-MutMergedMutantRows {
             durationMs    = $durationMs
             coveringTests = $coveringTests
             reason        = $reason
+            unreliable    = $unreliable
         }
     }
 
@@ -234,6 +282,8 @@ function Get-MutTotals {
         equivalent   = @($MergedRows | Where-Object { $_.status -eq 'Equivalent' }).Count
         error        = @($MergedRows | Where-Object { $_.status -eq 'Error' }).Count
         pending      = @($MergedRows | Where-Object { $_.status -eq 'Pending' }).Count
+        # §6.11.3: a subset of killed, not a tenth bucket (the nine above still sum to total).
+        unreliableKills = @($MergedRows | Where-Object { $_.status -eq 'Killed' -and $_.unreliable }).Count
     }
 }
 
@@ -287,7 +337,13 @@ function Get-MutSummaryMarkdown {
         [AllowNull()]
         $Score,
         [Parameter(Mandatory = $true)]
-        [object[]]$MergedRows
+        [object[]]$MergedRows,
+        # §6.11.3: shown next to Score when passed ($null, like Score, means not computed).
+        [AllowNull()]
+        $StrictScore = $null,
+        # §6.11.2: the baseline's flaky tests [ {test; passed; failed; error} ]; the table is omitted when empty.
+        [AllowNull()]
+        [object[]]$FlakyTests = @()
     )
 
     $lines = @()
@@ -334,6 +390,14 @@ function Get-MutSummaryMarkdown {
     }
     else {
         $lines += "Score: **$Score**"
+    }
+    if ($PSBoundParameters.ContainsKey('StrictScore')) {
+        if ($null -eq $StrictScore) {
+            $lines += 'Strict score (unreliable kills counted as survived): _not computed_'
+        }
+        else {
+            $lines += "Strict score (unreliable kills counted as survived): **$StrictScore**"
+        }
     }
     $lines += ''
 
@@ -416,6 +480,36 @@ function Get-MutSummaryMarkdown {
     }
     $lines += ''
 
+    # §6.11.2 / §6.11.3: shown only when non-empty.
+    $flakyList = @(@($FlakyTests) | Where-Object { $null -ne $_ })
+    if ($flakyList.Count -gt 0) {
+        $lines += '## Flaky baseline tests'
+        $lines += ''
+        $lines += Format-MutMarkdownTableRow @('Test', 'Passed', 'Failed', 'First error')
+        $lines += Format-MutMarkdownTableRow @('---', '---', '---', '---')
+        foreach ($flaky in $flakyList) {
+            $flakyError = ''
+            if ((Test-MutHasProperty $flaky 'error') -and ($null -ne $flaky.error)) { $flakyError = [string]$flaky.error }
+            $lines += Format-MutMarkdownTableRow @([string]$flaky.test, "$($flaky.passed)", "$($flaky.failed)", $flakyError)
+        }
+        $lines += ''
+    }
+
+    $unreliableRows = @($MergedRows | Where-Object { $_.status -eq 'Killed' -and $_.unreliable })
+    if ($unreliableRows.Count -gt 0) {
+        $lines += '## Unreliable kills'
+        $lines += ''
+        $lines += Format-MutMarkdownTableRow @('Id', 'Object', 'Procedure', 'Line', 'Operator', 'Killing test', 'Reason')
+        $lines += Format-MutMarkdownTableRow @('---', '---', '---', '---', '---', '---', '---')
+        foreach ($row in $unreliableRows) {
+            $lines += Format-MutMarkdownTableRow @(
+                "$($row.id)", "$($row.objectId)", $row.procedure, "$($row.line)", $row.operator,
+                [string]$row.killingTest, [string]$row.reason
+            )
+        }
+        $lines += ''
+    }
+
     $lines += '## Uncovered'
     $lines += ''
     $lines += "Uncovered: $($Totals.uncovered)"
@@ -482,7 +576,10 @@ function Export-MutResults {
         [Parameter(Mandatory = $true)]
         [AllowEmptyCollection()]
         [int[]]$CompileErrorIds,
-        [switch]$Partial
+        [switch]$Partial,
+        # §6.11.2: the baseline's flaky tests [ {test; passed; failed; error} ], for the summary.
+        [AllowNull()]
+        [object[]]$FlakyTests = @()
     )
 
     if (-not (Test-Path -Path $OutDir)) {
@@ -492,6 +589,7 @@ function Export-MutResults {
     $mergedRows = Get-MutMergedMutantRows -Mutants $Mutants -Results $Results -CompileErrorIds $CompileErrorIds
     $totals = Get-MutTotals -MergedRows $mergedRows
     $score = Get-MutScore -Totals $totals
+    $strictScore = Get-MutScore -Totals $totals -Strict
 
     $startedUtcString = ConvertTo-MutUtcString $StartedUtc
     $finishedUtcString = ConvertTo-MutUtcString $FinishedUtc
@@ -513,6 +611,7 @@ function Export-MutResults {
         }
         totals          = $totals
         score           = $score
+        strictScore     = $strictScore
         # FIX (F3c): always present (false on a normal completed run) so a consumer never has to
         # infer partial-ness from totals.pending -gt 0 -- an implicit, easy-to-miss signal that
         # only exists at all because Get-MutMergedMutantRows (below) happens to render an
@@ -538,7 +637,8 @@ function Export-MutResults {
 
     $summaryMarkdown = Get-MutSummaryMarkdown -RunNo $RunNo -Backend $Config.backend -EnvironmentName $Env.Name `
         -AutVersion $Config.aut.version -StartedUtc $startedUtcString -FinishedUtc $finishedUtcString `
-        -WallClock $wallClock -Totals $totals -Score $score -MergedRows $mergedRows
+        -WallClock $wallClock -Totals $totals -Score $score -MergedRows $mergedRows `
+        -StrictScore $strictScore -FlakyTests @($FlakyTests)
 
     $summaryPath = Join-Path $OutDir "$RunNo-summary.md"
     [System.IO.File]::WriteAllText($summaryPath, $summaryMarkdown, $noBomUtf8)
@@ -629,4 +729,4 @@ function Compare-MutExpectedResults {
     return , $mismatches
 }
 
-Export-ModuleMember -Function Format-MutKillReason, Get-MutScore, Export-MutResults, Compare-MutExpectedResults
+Export-ModuleMember -Function Format-MutKillReason, Get-MutTestKey, Get-MutScore, Export-MutResults, Compare-MutExpectedResults

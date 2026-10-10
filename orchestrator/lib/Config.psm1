@@ -12,6 +12,8 @@ $script:AllowedPublishStrategies = @('same-version', 'bump-build', 'unpublish-te
 # default); 'soap' runs them through the Mutation Core runner service in batches.
 $script:AllowedTestTransports = @('cli', 'soap')
 $script:DefaultSoapBatchSize = 50
+# §6.11.2: baseline.repeats, the number of baseline passes (1 turns the flaky-test detection off).
+$script:DefaultBaselineRepeats = 3
 
 # Review fix round 1: [System.IO.Path]::GetFullPath does NOT resolve reparse points
 # (directory junctions/symlinks), so Assert-MutWorkDirOutsideSources' containment check was
@@ -585,6 +587,14 @@ function Assert-MutConfigShape {
         Assert-MutIntegerAtLeast $Config.soap 'batchSize' 'soap.batchSize' -Minimum 1
     }
 
+    # §6.11.2: baseline.repeats, optional, a positive integer (default 3, applied in Get-MutConfig).
+    if ((Test-MutHasProperty $Config 'baseline') -and ($null -ne $Config.baseline) -and ($Config.baseline -isnot [pscustomobject])) {
+        throw "Get-MutConfig: config key 'baseline' must be an object (for example { ""repeats"": 3 }). Got '$($Config.baseline)'."
+    }
+    if ((Test-MutHasProperty $Config 'baseline') -and ($null -ne $Config.baseline) -and (Test-MutHasProperty $Config.baseline 'repeats')) {
+        Assert-MutIntegerAtLeast $Config.baseline 'repeats' 'baseline.repeats' -Minimum 1
+    }
+
     if ($Config.backend -eq 'DemoPortal') {
         Assert-MutRequiredKey $Config 'demoPortal' 'demoPortal'
         # profileId is optional: absent or empty, the backend derives it from the AUT's and test
@@ -652,6 +662,14 @@ function Get-MutConfig {
     }
     if (-not (Test-MutHasProperty $config.soap 'batchSize')) {
         $config.soap | Add-Member -NotePropertyName 'batchSize' -NotePropertyValue $script:DefaultSoapBatchSize
+    }
+
+    # §6.11.2 default: baseline.repeats 3.
+    if ((-not (Test-MutHasProperty $config 'baseline')) -or ($null -eq $config.baseline)) {
+        $config | Add-Member -NotePropertyName 'baseline' -NotePropertyValue ([pscustomobject]@{}) -Force
+    }
+    if (-not (Test-MutHasProperty $config.baseline 'repeats')) {
+        $config.baseline | Add-Member -NotePropertyName 'repeats' -NotePropertyValue $script:DefaultBaselineRepeats
     }
 
     $repoRoot = Get-MutRepoRoot

@@ -152,6 +152,26 @@ function ConvertTo-MutBaselineObject {
     return [pscustomobject]@{ Tests = $tests; DurationsByCodeunit = $durations }
 }
 
+function ConvertTo-MutBaselineFlakyInfo {
+    <#
+        .SYNOPSIS
+        Private. §6.11.2: `repeats` and `flakyTests` of baseline.json's parsed content. A file
+        written before the repeated baseline has neither: repeats 1 and no flaky tests.
+    #>
+    param($Raw)
+
+    $repeats = 1
+    if ((Test-MutHasProperty $Raw 'repeats') -and ($null -ne $Raw.repeats)) {
+        $repeats = [int]$Raw.repeats
+    }
+    $flakyTests = @()
+    if ((Test-MutHasProperty $Raw 'flakyTests') -and ($null -ne $Raw.flakyTests)) {
+        $flakyTests = @($Raw.flakyTests | Where-Object { $null -ne $_ })
+    }
+
+    return [pscustomobject]@{ Repeats = $repeats; FlakyTests = $flakyTests }
+}
+
 function ConvertTo-MutCoverageObject {
     <#
         .SYNOPSIS
@@ -214,7 +234,9 @@ function Get-MutSkippedBaselineResult {
     $coveragePath = Join-Path $RunDir 'coverage.json'
     $referencesPath = Join-Path $RunDir 'references.json'
 
-    $baseline = ConvertTo-MutBaselineObject -Raw (Get-MutJsonContent -Path $baselinePath)
+    $baselineRaw = Get-MutJsonContent -Path $baselinePath
+    $baseline = ConvertTo-MutBaselineObject -Raw $baselineRaw
+    $flakyInfo = ConvertTo-MutBaselineFlakyInfo -Raw $baselineRaw
 
     $coverage = [pscustomobject]@{ byTestCodeunit = @{} }
     if (Test-Path -Path $coveragePath) {
@@ -226,7 +248,7 @@ function Get-MutSkippedBaselineResult {
         $references = ConvertTo-MutReferencesHashtable -Raw (Get-MutJsonContent -Path $referencesPath)
     }
 
-    return [pscustomobject]@{ Baseline = $baseline; Coverage = $coverage; References = $references }
+    return [pscustomobject]@{ Baseline = $baseline; Coverage = $coverage; References = $references; Repeats = $flakyInfo.Repeats; FlakyTests = $flakyInfo.FlakyTests }
 }
 
 function Initialize-MutRun {
@@ -393,15 +415,21 @@ function Publish-MutBaseline {
         combined Invoke-MutTests call across codeunits would leave DurationMs and JobIds summed
         across all of them), Invoke-MutTests -Coverage.
 
-        Aborts (throws, naming every failing test) if any codeunit has a failure. Saves
-        `baseline.json` ({tests; durationsByCodeunit}), `coverage.json` (§7.2 byTestCodeunit;
+        §6.11.2: that is pass 1. With `baseline.repeats` > 1 (default 3), passes 2..repeats run
+        Invoke-MutTests per codeunit WITHOUT -Coverage; durations, tests and coverage come from
+        pass 1 only, and a zero-test result in any pass aborts. Per test (key "<codeunit name cut
+        to 30>:<function>"): failing in every pass aborts the run (below); failing in some passes
+        only is flaky (a warning, and an entry of baseline.json's flakyTests).
+
+        Aborts (throws, naming every failing test) if any test fails in every pass. Saves
+        `baseline.json` ({tests; durationsByCodeunit; repeats; flakyTests}), `coverage.json` (§7.2 byTestCodeunit;
         `{}` plus a warning when no job ids came back from any codeunit) and `references.json`
         (Get-MutReferenceMap / Save-MutReferenceMap, §6.5.5) under $RunDir.
 
         .OUTPUTS
-        [pscustomobject]@{ Baseline; Coverage; References } -- Baseline/Coverage in the
-        hashtable-backed shapes Coverage.psm1/MutantLoop.psm1 expect; References an objectId ->
-        int[] hashtable.
+        [pscustomobject]@{ Baseline; Coverage; References; Repeats; FlakyTests } -- Baseline/Coverage
+        in the hashtable-backed shapes Coverage.psm1/MutantLoop.psm1 expect; References an objectId ->
+        int[] hashtable; Repeats the number of baseline passes; FlakyTests [ {test; passed; failed; error} ].
     #>
     param(
         [Parameter(Mandatory = $true)]
@@ -418,10 +446,14 @@ function Publish-MutBaseline {
     $referencesPath = Join-Path $RunDir 'references.json'
 
     if (Test-MutDoneMarker -MarkerPath $markerPath -ArtifactPaths @($baselinePath, $coveragePath, $referencesPath)) {
+        $savedBaseline = Get-MutJsonContent -Path $baselinePath
+        $savedFlakyInfo = ConvertTo-MutBaselineFlakyInfo -Raw $savedBaseline
         return [pscustomobject]@{
-            Baseline   = ConvertTo-MutBaselineObject -Raw (Get-MutJsonContent -Path $baselinePath)
+            Baseline   = ConvertTo-MutBaselineObject -Raw $savedBaseline
             Coverage   = ConvertTo-MutCoverageObject -Raw (Get-MutJsonContent -Path $coveragePath)
             References = ConvertTo-MutReferencesHashtable -Raw (Get-MutJsonContent -Path $referencesPath)
+            Repeats    = $savedFlakyInfo.Repeats
+            FlakyTests = $savedFlakyInfo.FlakyTests
         }
     }
 
@@ -505,6 +537,43 @@ function Publish-MutBaseline {
     $jobIdsByCodeunit = @{}
     $failingTests = @()
 
+    # §6.11.2: baseline.repeats passes (Get-MutConfig defaults it to 3; a hand-built config without
+    # the key runs one pass, as before).
+    $repeats = 1
+    if ((Test-MutHasProperty $Config 'baseline') -and ($null -ne $Config.baseline) -and (Test-MutHasProperty $Config.baseline 'repeats')) {
+        $repeats = [int]$Config.baseline.repeats
+    }
+    # Per test key: how many passes it failed in, how many it passed in, and its first error.
+    $verdictsByKey = @{}
+    $recordPass = {
+        param($Tests, $PassNo)
+        $failedThisPass = @{}
+        foreach ($test in @($Tests)) {
+            $key = Get-MutTestKey -Codeunit ([string]$test.Codeunit) -Function ([string]$test.Function)
+            if (-not $failedThisPass.ContainsKey($key)) { $failedThisPass[$key] = $false }
+            if ($test.Result -eq 'Fail') {
+                if (-not $failedThisPass[$key]) {
+                    $failedThisPass[$key] = $true
+                    if (-not $verdictsByKey.ContainsKey($key)) {
+                        $verdictsByKey[$key] = [pscustomobject]@{ Passed = 0; Failed = 0; Error = $null }
+                    }
+                    if ($verdictsByKey[$key].Failed -eq 0) {
+                        $errorText = $null
+                        if (Test-MutHasProperty $test 'Error') { $errorText = Format-MutKillReason -Text $test.Error }
+                        $verdictsByKey[$key].Error = $errorText
+                    }
+                }
+            }
+        }
+        foreach ($key in $failedThisPass.Keys) {
+            if (-not $verdictsByKey.ContainsKey($key)) {
+                $verdictsByKey[$key] = [pscustomobject]@{ Passed = 0; Failed = 0; Error = $null }
+            }
+            if ($failedThisPass[$key]) { $verdictsByKey[$key].Failed++ } else { $verdictsByKey[$key].Passed++ }
+        }
+    }
+
+    $pass1Failures = @()
     foreach ($codeunitId in $testCodeunits) {
         $target = @([pscustomobject]@{ CodeunitId = $codeunitId; Function = $null })
         $result = Invoke-MutTests -Env $Env -Targets $target -TimeoutSec $script:MutWholeSuiteTimeoutSec -Coverage
@@ -523,10 +592,36 @@ function Publish-MutBaseline {
         $durationsByCodeunit["$codeunitId"] = $result.DurationMs
         $jobIdsByCodeunit["$codeunitId"] = @($result.JobIds)
 
+        & $recordPass $result.Tests 1
+
         if ($result.Failed -gt 0) {
             foreach ($test in @($result.Tests | Where-Object { $_.Result -eq 'Fail' })) {
-                $failingTests += "$($test.Codeunit):$($test.Function) -- $($test.Error)"
+                $pass1Failures += [pscustomobject]@{
+                    Key  = (Get-MutTestKey -Codeunit ([string]$test.Codeunit) -Function ([string]$test.Function))
+                    Text = "$($test.Codeunit):$($test.Function) -- $($test.Error)"
+                }
             }
+        }
+    }
+
+    # §6.11.2: passes 2..repeats, without -Coverage; only the verdicts are used from them.
+    for ($pass = 2; $pass -le $repeats; $pass++) {
+        foreach ($codeunitId in $testCodeunits) {
+            $target = @([pscustomobject]@{ CodeunitId = $codeunitId; Function = $null })
+            $result = Invoke-MutTests -Env $Env -Targets $target -TimeoutSec $script:MutWholeSuiteTimeoutSec
+
+            if (($result.Passed + $result.Failed) -eq 0) {
+                throw "Publish-MutBaseline: the baseline test run (pass $pass of $repeats) for codeunit $codeunitId reported zero tests (Passed=0, Failed=0); aborting rather than recording an empty baseline."
+            }
+
+            & $recordPass $result.Tests $pass
+        }
+    }
+
+    # A test failing in every pass is a real baseline failure; failing in some passes only is flaky.
+    foreach ($failure in $pass1Failures) {
+        if ($verdictsByKey[$failure.Key].Failed -ge $repeats) {
+            $failingTests += $failure.Text
         }
     }
 
@@ -534,7 +629,16 @@ function Publish-MutBaseline {
         throw "Publish-MutBaseline: the baseline test run had $($failingTests.Count) failing test(s); aborting (§6.5.4 step 3 must pass before the schemata can be built). Failures:`n$($failingTests -join "`n")"
     }
 
-    $baselineDoc = [pscustomobject]@{ tests = $allTests; durationsByCodeunit = $durationsByCodeunit }
+    $flakyKeys = @($verdictsByKey.Keys | Where-Object { ($verdictsByKey[$_].Failed -gt 0) -and ($verdictsByKey[$_].Failed -lt $repeats) })
+    [System.Array]::Sort($flakyKeys, [System.StringComparer]::Ordinal)
+    $flakyTests = @()
+    foreach ($key in $flakyKeys) {
+        $verdict = $verdictsByKey[$key]
+        $flakyTests += [pscustomobject]@{ test = $key; passed = $verdict.Passed; failed = $verdict.Failed; error = $verdict.Error }
+        Write-Warning "Publish-MutBaseline: flaky baseline test $key -- failed in $($verdict.Failed) and passed in $($verdict.Passed) of $repeats pass(es); first error: $($verdict.Error). A kill by this test alone is reported as unreliable (§6.11.3)."
+    }
+
+    $baselineDoc = [pscustomobject]@{ tests = $allTests; durationsByCodeunit = $durationsByCodeunit; repeats = $repeats; flakyTests = @($flakyTests) }
     Write-MutTextFile -Path $baselinePath -Text ((($baselineDoc | ConvertTo-Json -Depth 10)) + [System.Environment]::NewLine)
 
     $anyJobIds = $false
@@ -570,6 +674,8 @@ function Publish-MutBaseline {
         Baseline   = [pscustomobject]@{ Tests = $allTests; DurationsByCodeunit = $durationsByCodeunit }
         Coverage   = [pscustomobject]@{ byTestCodeunit = $byTestCodeunit }
         References = $references
+        Repeats    = $repeats
+        FlakyTests = @($flakyTests)
     }
 }
 
@@ -920,7 +1026,10 @@ function Invoke-MutMutantLoopStep {
         [Parameter(Mandatory = $true)]
         [string]$RunDir,
         [Parameter(Mandatory = $true)]
-        [string]$BackendModulePath
+        [string]$BackendModulePath,
+        # §6.11.2: the baseline's flaky tests; the default (none) leaves every kill reliable.
+        [AllowNull()]
+        [object[]]$FlakyTests = @()
     )
 
     $markerPath = Join-Path $RunDir 'mutant-loop.done'
@@ -932,9 +1041,12 @@ function Invoke-MutMutantLoopStep {
     }
 
     $rows = Invoke-MutMutantLoop -Config $Config -Env $Env -Mutants $Mutants -Baseline $Baseline `
-        -Coverage $Coverage -References $References -RunNo $RunNo -RunDir $RunDir -BackendModulePath $BackendModulePath
+        -Coverage $Coverage -References $References -RunNo $RunNo -RunDir $RunDir -BackendModulePath $BackendModulePath -FlakyTests $FlakyTests
 
-    Write-MutTextFile -Path $loopResultsPath -Text (((@($rows) | ConvertTo-Json -Depth 10)) + [System.Environment]::NewLine)
+    # §6.11.1: the failing-test lists (FailingTests on the cli path, Failures on the soap path) stay
+    # in memory, as in results.jsonl; Unreliable (§6.11.3) is kept.
+    $savedRows = @(@($rows) | ForEach-Object { $_ | Select-Object -Property * -ExcludeProperty FailingTests, Failures })
+    Write-MutTextFile -Path $loopResultsPath -Text ((($savedRows | ConvertTo-Json -Depth 10)) + [System.Environment]::NewLine)
     Write-MutDoneMarker -MarkerPath $markerPath
 
     return @($rows)
@@ -989,7 +1101,10 @@ function Export-MutResultsStep {
         $FinishedUtc,
         [Parameter(Mandatory = $true)]
         [string]$RunDir,
-        [switch]$AllowPartial
+        [switch]$AllowPartial,
+        # §6.11.2: the baseline's flaky tests, for the summary's Flaky baseline tests table.
+        [AllowNull()]
+        [object[]]$FlakyTests = @()
     )
 
     $markerPath = Join-Path $RunDir 'export.done'
@@ -1004,7 +1119,7 @@ function Export-MutResultsStep {
     }
 
     $paths = Export-MutResults -RunNo $RunNo -Config $Config -Env $Env -Mutants $Mutants -Results $Results `
-        -OutDir $outDir -StartedUtc $StartedUtc -FinishedUtc $FinishedUtc -CompileErrorIds $CompileErrorIds -Partial:$AllowPartial
+        -OutDir $outDir -StartedUtc $StartedUtc -FinishedUtc $FinishedUtc -CompileErrorIds $CompileErrorIds -Partial:$AllowPartial -FlakyTests $FlakyTests
 
     if ($AllowPartial) {
         return $paths
@@ -1078,6 +1193,12 @@ function Invoke-MutRunPipeline {
         $baselineResult = Publish-MutBaseline -Config $Config -Env $env -RunDir $runDir
     }
 
+    # §6.11.2: the flaky baseline tests (none when the baseline result carries none).
+    $flakyTests = @()
+    if (Test-MutHasProperty $baselineResult 'FlakyTests') {
+        $flakyTests = @($baselineResult.FlakyTests)
+    }
+
     # §6.10.4: with the soap test transport the MUTRunner service (Mutation Core 1.1.1.0+) must
     # answer right after the baseline, before any further work.
     if ((Test-MutHasProperty $Config 'testTransport') -and ([string]$Config.testTransport -eq 'soap')) {
@@ -1114,7 +1235,7 @@ function Invoke-MutRunPipeline {
     try {
         $loopResults = Invoke-MutMutantLoopStep -Config $Config -Env $env -Mutants $schemata.Mutants `
             -Baseline $baselineResult.Baseline -Coverage $baselineResult.Coverage -References $baselineResult.References `
-            -RunNo $runNo -RunDir $runDir -BackendModulePath $backendModulePath
+            -RunNo $runNo -RunDir $runDir -BackendModulePath $backendModulePath -FlakyTests $flakyTests
     }
     catch {
         if ($_.CategoryInfo.Category -ne [System.Management.Automation.ErrorCategory]::LimitsExceeded) {
@@ -1146,7 +1267,7 @@ function Invoke-MutRunPipeline {
 
         $exportResult = Export-MutResultsStep -Config $Config -Env $env -RunNo $runNo -Mutants $allMutantsForExport `
             -Results $partialResults -CompileErrorIds $schemata.CompileErrorIds -StartedUtc $startedUtc `
-            -FinishedUtc $finishedUtc -RunDir $runDir -AllowPartial
+            -FinishedUtc $finishedUtc -RunDir $runDir -AllowPartial -FlakyTests $flakyTests
 
         Write-Warning "Invoke-MutRunPipeline: partial results: $($exportResult.ResultsPath); partial summary: $($exportResult.SummaryPath)"
 
@@ -1157,7 +1278,7 @@ function Invoke-MutRunPipeline {
 
     $exportResult = Export-MutResultsStep -Config $Config -Env $env -RunNo $runNo -Mutants $allMutantsForExport `
         -Results @($loopResults) -CompileErrorIds $schemata.CompileErrorIds -StartedUtc $startedUtc `
-        -FinishedUtc $finishedUtc -RunDir $runDir
+        -FinishedUtc $finishedUtc -RunDir $runDir -FlakyTests $flakyTests
 
     # §6.7.2 pipeline hook: the fix briefs are cheap and re-generated every time (no .done
     # marker). Only a complete export gets here -- the partial-export path above re-throws

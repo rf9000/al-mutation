@@ -149,6 +149,43 @@ Describe 'Invoke-MutRunPipeline (fully mocked backend/lib boundary)' {
         Mock -ModuleName Run Export-MutFixBriefs { "$script:WorkDir/results/1-fix-briefs.json" }
     }
 
+    It 'hands the baseline flaky tests to the mutant loop and to the export (§6.11.2)' {
+        $flaky = @([pscustomobject]@{ test = 'C:Flaky'; passed = 2; failed = 1; error = 'x' })
+        Mock -ModuleName Run Publish-MutBaseline {
+            [pscustomobject]@{
+                Baseline   = [pscustomobject]@{ Tests = @(); DurationsByCodeunit = @{} }
+                Coverage   = [pscustomobject]@{ byTestCodeunit = @{} }
+                References = @{}
+                Repeats    = 3
+                FlakyTests = $flaky
+            }
+        }
+
+        Invoke-MutRunPipeline -Config $script:Config -RunNo 1 | Out-Null
+
+        Should -Invoke -ModuleName Run Invoke-MutMutantLoop -Times 1 -Exactly -ParameterFilter { @($FlakyTests).Count -eq 1 -and $FlakyTests[0].test -eq 'C:Flaky' }
+        Should -Invoke -ModuleName Run Export-MutResults -Times 1 -Exactly -ParameterFilter { @($FlakyTests).Count -eq 1 -and $FlakyTests[0].test -eq 'C:Flaky' }
+    }
+
+    It 'a baseline result without flaky tests passes none on' {
+        Invoke-MutRunPipeline -Config $script:Config -RunNo 1 | Out-Null
+
+        Should -Invoke -ModuleName Run Invoke-MutMutantLoop -Times 1 -Exactly -ParameterFilter { @($FlakyTests).Count -eq 0 }
+    }
+
+    It '-SkipBaseline reads repeats and flakyTests from baseline.json and hands them on' {
+        $runDir = Join-Path $script:WorkDir 'runs/1'
+        New-Item -ItemType Directory -Path $runDir -Force | Out-Null
+        $baselineDoc = [pscustomobject]@{ tests = @(); durationsByCodeunit = @{ '50300' = 1000 }; repeats = 3; flakyTests = @([pscustomobject]@{ test = 'C:Flaky'; passed = 2; failed = 1; error = 'x' }) }
+        ($baselineDoc | ConvertTo-Json -Depth 10) | Set-Content -Path (Join-Path $runDir 'baseline.json') -Encoding UTF8
+        '{}' | Set-Content -Path (Join-Path $runDir 'coverage.json') -Encoding UTF8
+        '{}' | Set-Content -Path (Join-Path $runDir 'references.json') -Encoding UTF8
+
+        Invoke-MutRunPipeline -Config $script:Config -RunNo 1 -SkipBaseline | Out-Null
+
+        Should -Invoke -ModuleName Run Invoke-MutMutantLoop -Times 1 -Exactly -ParameterFilter { @($FlakyTests).Count -eq 1 -and $FlakyTests[0].test -eq 'C:Flaky' }
+    }
+
     It 'with testTransport soap, checks Test-MutSoapRunner right after the baseline and before the schemata are built' {
         $script:Config | Add-Member -NotePropertyName testTransport -NotePropertyValue 'soap'
         Mock -ModuleName Run Test-MutSoapRunner { $script:CallLog.Add('Test-MutSoapRunner'); return $true }
@@ -850,5 +887,218 @@ Describe 'Publish-MutBaseline: stale installed test suite (runs 5, 7 and 14)' {
             Should -Throw '*stop-after-publishes*'
 
         $script:AutPublishCalls | Should -Be 2
+    }
+}
+
+Describe 'Publish-MutBaseline: repeated baseline and flaky tests (§6.11.2)' {
+    BeforeEach {
+        $script:WorkDir = "$TestDrive/work-$([guid]::NewGuid().ToString('N'))"
+        $script:RunDir = Join-Path $script:WorkDir 'runs/1'
+        New-Item -ItemType Directory -Path $script:RunDir -Force | Out-Null
+        $script:Config = New-MutRunTestConfig -WorkDir $script:WorkDir
+        $script:Config.testApp.testCodeunits = @(50300, 50301)
+        $script:Config | Add-Member -NotePropertyName 'baseline' -NotePropertyValue ([pscustomobject]@{ repeats = 3 })
+
+        # Per call: which codeunit and pass, and whether -Coverage was passed. $script:PassScript[<codeunit>]
+        # is a list of per-pass test lists (index = pass - 1); a test is @(Codeunit, Function, Result, Error).
+        $script:Calls = New-Object System.Collections.ArrayList
+        $script:PassOf = @{ 50300 = 0; 50301 = 0 }
+        $script:PassScript = @{ 50300 = @(); 50301 = @() }
+        $script:LongName = 'CTS-CB Test Auth Share Detection Extra'
+
+        Mock -ModuleName Run Install-MutDependencies { }
+        Mock -ModuleName Run Grant-MutPermissionSet { }
+        Mock -ModuleName Run Publish-MutApp {
+            [pscustomobject]@{ Success = $true; Code = $null; Diagnostics = @(); DurationSec = 0.1 }
+        }
+        Mock -ModuleName Run Invoke-MutTests {
+            $cu = [int]$Targets[0].CodeunitId
+            $pass = $script:PassOf[$cu]
+            $script:PassOf[$cu] = $pass + 1
+            $null = $script:Calls.Add([pscustomobject]@{ Codeunit = $cu; Pass = $pass + 1; Coverage = [bool]$Coverage })
+            $tests = @($script:PassScript[$cu][$pass] | ForEach-Object {
+                    [pscustomobject]@{ Codeunit = $_[0]; Function = $_[1]; Result = $_[2]; DurationMs = 5; Error = $_[3] }
+                })
+            $failed = @($tests | Where-Object { $_.Result -eq 'Fail' }).Count
+            [pscustomobject]@{ Passed = $tests.Count - $failed; Failed = $failed; Tests = $tests; DurationMs = 100 * ($pass + 1); JobIds = @("j$cu-$($pass + 1)") }
+        }
+        Mock -ModuleName Run Get-MutCoverage {
+            @([pscustomobject]@{ ObjectType = 'Codeunit'; ObjectId = 50200; LineType = 'Code'; LineNo = 7; Hits = 1 })
+        }
+        Mock -ModuleName Run Get-MutReferenceMap { @{ 50200 = @(50300) } }
+    }
+
+    It 'runs pass 1 with -Coverage and passes 2..repeats without it, one call per codeunit and pass; stable tests give no flaky tests' {
+        $script:PassScript[50300] = @(@(, @('CU A', 'T1', 'Pass', $null)), @(, @('CU A', 'T1', 'Pass', $null)), @(, @('CU A', 'T1', 'Pass', $null)))
+        $script:PassScript[50301] = @(@(, @('CU B', 'T2', 'Pass', $null)), @(, @('CU B', 'T2', 'Pass', $null)), @(, @('CU B', 'T2', 'Pass', $null)))
+
+        $result = Publish-MutBaseline -Config $script:Config -Env $script:EnvHandle -RunDir $script:RunDir
+
+        Should -Invoke -ModuleName Run Invoke-MutTests -Times 6 -Exactly
+        @($script:Calls | Where-Object { $_.Pass -eq 1 } | ForEach-Object { $_.Coverage }) | Should -Be @($true, $true)
+        @($script:Calls | Where-Object { $_.Pass -gt 1 } | ForEach-Object { $_.Coverage }) | Should -Be @($false, $false, $false, $false)
+        @($script:Calls | ForEach-Object { "$($_.Codeunit):$($_.Pass)" }) | Should -Be @('50300:1', '50301:1', '50300:2', '50301:2', '50300:3', '50301:3')
+
+        # Durations, tests and coverage come from pass 1 only.
+        $result.Baseline.DurationsByCodeunit['50300'] | Should -Be 100
+        @($result.Baseline.Tests).Count | Should -Be 2
+        Should -Invoke -ModuleName Run Get-MutCoverage -Times 2 -Exactly
+        Should -Invoke -ModuleName Run Get-MutCoverage -Times 1 -Exactly -ParameterFilter { $JobIds -contains 'j50300-1' }
+        Should -Invoke -ModuleName Run Get-MutCoverage -Times 0 -ParameterFilter { $JobIds -contains 'j50300-2' }
+
+        $result.Repeats | Should -Be 3
+        @($result.FlakyTests).Count | Should -Be 0
+        $doc = Get-Content -Raw -Path (Join-Path $script:RunDir 'baseline.json') | ConvertFrom-Json
+        $doc.repeats | Should -Be 3
+        @($doc.flakyTests).Count | Should -Be 0
+        # Existing keys stay, and the file is BOM-less.
+        $doc.PSObject.Properties.Name | Should -Contain 'tests'
+        $doc.PSObject.Properties.Name | Should -Contain 'durationsByCodeunit'
+        $bytes = [System.IO.File]::ReadAllBytes((Join-Path $script:RunDir 'baseline.json'))
+        ($bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF) | Should -BeFalse
+    }
+
+    It 'a test failing in some passes only is flaky: warning, flakyTests sorted by key with counts and first error, no abort' {
+        $script:PassScript[50300] = @(
+            @(@($script:LongName, 'Zeta', 'Pass', $null), @('CU A', 'Alpha', 'Fail', "first boom`r`nsecond line")),
+            @(@($script:LongName, 'Zeta', 'Fail', 'zeta failed'), @('CU A', 'Alpha', 'Pass', $null)),
+            @(@($script:LongName, 'Zeta', 'Pass', $null), @('CU A', 'Alpha', 'Fail', 'later boom')))
+        $script:PassScript[50301] = @(@(, @('CU B', 'T2', 'Pass', $null)), @(, @('CU B', 'T2', 'Pass', $null)), @(, @('CU B', 'T2', 'Pass', $null)))
+
+        $warnings = @()
+        $result = Publish-MutBaseline -Config $script:Config -Env $script:EnvHandle -RunDir $script:RunDir -WarningVariable warnings -WarningAction SilentlyContinue
+
+        $cut = $script:LongName.Substring(0, 30)
+        # Ordinal sort by key: 'CTS-...' < 'CU A'.
+        @($result.FlakyTests).Count | Should -Be 2
+        $result.FlakyTests[0].test | Should -Be "${cut}:Zeta"
+        $result.FlakyTests[0].passed | Should -Be 2
+        $result.FlakyTests[0].failed | Should -Be 1
+        $result.FlakyTests[0].error | Should -Be 'zeta failed'
+        $result.FlakyTests[1].test | Should -Be 'CU A:Alpha'
+        $result.FlakyTests[1].passed | Should -Be 1
+        $result.FlakyTests[1].failed | Should -Be 2
+        $result.FlakyTests[1].error | Should -Be 'first boom'
+
+        @($warnings | Where-Object { $_ -like '*flaky*CU A:Alpha*' }).Count | Should -Be 1
+        @($warnings | Where-Object { $_ -like "*flaky*${cut}:Zeta*" }).Count | Should -Be 1
+
+        $doc = Get-Content -Raw -Path (Join-Path $script:RunDir 'baseline.json') | ConvertFrom-Json
+        $doc.repeats | Should -Be 3
+        @($doc.flakyTests).Count | Should -Be 2
+        $doc.flakyTests[0].test | Should -Be "${cut}:Zeta"
+        $doc.flakyTests[1].failed | Should -Be 2
+        Test-Path (Join-Path $script:RunDir 'baseline.done') | Should -BeTrue
+    }
+
+    It 'a test failing in every pass aborts, listing every such test, and writes no baseline.json' {
+        $script:PassScript[50300] = @(
+            @(@('CU A', 'Always', 'Fail', 'e1'), @('CU A', 'Sometimes', 'Fail', 'e2')),
+            @(@('CU A', 'Always', 'Fail', 'e1'), @('CU A', 'Sometimes', 'Pass', $null)),
+            @(@('CU A', 'Always', 'Fail', 'e1'), @('CU A', 'Sometimes', 'Pass', $null)))
+        $script:PassScript[50301] = @(@(, @('CU B', 'AlsoAlways', 'Fail', 'e3')), @(, @('CU B', 'AlsoAlways', 'Fail', 'e3')), @(, @('CU B', 'AlsoAlways', 'Fail', 'e3')))
+
+        $caught = $null
+        try { Publish-MutBaseline -Config $script:Config -Env $script:EnvHandle -RunDir $script:RunDir -WarningAction SilentlyContinue } catch { $caught = $_ }
+
+        $caught | Should -Not -BeNullOrEmpty
+        $caught.Exception.Message | Should -BeLike '*2 failing test(s)*'
+        $caught.Exception.Message | Should -BeLike '*CU A:Always -- e1*'
+        $caught.Exception.Message | Should -BeLike '*CU B:AlsoAlways -- e3*'
+        $caught.Exception.Message | Should -Not -BeLike '*Sometimes*'
+        Test-Path (Join-Path $script:RunDir 'baseline.json') | Should -BeFalse
+    }
+
+    It 'a zero-test result in a later pass aborts, naming the pass' {
+        $script:PassScript[50300] = @(@(, @('CU A', 'T1', 'Pass', $null)), @(), @(, @('CU A', 'T1', 'Pass', $null)))
+        $script:PassScript[50301] = @(@(, @('CU B', 'T2', 'Pass', $null)), @(, @('CU B', 'T2', 'Pass', $null)), @(, @('CU B', 'T2', 'Pass', $null)))
+
+        { Publish-MutBaseline -Config $script:Config -Env $script:EnvHandle -RunDir $script:RunDir } |
+            Should -Throw '*pass 2*50300*zero tests*'
+        Test-Path (Join-Path $script:RunDir 'baseline.json') | Should -BeFalse
+    }
+
+    It 'repeats 1 reproduces today: one Invoke-MutTests -Coverage per codeunit, no flaky tests, repeats 1 in baseline.json' {
+        $script:Config.baseline.repeats = 1
+        $script:PassScript[50300] = @(, @(, @('CU A', 'T1', 'Pass', $null)))
+        $script:PassScript[50301] = @(, @(, @('CU B', 'T2', 'Pass', $null)))
+
+        $result = Publish-MutBaseline -Config $script:Config -Env $script:EnvHandle -RunDir $script:RunDir
+
+        Should -Invoke -ModuleName Run Invoke-MutTests -Times 2 -Exactly
+        @($script:Calls | ForEach-Object { $_.Coverage }) | Should -Be @($true, $true)
+        $result.Repeats | Should -Be 1
+        @($result.FlakyTests).Count | Should -Be 0
+        (Get-Content -Raw -Path (Join-Path $script:RunDir 'baseline.json') | ConvertFrom-Json).repeats | Should -Be 1
+    }
+
+    It 'a config without baseline.repeats (hand-built) runs one pass' {
+        $script:Config.PSObject.Properties.Remove('baseline')
+        $script:PassScript[50300] = @(, @(, @('CU A', 'T1', 'Pass', $null)))
+        $script:PassScript[50301] = @(, @(, @('CU B', 'T2', 'Pass', $null)))
+
+        Publish-MutBaseline -Config $script:Config -Env $script:EnvHandle -RunDir $script:RunDir | Out-Null
+
+        Should -Invoke -ModuleName Run Invoke-MutTests -Times 2 -Exactly
+    }
+
+    It 'the done-marker skip and Get-MutSkippedBaselineResult read repeats and flakyTests back; an older baseline.json means repeats 1 and none' {
+        $script:PassScript[50300] = @(@(, @('CU A', 'Alpha', 'Fail', 'b')), @(, @('CU A', 'Alpha', 'Pass', $null)), @(, @('CU A', 'Alpha', 'Pass', $null)))
+        $script:PassScript[50301] = @(@(, @('CU B', 'T2', 'Pass', $null)), @(, @('CU B', 'T2', 'Pass', $null)), @(, @('CU B', 'T2', 'Pass', $null)))
+        Publish-MutBaseline -Config $script:Config -Env $script:EnvHandle -RunDir $script:RunDir -WarningAction SilentlyContinue | Out-Null
+
+        # Second call: the marker is present, nothing runs again.
+        $again = Publish-MutBaseline -Config $script:Config -Env $script:EnvHandle -RunDir $script:RunDir
+        Should -Invoke -ModuleName Run Invoke-MutTests -Times 6 -Exactly
+        $again.Repeats | Should -Be 3
+        @($again.FlakyTests).Count | Should -Be 1
+        $again.FlakyTests[0].test | Should -Be 'CU A:Alpha'
+        $again.FlakyTests[0].failed | Should -Be 1
+
+        $skipped = InModuleScope Run -Parameters @{ RunDir = $script:RunDir } { param($RunDir) Get-MutSkippedBaselineResult -RunDir $RunDir }
+        $skipped.Repeats | Should -Be 3
+        @($skipped.FlakyTests).Count | Should -Be 1
+        $skipped.FlakyTests[0].passed | Should -Be 2
+
+        $old = Join-Path $TestDrive "old-$([guid]::NewGuid().ToString('N'))"
+        New-Item -ItemType Directory -Path $old -Force | Out-Null
+        ([pscustomobject]@{ tests = @(); durationsByCodeunit = @{ '50300' = 1000 } } | ConvertTo-Json -Depth 5) | Set-Content -Path (Join-Path $old 'baseline.json') -Encoding UTF8
+        $oldResult = InModuleScope Run -Parameters @{ RunDir = $old } { param($RunDir) Get-MutSkippedBaselineResult -RunDir $RunDir }
+        $oldResult.Repeats | Should -Be 1
+        @($oldResult.FlakyTests).Count | Should -Be 0
+    }
+}
+
+Describe 'Invoke-MutMutantLoopStep (§6.11.3)' {
+    BeforeEach {
+        $script:WorkDir = "$TestDrive/work-$([guid]::NewGuid().ToString('N'))"
+        $script:RunDir = Join-Path $script:WorkDir 'runs/1'
+        New-Item -ItemType Directory -Path $script:RunDir -Force | Out-Null
+        $script:Config = New-MutRunTestConfig -WorkDir $script:WorkDir
+    }
+
+    It 'passes the flaky tests to the loop and writes loop-results.json without FailingTests / Failures but with Unreliable' {
+        Mock -ModuleName Run Invoke-MutMutantLoop {
+            @(
+                [pscustomobject]@{ Id = 1; Status = 'Killed'; KillingTest = 'C:F'; KillingError = 'e'; Unreliable = $true; DurationMs = 5; CoveringTests = @(50300); FailingTests = @([pscustomobject]@{ Test = 'C:F'; Error = 'e' }) }
+                [pscustomobject]@{ Id = 2; Status = 'Killed'; KillingTest = 'C:G'; KillingError = 'e'; Unreliable = $false; DurationMs = 5; CoveringTests = @(50300); Failures = @([pscustomobject]@{ Test = 'C:G'; Error = 'e' }) }
+            )
+        }
+        $flaky = @([pscustomobject]@{ test = 'C:F'; passed = 2; failed = 1; error = 'e' })
+
+        $rows = Invoke-MutMutantLoopStep -Config $script:Config -Env $script:EnvHandle -Mutants @((New-MutFakeMutant -Id 1), (New-MutFakeMutant -Id 2)) `
+            -Baseline ([pscustomobject]@{ Tests = @(); DurationsByCodeunit = @{} }) -Coverage ([pscustomobject]@{ byTestCodeunit = @{} }) -References @{} `
+            -RunNo 1 -RunDir $script:RunDir -BackendModulePath 'unused.psm1' -FlakyTests $flaky
+
+        Should -Invoke -ModuleName Run Invoke-MutMutantLoop -Times 1 -Exactly -ParameterFilter { @($FlakyTests).Count -eq 1 -and $FlakyTests[0].test -eq 'C:F' }
+        # The in-memory rows keep the lists; the file does not.
+        @($rows[0].FailingTests).Count | Should -Be 1
+        $saved = Get-Content -Raw -Path (Join-Path $script:RunDir 'loop-results.json') | ConvertFrom-Json
+        $saved.Count | Should -Be 2
+        $saved[0].PSObject.Properties.Name | Should -Not -Contain 'FailingTests'
+        $saved[1].PSObject.Properties.Name | Should -Not -Contain 'Failures'
+        $saved[0].Unreliable | Should -BeTrue
+        $saved[1].Unreliable | Should -BeFalse
+        $saved[0].KillingError | Should -Be 'e'
     }
 }

@@ -515,3 +515,98 @@ Describe 'Compare-MutExpectedResults' {
         $mismatches[0].actual | Should -BeNullOrEmpty
     }
 }
+
+Describe 'Get-MutTestKey (§6.11.2)' {
+    It 'cuts the codeunit name to 30 characters from either form' {
+        $long = 'CTS-CB Test Auth Share Detection Extra'
+        $cut = $long.Substring(0, 30)
+        Get-MutTestKey "${long}:DoIt" | Should -Be "${cut}:DoIt"
+        Get-MutTestKey -Codeunit $long -Function 'DoIt' | Should -Be "${cut}:DoIt"
+        Get-MutTestKey "${cut}:DoIt" | Should -Be "${cut}:DoIt"
+        Get-MutTestKey 'Short:Fn' | Should -Be 'Short:Fn'
+    }
+
+    It 'splits at the last colon and tolerates a missing one' {
+        Get-MutTestKey 'A:B:Fn' | Should -Be 'A:B:Fn'
+        Get-MutTestKey 'NoColon' | Should -Be 'NoColon'
+        Get-MutTestKey '' | Should -Be ''
+    }
+}
+
+Describe 'strictScore, unreliableKills and the summary sections (§6.11.3)' {
+    BeforeEach {
+        $script:OutDir = "$TestDrive/results-$([guid]::NewGuid().ToString('N'))"
+        New-Item -ItemType Directory -Path $script:OutDir -Force | Out-Null
+        $script:Mutants = @(1..5 | ForEach-Object { New-MutTestMutant -Id $_ })
+    }
+
+    It 'Get-MutScore -Strict subtracts unreliableKills from the numerator and keeps the denominator' {
+        $totals = [pscustomobject]@{ total = 10; killed = 6; survived = 2; timeout = 1; compileError = 0; uncovered = 1; equivalent = 0; error = 0; pending = 0; unreliableKills = 2 }
+        Get-MutScore -Totals $totals | Should -Be 0.7
+        Get-MutScore -Totals $totals -Strict | Should -Be 0.5
+    }
+
+    It 'Get-MutScore -Strict equals the score when unreliableKills is absent or zero, and is null on the same terms' {
+        $plain = [pscustomobject]@{ total = 10; killed = 6; survived = 2; timeout = 1; compileError = 0; uncovered = 1; equivalent = 0 }
+        Get-MutScore -Totals $plain -Strict | Should -Be (Get-MutScore -Totals $plain)
+        $none = [pscustomobject]@{ total = 2; killed = 0; survived = 0; timeout = 0; compileError = 0; uncovered = 0; equivalent = 0; error = 2; pending = 0; unreliableKills = 0 }
+        $null -eq (Get-MutScore -Totals $none -Strict) | Should -BeTrue
+    }
+
+    It 'exports unreliable per row, totals.unreliableKills (not a bucket) and strictScore' {
+        $results = @(
+            [pscustomobject]@{ Id = 1; Status = 'Killed'; KillingTest = 'C:T'; DurationMs = 5; CoveringTests = @(1); KillingError = 'x'; Unreliable = $true }
+            [pscustomobject]@{ Id = 2; Status = 'Killed'; KillingTest = 'C:U'; DurationMs = 5; CoveringTests = @(1); KillingError = 'y'; Unreliable = $false }
+            [pscustomobject]@{ Id = 3; Status = 'Killed'; KillingTest = 'C:U'; DurationMs = 5; CoveringTests = @(1) }
+            [pscustomobject]@{ Id = 4; Status = 'Survived'; KillingTest = $null; DurationMs = 5; CoveringTests = @(1); Unreliable = $true }
+            [pscustomobject]@{ Id = 5; Status = 'Timeout'; KillingTest = $null; DurationMs = $null; CoveringTests = @(1) }
+        )
+        $paths = Export-MutResults -RunNo 8 -Config $script:Config -Env $script:EnvHandle -Mutants $script:Mutants -Results $results `
+            -OutDir $script:OutDir -StartedUtc (Get-Date) -FinishedUtc (Get-Date) -CompileErrorIds @()
+        $json = Get-Content -Path $paths.ResultsPath -Raw | ConvertFrom-Json
+
+        $json.totals.killed | Should -Be 3
+        $json.totals.unreliableKills | Should -Be 1
+        $json.score | Should -Be 0.8
+        $json.strictScore | Should -Be 0.6
+        ($json.mutants | Where-Object { $_.id -eq 1 }).unreliable | Should -BeTrue
+        ($json.mutants | Where-Object { $_.id -eq 2 }).unreliable | Should -BeFalse
+        ($json.mutants | Where-Object { $_.id -eq 3 }).unreliable | Should -BeFalse
+        # Only a Killed row can be unreliable.
+        ($json.mutants | Where-Object { $_.id -eq 4 }).unreliable | Should -BeFalse
+        $buckets = $json.totals.killed + $json.totals.survived + $json.totals.timeout + $json.totals.compileError + $json.totals.uncovered + $json.totals.equivalent + $json.totals.error + $json.totals.pending
+        $buckets | Should -Be $json.totals.total
+    }
+
+    It 'repeats 1 case: no unreliable rows give strictScore equal to score and no new summary sections' {
+        $results = @(
+            [pscustomobject]@{ Id = 1; Status = 'Killed'; KillingTest = 'C:T'; DurationMs = 5; CoveringTests = @(1) }
+            [pscustomobject]@{ Id = 2; Status = 'Survived'; KillingTest = $null; DurationMs = 5; CoveringTests = @(1) }
+        )
+        $paths = Export-MutResults -RunNo 9 -Config $script:Config -Env $script:EnvHandle -Mutants $script:Mutants[0..1] -Results $results `
+            -OutDir $script:OutDir -StartedUtc (Get-Date) -FinishedUtc (Get-Date) -CompileErrorIds @()
+        $json = Get-Content -Path $paths.ResultsPath -Raw | ConvertFrom-Json
+        $json.strictScore | Should -Be $json.score
+        $json.totals.unreliableKills | Should -Be 0
+        $md = Get-Content -Path $paths.SummaryPath -Raw
+        $md | Should -Not -BeLike '*## Flaky baseline tests*'
+        $md | Should -Not -BeLike '*## Unreliable kills*'
+    }
+
+    It 'the summary shows both scores, the Flaky baseline tests and the Unreliable kills tables when non-empty' {
+        $results = @(
+            [pscustomobject]@{ Id = 1; Status = 'Killed'; KillingTest = 'C:Flaky'; DurationMs = 5; CoveringTests = @(1); KillingError = 'timing off | by one'; Unreliable = $true }
+            [pscustomobject]@{ Id = 2; Status = 'Survived'; KillingTest = $null; DurationMs = 5; CoveringTests = @(1) }
+        )
+        $flaky = @([pscustomobject]@{ test = 'C:Flaky'; passed = 2; failed = 1; error = 'timing off' })
+        $paths = Export-MutResults -RunNo 10 -Config $script:Config -Env $script:EnvHandle -Mutants $script:Mutants[0..1] -Results $results `
+            -OutDir $script:OutDir -StartedUtc (Get-Date) -FinishedUtc (Get-Date) -CompileErrorIds @() -FlakyTests $flaky
+        $md = Get-Content -Path $paths.SummaryPath -Raw
+        $md | Should -BeLike '*Score: **0.5***'
+        $md | Should -BeLike '*Strict score*: **0***'
+        $md | Should -BeLike '*## Flaky baseline tests*'
+        $md | Should -BeLike '*| C:Flaky | 2 | 1 | timing off |*'
+        $md | Should -BeLike '*## Unreliable kills*'
+        $md | Should -BeLike '*| 1 | 50200 | IsLargeOrder | 4 | REL | C:Flaky | timing off \| by one |*'
+    }
+}
