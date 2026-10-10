@@ -10,6 +10,8 @@ Import-Module (Join-Path $PSScriptRoot 'Config.psm1')
 # The one genuine internal dependency is Coverage.psm1 (also backend-agnostic), for
 # Get-MutCoveringTests.
 Import-Module (Join-Path $PSScriptRoot 'Coverage.psm1') -Force
+# Format-MutKillReason (§6.11.1): the one shared kill-reason format, also used by the backend.
+Import-Module (Join-Path $PSScriptRoot 'Results.psm1')
 
 # Invoke-MutApi and Reset-MutEnvironment are backend interface functions (§6.5.3) this module
 # calls unqualified and expects the caller to have already brought into the session by
@@ -751,7 +753,9 @@ function Write-MutResultsJsonLine {
     )
 
     $jsonlPath = Join-Path $RunDir 'results.jsonl'
-    $line = ($Row | ConvertTo-Json -Depth 10 -Compress)
+    # §6.11.1: the failing-test lists (FailingTests on the cli path, Failures on the soap path) stay
+    # in memory; only KillingError reaches the file.
+    $line = ($Row | Select-Object -Property * -ExcludeProperty FailingTests, Failures | ConvertTo-Json -Depth 10 -Compress)
 
     $maxAttempts = 5
     $lastError = $null
@@ -788,8 +792,8 @@ function Get-MutRecordedResultsForRun {
         `Killed`/`Survived` are ever POSTed to the API.
 
         .OUTPUTS
-        `@{ <mutantId (int)> = [pscustomobject]@{ Status; KillingTest; DurationMs; CoveringTests;
-        Error } }`
+        `@{ <mutantId (int)> = [pscustomobject]@{ Status; KillingTest; KillingError; DurationMs;
+        CoveringTests; Error } }`
     #>
     param(
         [Parameter(Mandatory = $true)]
@@ -850,9 +854,14 @@ function Get-MutRecordedResultsForRun {
                 $coveringTests = $coveringByMutantId[$mutantId]
             }
 
+            # §6.11.1: killingError is absent on an older Mutation Core; null then.
+            $apiKillingError = $null
+            if (Test-MutHasProperty $apiRow 'killingError') { $apiKillingError = $apiRow.killingError }
+
             $recorded[$mutantId] = [pscustomobject]@{
                 Status        = $apiRow.status
                 KillingTest   = $apiRow.killingTest
+                KillingError  = $apiKillingError
                 DurationMs    = $apiRow.durationMs
                 CoveringTests = $coveringTests
                 Error         = $null
@@ -881,9 +890,13 @@ function Get-MutRecordedResultsForRun {
                 $errorText = $parsed.Error
             }
 
+            $jsonKillingError = $null
+            if (Test-MutHasProperty $parsed 'KillingError') { $jsonKillingError = $parsed.KillingError }
+
             $recorded[[int]$parsed.Id] = [pscustomobject]@{
                 Status        = $parsed.Status
                 KillingTest   = $parsed.KillingTest
+                KillingError  = $jsonKillingError
                 DurationMs    = $parsed.DurationMs
                 CoveringTests = @($parsed.CoveringTests)
                 Error         = $errorText
@@ -935,24 +948,29 @@ function Add-MutSoapRow {
 }
 
 function New-MutSoapRow {
-    <# Private. A results row in the cli loop's shape (Id, Status, KillingTest, DurationMs, CoveringTests; Error on Error rows). #>
+    <# Private. A results row in the cli loop's shape (Id, Status, KillingTest, KillingError, DurationMs, CoveringTests; Error on Error rows), plus the in-memory Failures list (§6.11.1). #>
     param(
         [Parameter(Mandatory = $true)]
         $Item,
         [Parameter(Mandatory = $true)]
         [string]$Status,
         $KillingTest = $null,
+        $KillingError = $null,
+        $Failures = @(),
         $DurationMs = $null,
         [string]$ErrorText = $null
     )
 
     if (($null -ne $KillingTest) -and [string]::IsNullOrEmpty([string]$KillingTest)) { $KillingTest = $null }
+    if (($null -ne $KillingError) -and [string]::IsNullOrEmpty([string]$KillingError)) { $KillingError = $null }
     $row = [pscustomobject]@{
         Id            = $Item.Mutant.id
         Status        = $Status
         KillingTest   = $KillingTest
+        KillingError  = $KillingError
         DurationMs    = $DurationMs
         CoveringTests = @($Item.Covering)
+        Failures      = @($Failures)
     }
     if ($Status -eq 'Error') {
         $row | Add-Member -NotePropertyName 'Error' -NotePropertyValue $ErrorText
@@ -1264,6 +1282,20 @@ function Get-MutSoapExistingRow {
     return $null
 }
 
+function New-MutSoapRowFromResult {
+    <# Private. New-MutSoapRow for a Killed/Survived batch result; KillingError and Failures are optional on it (an older Mutation Core sends neither). #>
+    param(
+        [Parameter(Mandatory = $true)] $Item,
+        [Parameter(Mandatory = $true)] $Result
+    )
+
+    $killingError = $null
+    if (Test-MutHasProperty $Result 'KillingError') { $killingError = $Result.KillingError }
+    $failures = @()
+    if (Test-MutHasProperty $Result 'Failures') { $failures = @($Result.Failures) }
+    return New-MutSoapRow -Item $Item -Status $Result.Status -KillingTest $Result.KillingTest -KillingError $killingError -Failures $failures -DurationMs $Result.DurationMs
+}
+
 function Add-MutSoapApiRow {
     <# Private. Records an existing API row (written by the runner or the hook) as the mutant's result. #>
     param(
@@ -1276,7 +1308,9 @@ function Add-MutSoapApiRow {
     if (Test-MutHasProperty $ApiRow 'killingTest') { $killing = $ApiRow.killingTest }
     $duration = $null
     if (Test-MutHasProperty $ApiRow 'durationMs') { $duration = $ApiRow.durationMs }
-    Add-MutSoapRow -Ctx $Ctx -Row (New-MutSoapRow -Item $Item -Status ([string]$ApiRow.status) -KillingTest $killing -DurationMs $duration)
+    $killingError = $null
+    if (Test-MutHasProperty $ApiRow 'killingError') { $killingError = $ApiRow.killingError }
+    Add-MutSoapRow -Ctx $Ctx -Row (New-MutSoapRow -Item $Item -Status ([string]$ApiRow.status) -KillingTest $killing -KillingError $killingError -DurationMs $duration)
 }
 
 function Get-MutSoapResultFor {
@@ -1331,7 +1365,7 @@ function Resolve-MutSoapHang {
     $res = $call.Res
     $r = Get-MutSoapResultFor -Res $res -MutantId $id
     if (($null -ne $r) -and ($r.Status -eq 'Killed' -or $r.Status -eq 'Survived')) {
-        Add-MutSoapRow -Ctx $Ctx -Row (New-MutSoapRow -Item $Item -Status $r.Status -KillingTest $r.KillingTest -DurationMs $r.DurationMs)
+        Add-MutSoapRow -Ctx $Ctx -Row (New-MutSoapRowFromResult -Item $Item -Result $r)
         return
     }
     if (Test-MutSoapIsId $res.HungMutantId $id) {
@@ -1384,7 +1418,7 @@ function Resolve-MutSoapAlone {
     $res = $call.Res
     $r = Get-MutSoapResultFor -Res $res -MutantId $id
     if (($null -ne $r) -and ($r.Status -eq 'Killed' -or $r.Status -eq 'Survived')) {
-        Add-MutSoapRow -Ctx $Ctx -Row (New-MutSoapRow -Item $Item -Status $r.Status -KillingTest $r.KillingTest -DurationMs $r.DurationMs)
+        Add-MutSoapRow -Ctx $Ctx -Row (New-MutSoapRowFromResult -Item $Item -Result $r)
         return
     }
     if (Test-MutSoapIsId $res.HungMutantId $id) {
@@ -1517,7 +1551,7 @@ function Invoke-MutSoapProcessBatch {
 
         if ($afterCulprit) {
             if ($hasRow) {
-                Add-MutSoapRow -Ctx $Ctx -Row (New-MutSoapRow -Item $item -Status $r.Status -KillingTest $r.KillingTest -DurationMs $r.DurationMs)
+                Add-MutSoapRow -Ctx $Ctx -Row (New-MutSoapRowFromResult -Item $item -Result $r)
             }
             else {
                 $remainder += $item
@@ -1540,7 +1574,7 @@ function Invoke-MutSoapProcessBatch {
         }
 
         if ($hasRow) {
-            Add-MutSoapRow -Ctx $Ctx -Row (New-MutSoapRow -Item $item -Status $r.Status -KillingTest $r.KillingTest -DurationMs $r.DurationMs)
+            Add-MutSoapRow -Ctx $Ctx -Row (New-MutSoapRowFromResult -Item $item -Result $r)
             continue
         }
 
@@ -1632,6 +1666,7 @@ function Invoke-MutSoapMutantLoop {
                     Id            = $mutant.id
                     Status        = $prior.Status
                     KillingTest   = $prior.KillingTest
+                    KillingError  = $prior.KillingError
                     DurationMs    = $prior.DurationMs
                     CoveringTests = @($prior.CoveringTests)
                 }
@@ -1855,6 +1890,7 @@ function Invoke-MutMutantLoop {
                 Id            = $mutant.id
                 Status        = $prior.Status
                 KillingTest   = $prior.KillingTest
+                KillingError  = $prior.KillingError
                 DurationMs    = $prior.DurationMs
                 CoveringTests = @($prior.CoveringTests)
             }
@@ -1888,6 +1924,7 @@ function Invoke-MutMutantLoop {
                         Id            = $mutant.id
                         Status        = 'Uncovered'
                         KillingTest   = $null
+                        KillingError  = $null
                         DurationMs    = $null
                         CoveringTests = @($covering)
                     }
@@ -1966,6 +2003,8 @@ function Invoke-MutMutantLoop {
 
                 $status = $null
                 $killingTest = $null
+                $killingError = $null
+                $failingTests = @()
                 $durationMs = $null
                 $errorMessage = $null
 
@@ -2045,9 +2084,16 @@ function Invoke-MutMutantLoop {
                     elseif ($result.Failed -gt 0) {
                         $status = 'Killed'
 
-                        $firstFail = @($result.Tests) | Where-Object { $_.Result -eq 'Fail' } | Select-Object -First 1
-                        if ($firstFail) {
-                            $killingTest = '{0}:{1}' -f $firstFail.Codeunit, $firstFail.Function
+                        # §6.11.1: every failing test stays on the row, its error in the shared reason
+                        # format; the killing test is still the first one.
+                        $failingTests = @(@($result.Tests) | Where-Object { $_.Result -eq 'Fail' } | ForEach-Object {
+                                $testError = $null
+                                if (Test-MutHasProperty $_ 'Error') { $testError = Format-MutKillReason -Text $_.Error }
+                                [pscustomobject]@{ Test = ('{0}:{1}' -f $_.Codeunit, $_.Function); Error = $testError }
+                            })
+                        if ($failingTests.Count -gt 0) {
+                            $killingTest = $failingTests[0].Test
+                            $killingError = $failingTests[0].Error
                         }
 
                         $filterPath = 'mutantResults?$filter=runNo eq {0} and mutantId eq {1}' -f $RunNo, $mutant.id
@@ -2059,13 +2105,16 @@ function Invoke-MutMutantLoop {
                         $hasExistingKilledRow = ($existing) -and (@($existing.value).Count -gt 0)
 
                         if (-not $hasExistingKilledRow) {
-                            Invoke-MutApi -Env $Env -Method 'POST' -Path 'mutantResults' -Body @{
+                            $killedBody = @{
                                 runNo       = $RunNo
                                 mutantId    = $mutant.id
                                 status      = 'Killed'
                                 killingTest = $killingTest
                                 durationMs  = $durationMs
-                            } | Out-Null
+                            }
+                            # §6.11.1: only when there is a reason, so an empty message sends nothing extra.
+                            if ($null -ne $killingError) { $killedBody.killingError = $killingError }
+                            Invoke-MutApi -Env $Env -Method 'POST' -Path 'mutantResults' -Body $killedBody | Out-Null
                         }
                     }
                     else {
@@ -2118,8 +2167,10 @@ function Invoke-MutMutantLoop {
                     Id            = $mutant.id
                     Status        = $status
                     KillingTest   = $killingTest
+                    KillingError  = $killingError
                     DurationMs    = $durationMs
                     CoveringTests = @($covering)
+                    FailingTests  = @($failingTests)
                 }
                 if ($status -eq 'Error') {
                     $row | Add-Member -NotePropertyName 'Error' -NotePropertyValue $errorMessage
@@ -2187,6 +2238,7 @@ function Invoke-MutMutantLoop {
                     Id            = $mutant.id
                     Status        = 'Error'
                     KillingTest   = $null
+                    KillingError  = $null
                     DurationMs    = $null
                     CoveringTests = @($covering)
                 }

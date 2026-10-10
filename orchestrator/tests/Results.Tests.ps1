@@ -370,6 +370,57 @@ Describe 'Export-MutResults' {
     }
 }
 
+Describe 'Format-MutKillReason' {
+    It 'takes the first line (CR or LF), trims it and cuts it to 250 characters' {
+        Format-MutKillReason -Text "  Assert.AreEqual failed  `r`nsecond line" | Should -Be 'Assert.AreEqual failed'
+        Format-MutKillReason -Text "first`nsecond" | Should -Be 'first'
+        Format-MutKillReason -Text "first`rsecond" | Should -Be 'first'
+        (Format-MutKillReason -Text ('x' * 400)).Length | Should -Be 250
+    }
+
+    It 'returns $null for null, empty or whitespace-only text' {
+        Format-MutKillReason -Text $null | Should -BeNullOrEmpty
+        Format-MutKillReason -Text '' | Should -BeNullOrEmpty
+        Format-MutKillReason -Text "   `r`n  " | Should -BeNullOrEmpty
+        $null -eq (Format-MutKillReason -Text '') | Should -BeTrue
+    }
+
+    It 'skips leading blank lines and whitespace to the first non-blank line' {
+        Format-MutKillReason -Text "`nabc" | Should -Be 'abc'
+        Format-MutKillReason -Text "   `r`nabc" | Should -Be 'abc'
+        Format-MutKillReason -Text "First`rSecond" | Should -Be 'First'
+        Format-MutKillReason -Text '   ' | Should -BeNullOrEmpty
+    }
+}
+
+Describe 'Export-MutResults reason (§6.11.1)' {
+    BeforeEach {
+        $script:OutDir = "$TestDrive/results-$([guid]::NewGuid().ToString('N'))"
+        New-Item -ItemType Directory -Path $script:OutDir -Force | Out-Null
+    }
+
+    It 'sets reason from KillingError for Killed rows, from Error for Error rows, and null otherwise (also when KillingError is absent)' {
+        $mutants = @(1..5 | ForEach-Object { New-MutTestMutant -Id $_ })
+        $results = @(
+            [pscustomobject]@{ Id = 1; Status = 'Killed'; KillingTest = 'C:T'; DurationMs = 5; CoveringTests = @(95155); KillingError = 'Expected 3 but was 4' }
+            [pscustomobject]@{ Id = 2; Status = 'Killed'; KillingTest = 'C:T'; DurationMs = 5; CoveringTests = @(95155) }
+            [pscustomobject]@{ Id = 3; Status = 'Error'; KillingTest = $null; DurationMs = $null; CoveringTests = @(95155); Error = 'boom' }
+            [pscustomobject]@{ Id = 4; Status = 'Survived'; KillingTest = $null; DurationMs = 9; CoveringTests = @(95155); KillingError = $null }
+            [pscustomobject]@{ Id = 5; Status = 'Killed'; KillingTest = 'C:T'; DurationMs = 5; CoveringTests = @(95155); KillingError = $null }
+        )
+
+        $paths = Export-MutResults -RunNo 7 -Config $script:Config -Env $script:EnvHandle -Mutants $mutants -Results $results `
+            -OutDir $script:OutDir -StartedUtc (Get-Date) -FinishedUtc (Get-Date) -CompileErrorIds @()
+        $json = Get-Content -Path $paths.ResultsPath -Raw | ConvertFrom-Json
+
+        ($json.mutants | Where-Object { $_.id -eq 1 }).reason | Should -Be 'Expected 3 but was 4'
+        ($json.mutants | Where-Object { $_.id -eq 2 }).reason | Should -BeNullOrEmpty
+        ($json.mutants | Where-Object { $_.id -eq 3 }).reason | Should -Be 'boom'
+        ($json.mutants | Where-Object { $_.id -eq 4 }).reason | Should -BeNullOrEmpty
+        ($json.mutants | Where-Object { $_.id -eq 5 }).reason | Should -BeNullOrEmpty
+    }
+}
+
 Describe 'Compare-MutExpectedResults' {
     BeforeEach {
         $script:Dir = "$TestDrive/compare-$([guid]::NewGuid().ToString('N'))"

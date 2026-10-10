@@ -8,6 +8,8 @@ $script:RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot '../..')).Path
 # is the only place that wires it to the real CLI's coverage output.
 Import-Module (Join-Path $PSScriptRoot '../lib/Coverage.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot '../lib/Config.psm1')
+# Format-MutKillReason (§6.11.1): the kill-reason format shared with the loop.
+Import-Module (Join-Path $PSScriptRoot '../lib/Results.psm1')
 
 # Poll loop tuning for env get / env stop-start status polling.
 $script:PollIntervalSec = 10
@@ -2635,13 +2637,25 @@ function ConvertTo-MutBatchResult {
         if (Test-MutHasProperty $Entry $name) { return $Entry.$name }
         return $default
     }
+    # §6.11.1: killingError and failures are absent on an older Mutation Core (null / empty then).
+    # Both are put through the shared reason format, which is a no-op on text the runner already shaped.
+    $failures = @()
+    foreach ($failure in @(& $get 'failures' @())) {
+        $failureTest = ''
+        if (Test-MutHasProperty $failure 'test') { $failureTest = [string]$failure.test }
+        $failureError = $null
+        if (Test-MutHasProperty $failure 'error') { $failureError = Format-MutKillReason -Text $failure.error }
+        $failures += [pscustomobject]@{ Test = $failureTest; Error = $failureError }
+    }
     return [pscustomobject]@{
-        MutantId    = [int](& $get 'mutantId' 0)
-        Status      = [string](& $get 'status' '')
-        KillingTest = [string](& $get 'killingTest' '')
-        DurationMs  = [int](& $get 'durationMs' 0)
-        Passed      = & $get 'passed' $null
-        Failed      = & $get 'failed' $null
+        MutantId     = [int](& $get 'mutantId' 0)
+        Status       = [string](& $get 'status' '')
+        KillingTest  = [string](& $get 'killingTest' '')
+        KillingError = Format-MutKillReason -Text (& $get 'killingError' $null)
+        Failures     = $failures
+        DurationMs   = [int](& $get 'durationMs' 0)
+        Passed       = & $get 'passed' $null
+        Failed       = & $get 'failed' $null
     }
 }
 
@@ -2675,7 +2689,7 @@ function Invoke-MutMutantBatch {
         value arrived deletes its row (DeleteRunnerState, best effort).
 
         .OUTPUTS
-        @{ Results = @( @{ MutantId; Status; KillingTest; DurationMs; Passed; Failed } );
+        @{ Results = @( @{ MutantId; Status; KillingTest; KillingError; Failures; DurationMs; Passed; Failed } );
         HungMutantId; FaultMutantId; Fault; Stopped } (ids and Fault are $null when not
         applicable; Stopped is $true when a stop was needed and confirmed).
     #>

@@ -35,6 +35,34 @@ function Test-MutHasProperty {
     return $null -ne $Object.PSObject.Properties[$Name]
 }
 
+function Format-MutKillReason {
+    <#
+        .SYNOPSIS
+        The §6.11.1 kill-reason format, the PowerShell twin of the Mutation Core's FormatKillReason:
+        the first non-blank line of the text (leading CR, LF and whitespace are skipped, then CR or LF ends it), trimmed, cut to 250 characters. $null,
+        empty or whitespace-only text gives $null. Shared by the loop and the backend so both
+        shape a test's error message the same way.
+    #>
+    param(
+        [AllowNull()]
+        [AllowEmptyString()]
+        $Text
+    )
+
+    if ($null -eq $Text) {
+        return $null
+    }
+    # Leading CR, LF and whitespace are skipped, so the first non-blank line is used.
+    $firstLine = (([string]$Text).TrimStart() -split '[\r\n]', 2)[0].Trim()
+    if ($firstLine.Length -eq 0) {
+        return $null
+    }
+    if ($firstLine.Length -gt 250) {
+        $firstLine = $firstLine.Substring(0, 250)
+    }
+    return $firstLine
+}
+
 function Get-MutScore {
     <#
         .SYNOPSIS
@@ -142,9 +170,13 @@ function Get-MutMergedMutantRows {
             # failed. Invoke-MutMutantLoop already attaches an `Error` property (the exception
             # message) to a row with Status 'Error' (MutantLoop.psm1); this was previously
             # discarded here before it could reach either results/<RunNo>.json or the summary.
+            # §6.11.1: a Killed row's reason is its KillingError (the first killing test's message).
             $reason = $null
-            if (Test-MutHasProperty $result 'Error') {
+            if (($status -eq 'Error') -and (Test-MutHasProperty $result 'Error')) {
                 $reason = $result.Error
+            }
+            elseif (($status -eq 'Killed') -and (Test-MutHasProperty $result 'KillingError')) {
+                $reason = $result.KillingError
             }
         }
         else {
@@ -597,4 +629,4 @@ function Compare-MutExpectedResults {
     return , $mismatches
 }
 
-Export-ModuleMember -Function Get-MutScore, Export-MutResults, Compare-MutExpectedResults
+Export-ModuleMember -Function Format-MutKillReason, Get-MutScore, Export-MutResults, Compare-MutExpectedResults

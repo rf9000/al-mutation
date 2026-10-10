@@ -756,6 +756,32 @@ Describe 'Invoke-MutMutantBatch' {
         $script:runspaceStopped | Should -Be 1
     }
 
+    It 'reads killingError and failures from the RunMutants entries (§6.11.1); entries of an older Mutation Core give null / empty' {
+        $script:stateFn = { param($poll, $batchId) New-RunnerStateJson -Rows @((New-StateRow -BatchId $batchId -MutantId 0 -Done 2 -Finished $true)) }
+        $script:doneAtPoll = 1
+        $script:callResult = New-SoapResult -Value (@(
+                [pscustomobject]@{ mutantId = 11; status = 'Killed'; killingTest = 'CU1:TestA'; killingError = "  Expected 3 but was 4`r`nmore"; failures = @(
+                        [pscustomobject]@{ test = 'CU1:TestA'; error = 'Expected 3 but was 4' }
+                        [pscustomobject]@{ test = 'CU1:TestB'; error = '' }
+                    ); durationMs = 120; passed = 2; failed = 2 }
+                [pscustomobject]@{ mutantId = 12; status = 'Killed'; killingTest = 'CU1:TestA'; killingError = ''; failures = @(); durationMs = 90; passed = 3; failed = 1 }
+                [pscustomobject]@{ mutantId = 13; status = 'Survived'; killingTest = ''; durationMs = 90; passed = 3; failed = 0 }
+            ) | ConvertTo-Json -Depth 5 -Compress)
+
+        $r = Invoke-MutMutantBatch -Env $envHandle -CodeunitIds 95155 -MutantIds 11, 12, 13 -RunNo 5 -MutantBudgetSec 30 @fast
+
+        $r.Results[0].KillingError | Should -Be 'Expected 3 but was 4'
+        @($r.Results[0].Failures).Count | Should -Be 2
+        $r.Results[0].Failures[0].Test | Should -Be 'CU1:TestA'
+        $r.Results[0].Failures[0].Error | Should -Be 'Expected 3 but was 4'
+        $r.Results[0].Failures[1].Test | Should -Be 'CU1:TestB'
+        $r.Results[0].Failures[1].Error | Should -BeNullOrEmpty
+        $r.Results[1].KillingError | Should -BeNullOrEmpty
+        @($r.Results[1].Failures).Count | Should -Be 0
+        $r.Results[2].KillingError | Should -BeNullOrEmpty
+        @($r.Results[2].Failures).Count | Should -Be 0
+    }
+
     It 'a single-entry RunMutants result is still an array' {
         $script:stateFn = { param($poll, $batchId) New-RunnerStateJson -Rows @((New-StateRow -BatchId $batchId -Finished $true)) }
         $script:doneAtPoll = 1

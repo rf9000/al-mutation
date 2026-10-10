@@ -209,6 +209,100 @@ Describe 'Invoke-MutMutantLoop' {
         } -Times 1
     }
 
+    It 'keeps the failing tests on the row and carries the first failure as KillingError (POST body and results.jsonl, §6.11.1)' {
+        Mock -ModuleName MutantLoop Invoke-MutTestsWithBudget {
+            return [pscustomobject]@{
+                TimedOut     = $false
+                ErrorMessage = $null
+                Result       = [pscustomobject]@{
+                    Passed     = 1
+                    Failed     = 2
+                    DurationMs = 100
+                    Tests      = @(
+                        [pscustomobject]@{ Codeunit = 'C1'; Function = 'TestA'; Result = 'Fail'; DurationMs = 5; Error = "  Expected 3 but was 4  `r`nCall stack line" }
+                        [pscustomobject]@{ Codeunit = 'C1'; Function = 'TestB'; Result = 'Pass'; DurationMs = 5; Error = $null }
+                        [pscustomobject]@{ Codeunit = 'C2'; Function = 'TestC'; Result = 'Fail'; DurationMs = 5; Error = $null }
+                    )
+                }
+            }
+        }
+
+        $mutant = [pscustomobject]@{ id = 7; objectId = 50000; line = 4 }
+        $results = Invoke-MutMutantLoop -Config $script:Config -Env $script:EnvHandle -Mutants @($mutant) `
+            -Baseline $script:Baseline -Coverage $script:Coverage -References $script:References `
+            -RunNo 3 -RunDir $script:RunDir -BackendModulePath 'unused.psm1'
+
+        $results[0].KillingTest | Should -Be 'C1:TestA'
+        $results[0].KillingError | Should -Be 'Expected 3 but was 4'
+        @($results[0].FailingTests).Count | Should -Be 2
+        $results[0].FailingTests[0].Test | Should -Be 'C1:TestA'
+        $results[0].FailingTests[0].Error | Should -Be 'Expected 3 but was 4'
+        $results[0].FailingTests[1].Test | Should -Be 'C2:TestC'
+        $results[0].FailingTests[1].Error | Should -BeNullOrEmpty
+
+        Should -Invoke -ModuleName MutantLoop Invoke-MutApi -ParameterFilter {
+            $Method -eq 'POST' -and $Body.status -eq 'Killed' -and $Body.killingError -eq 'Expected 3 but was 4'
+        } -Times 1
+
+        $line = Get-Content -Path (Join-Path $script:RunDir 'results.jsonl') | ForEach-Object { $_ | ConvertFrom-Json }
+        $line.KillingError | Should -Be 'Expected 3 but was 4'
+        $line.PSObject.Properties.Name | Should -Not -Contain 'FailingTests'
+    }
+
+    It 'gives a Survived row a null KillingError (§6.11.1)' {
+        Mock -ModuleName MutantLoop Invoke-MutTestsWithBudget {
+            [pscustomobject]@{
+                TimedOut = $false; ErrorMessage = $null
+                Result   = [pscustomobject]@{
+                    Passed = 1; Failed = 0; DurationMs = 50
+                    Tests  = @([pscustomobject]@{ Codeunit = 'C'; Function = 'F'; Result = 'Pass'; DurationMs = 50; Error = $null })
+                }
+            }
+        }
+        $mutant = [pscustomobject]@{ id = 7; objectId = 50000; line = 4 }
+        $results = Invoke-MutMutantLoop -Config $script:Config -Env $script:EnvHandle -Mutants @($mutant) `
+            -Baseline $script:Baseline -Coverage $script:Coverage -References $script:References `
+            -RunNo 3 -RunDir $script:RunDir -BackendModulePath 'unused.psm1'
+        $results[0].Status | Should -Be 'Survived'
+        $results[0].KillingError | Should -BeNullOrEmpty
+    }
+
+    It 'resumes KillingError from the API rows (killingError); a missing value gives null (§6.11.1)' {
+        Mock -ModuleName MutantLoop Invoke-MutApi {
+            param($Env, $Method, $Path, $Body)
+            if ($Method -eq 'GET' -and $Path -notlike '*mutantId*') {
+                return [pscustomobject]@{
+                    value = @(
+                        [pscustomobject]@{ mutantId = 1; status = 'Killed'; killingTest = 'C:F'; killingError = 'from api'; durationMs = 1 }
+                        [pscustomobject]@{ mutantId = 2; status = 'Killed'; killingTest = 'C:F'; durationMs = 2 }
+                    )
+                }
+            }
+            if ($Method -eq 'GET') { return [pscustomobject]@{ value = @() } }
+            return $null
+        }
+        $mutants = @(1, 2 | ForEach-Object { [pscustomobject]@{ id = $_; objectId = 50000; line = 4 } })
+        $results = Invoke-MutMutantLoop -Config $script:Config -Env $script:EnvHandle -Mutants $mutants `
+            -Baseline $script:Baseline -Coverage $script:Coverage -References $script:References `
+            -RunNo 20 -RunDir $script:RunDir -BackendModulePath 'unused.psm1'
+        $results[0].KillingError | Should -Be 'from api'
+        $results[1].KillingError | Should -BeNullOrEmpty
+    }
+
+    It 'resumes KillingError from results.jsonl when the API holds no rows; an older line without it gives null (§6.11.1)' {
+        $jsonl = Join-Path $script:RunDir 'results.jsonl'
+        @(
+            '{"Id":1,"Status":"Killed","KillingTest":"C:F","DurationMs":1,"CoveringTests":[95155],"KillingError":"from jsonl"}'
+            '{"Id":2,"Status":"Killed","KillingTest":"C:F","DurationMs":2,"CoveringTests":[95155]}'
+        ) | Set-Content -Path $jsonl -Encoding UTF8
+        $mutants = @(1, 2 | ForEach-Object { [pscustomobject]@{ id = $_; objectId = 50000; line = 4 } })
+        $results = Invoke-MutMutantLoop -Config $script:Config -Env $script:EnvHandle -Mutants $mutants `
+            -Baseline $script:Baseline -Coverage $script:Coverage -References $script:References `
+            -RunNo 20 -RunDir $script:RunDir -BackendModulePath 'unused.psm1'
+        $results[0].KillingError | Should -Be 'from jsonl'
+        $results[1].KillingError | Should -BeNullOrEmpty
+    }
+
     It 'does not POST Killed when a mutantResults row already exists for (runNo, mutantId)' {
         # M3: the upfront resume-fetch (GET filtered to runNo only, no mutantId) must return
         # empty here so the mutant is NOT skipped outright -- this test is specifically about the
@@ -2416,6 +2510,42 @@ Describe 'Invoke-MutMutantLoop (testTransport soap)' {
         $caught | Should -Not -BeNullOrEmpty
         $caught.Exception.Message | Should -BeLike '*5 consecutive*Error*'
         @($caught.TargetObject).Count | Should -Be 5
+    }
+
+    It 'carries KillingError and Failures from a batch entry onto the row (jsonl: KillingError only), and null / empty for a Survived one (§6.11.1)' {
+        $global:SoapScript.Add({ param($ids) New-MutBatchRes -Results @(
+                    ([pscustomobject]@{ MutantId = 1; Status = 'Killed'; KillingTest = 'T:F'; KillingError = 'Expected 1'; Failures = @([pscustomobject]@{ Test = 'T:F'; Error = 'Expected 1' }, [pscustomobject]@{ Test = 'T:G'; Error = $null }); DurationMs = 4; Passed = 0; Failed = 2 })
+                    (New-MutBatchEntry -Id 2 -Status 'Survived'))
+            }) | Out-Null
+
+        $rows = Invoke-SoapLoop -Mutants (New-SoapMutants -Ids 1, 2)
+
+        $rows[0].KillingError | Should -Be 'Expected 1'
+        @($rows[0].Failures).Count | Should -Be 2
+        $rows[0].Failures[1].Test | Should -Be 'T:G'
+        $rows[1].KillingError | Should -BeNullOrEmpty
+        @($rows[1].Failures).Count | Should -Be 0
+
+        $lines = @(Get-Content -Path (Join-Path $script:RunDir 'results.jsonl') | ForEach-Object { $_ | ConvertFrom-Json })
+        $lines[0].KillingError | Should -Be 'Expected 1'
+        $lines[0].PSObject.Properties.Name | Should -Not -Contain 'Failures'
+    }
+
+    It 'takes KillingError from an existing API row that stands (hook-written row)' {
+        $global:SoapExisting[2] = [pscustomobject]@{ status = 'Killed'; killingTest = 'T:H'; killingError = 'hook text'; durationMs = 55 }
+        $global:SoapScript.Add({ param($ids) New-MutBatchRes -Results @((New-MutBatchEntry -Id 1)) -Hung 2 }) | Out-Null
+        $rows = Invoke-SoapLoop -Mutants (New-SoapMutants -Ids 1, 2)
+        $rows[1].KillingError | Should -Be 'hook text'
+    }
+
+    It 'resume: rows rebuilt from the API carry killingError, a missing one gives null (§6.11.1)' {
+        $global:SoapResumeRows = @(
+            [pscustomobject]@{ mutantId = 1; status = 'Killed'; killingTest = 'T:A'; killingError = 'api reason'; durationMs = 3 }
+            [pscustomobject]@{ mutantId = 2; status = 'Killed'; killingTest = 'T:A'; durationMs = 3 }
+        )
+        $rows = Invoke-SoapLoop -Mutants (New-SoapMutants -Ids 1, 2)
+        $rows[0].KillingError | Should -Be 'api reason'
+        $rows[1].KillingError | Should -BeNullOrEmpty
     }
 
     It 'resume: skips recorded mutants (no batch for them) and still returns their rows' {
