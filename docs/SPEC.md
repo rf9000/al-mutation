@@ -286,7 +286,7 @@ A `SubType = TestRunner` codeunit that loops over mutants in one session would r
 |---|---|---|---|
 | 50000 "MUT Mutants API" | `mutant` / `mutants` | MUT Mutant | `id`, `stableKey`, `objectType`, `objectId`, `procedureName`, `lineNo`, `operator`, `originalText`, `mutatedText`, `status` |
 | 50001 "MUT Mutation Runs API" | `mutationRun` / `mutationRuns` | MUT Mutation Run | `runNo`, `started`, `finished`, `commit`, `backend`, `total`, `killed`, `survived`, `score` |
-| 50002 "MUT Mutant Results API" | `mutantResult` / `mutantResults` | MUT Mutant Result | `runNo`, `mutantId`, `status`, `durationMs`, `killingTest`, `recordedAt` |
+| 50002 "MUT Mutant Results API" | `mutantResult` / `mutantResults` | MUT Mutant Result | `runNo`, `mutantId`, `status`, `durationMs`, `killingTest`, `recordedAt`, `killingError` (§6.11.1) |
 | 50003 "MUT Mutation Setup API" | `mutationSetup` / `mutationSetup` | MUT Mutation Setup | `primaryKey` (Integer, always 0, `ODataKeyFields`), `activeMutantId`, `currentRunNo` |
 | 50004 "MUT Sessions API" | `session` / `sessions` | Active Session (system table 2000000110) | `sessionId`, `userId`, `clientType`, `loginDateTime`, `serverInstanceId`, `isCurrentSession` (computed); read-only; bound action `Microsoft.NAV.stop` calls `StopSession` (refuses the calling session). Run 11, 2026-10-01: lets the orchestrator stop a runaway test session instead of restarting the environment. `Active Session` keeps rows for sessions killed by a container restart; such a stale row accepts `stop` and never disappears. |
 
@@ -1103,7 +1103,7 @@ verification stay on `continia test run` (§6.5.3), because they run once per ru
 | S6 | A timed-out SOAP call returns nothing to the client. In one probe the connection dropped by itself after 276 s; nothing may depend on that. | Each mutant's result is committed by the runner as it finishes, so a timed-out batch loses at most the hung mutant. |
 | S7 | `/WS/<company>/Codeunit/<service>` uses the same Basic credentials and base URL as the API (`Get-MutApiBase`). The company **name** goes in the path. | The backend resolves the company name once and caches it. |
 
-#### 6.10.2 Mutation Core additions (`core-app/`, version `1.1.1.0`)
+#### 6.10.2 Mutation Core additions (`core-app/`, version `1.1.1.0`; `1.2.0.0` since §6.11.1)
 The configs' `coreApp.version` and §6.0.1 become `1.1.1.0` (`1.1.0.0` added the runner; `1.1.1.0` added the
 `Stop Requested` guard below). The schemata AUT's dependency on Mutation Core `1.0.0.0` is a minimum version, so
 it stays valid. New objects:
@@ -1249,8 +1249,10 @@ moment is scored as killed. The run could not show this, because `reason` was `n
 This section adds two things: the failure message of each kill, and a repeated baseline that flags unstable tests.
 
 #### 6.11.1 Kill reason
-- **Format.** The kill reason is the first line of the first killing test's error message (split on CR or LF),
-  trimmed, cut to 250 characters. An empty message gives `null`.
+- **Format.** The kill reason is the first non-blank line of the first killing test's error message (leading CR,
+  LF and whitespace are skipped, then the text is cut at the next CR or LF), trimmed, cut to 250 characters. One
+  procedure implements it, `"MUT Mut".FormatKillReason(ErrorText: Text): Text[250]`, and the orchestrator uses
+  the same rule. A message with no non-blank line gives `''` in AL and `null` in the results.
 - **Table.** `MUT Mutant Result` (§6.1.2) gains `7 "Killing Error" Text[250]`. The API page `mutantResults`
   gains `killingError`. Mutation Core becomes version `1.2.0.0` (§6.0.1 and every shipped config's
   `coreApp.version`). The field is additive, so no upgrade code is needed.
