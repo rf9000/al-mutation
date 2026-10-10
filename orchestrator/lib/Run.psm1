@@ -543,13 +543,18 @@ function Publish-MutBaseline {
     if ((Test-MutHasProperty $Config 'baseline') -and ($null -ne $Config.baseline) -and (Test-MutHasProperty $Config.baseline 'repeats')) {
         $repeats = [int]$Config.baseline.repeats
     }
-    # Per test key: how many passes it failed in, how many it passed in, and its first error.
+    # Per test key "<codeunitId>|<Function>": how many passes it failed in, how many it passed in, and
+    # its first error. The key uses the codeunit ID of the per-codeunit call, never the row's Codeunit:
+    # pass 1 (-Coverage, the --raw xUnit path) reports the ID there, passes 2..N (--json) the NAME.
     $verdictsByKey = @{}
+    $nameByCodeunit = @{}
     $recordPass = {
-        param($Tests, $PassNo)
+        param($Tests, $PassNo, $CodeunitId)
         $failedThisPass = @{}
         foreach ($test in @($Tests)) {
-            $key = Get-MutTestKey -Codeunit ([string]$test.Codeunit) -Function ([string]$test.Function)
+            $rowCodeunit = [string]$test.Codeunit
+            if (($rowCodeunit -ne '') -and ($rowCodeunit -ne "$CodeunitId")) { $nameByCodeunit["$CodeunitId"] = $rowCodeunit }
+            $key = "$CodeunitId|$([string]$test.Function)"
             if (-not $failedThisPass.ContainsKey($key)) { $failedThisPass[$key] = $false }
             if ($test.Result -eq 'Fail') {
                 if (-not $failedThisPass[$key]) {
@@ -592,13 +597,15 @@ function Publish-MutBaseline {
         $durationsByCodeunit["$codeunitId"] = $result.DurationMs
         $jobIdsByCodeunit["$codeunitId"] = @($result.JobIds)
 
-        & $recordPass $result.Tests 1
+        & $recordPass $result.Tests 1 $codeunitId
 
         if ($result.Failed -gt 0) {
             foreach ($test in @($result.Tests | Where-Object { $_.Result -eq 'Fail' })) {
                 $pass1Failures += [pscustomobject]@{
-                    Key  = (Get-MutTestKey -Codeunit ([string]$test.Codeunit) -Function ([string]$test.Function))
-                    Text = "$($test.Codeunit):$($test.Function) -- $($test.Error)"
+                    Key        = "$codeunitId|$([string]$test.Function)"
+                    CodeunitId = "$codeunitId"
+                    Function   = [string]$test.Function
+                    Error      = $test.Error
                 }
             }
         }
@@ -614,28 +621,55 @@ function Publish-MutBaseline {
                 throw "Publish-MutBaseline: the baseline test run (pass $pass of $repeats) for codeunit $codeunitId reported zero tests (Passed=0, Failed=0); aborting rather than recording an empty baseline."
             }
 
-            & $recordPass $result.Tests $pass
+            & $recordPass $result.Tests $pass $codeunitId
         }
     }
 
-    # A test failing in every pass is a real baseline failure; failing in some passes only is flaky.
+    # Display name per codeunit id: any row whose Codeunit is not the id (passes 2..N always supply the name).
+    $displayKey = {
+        param($CodeunitId, $Function, [bool]$WarnIfUnknown)
+        if ($nameByCodeunit.ContainsKey("$CodeunitId")) {
+            return (Get-MutTestKey -Codeunit $nameByCodeunit["$CodeunitId"] -Function $Function)
+        }
+        if ($WarnIfUnknown) {
+            Write-Warning "Publish-MutBaseline: no codeunit name is known for codeunit $CodeunitId; flaky test key $CodeunitId`:$Function cannot match the loop's keys."
+        }
+        return (Get-MutTestKey -Codeunit "$CodeunitId" -Function $Function)
+    }
+
+    # A test failing in some passes only is flaky; computed and warned before the all-fail abort so the
+    # abort message can name them too.
+    $flakyKeys = @($verdictsByKey.Keys | Where-Object { ($verdictsByKey[$_].Failed -gt 0) -and ($verdictsByKey[$_].Failed -lt $repeats) })
+    $flakyTests = @()
+    foreach ($idKey in $flakyKeys) {
+        $separator = $idKey.IndexOf('|')
+        $verdict = $verdictsByKey[$idKey]
+        $flakyKey = & $displayKey $idKey.Substring(0, $separator) $idKey.Substring($separator + 1) $true
+        $flakyTests += [pscustomobject]@{ test = $flakyKey; passed = $verdict.Passed; failed = $verdict.Failed; error = $verdict.Error }
+    }
+    $flakyKeysOrdinal = [string[]]@($flakyTests | ForEach-Object { $_.test })
+    $flakyItems = [object[]]@($flakyTests)
+    [System.Array]::Sort($flakyKeysOrdinal, $flakyItems, [System.StringComparer]::Ordinal)
+    $flakyTests = @($flakyItems)
+    foreach ($flaky in $flakyTests) {
+        Write-Warning "Publish-MutBaseline: flaky baseline test $($flaky.test) -- failed in $($flaky.failed) and passed in $($flaky.passed) of $repeats pass(es); first error: $($flaky.error). A kill by this test alone is reported as unreliable (§6.11.3)."
+    }
+
+    # A test failing in every pass is a real baseline failure.
     foreach ($failure in $pass1Failures) {
         if ($verdictsByKey[$failure.Key].Failed -ge $repeats) {
-            $failingTests += $failure.Text
+            $codeunitName = $failure.CodeunitId
+            if ($nameByCodeunit.ContainsKey($failure.CodeunitId)) { $codeunitName = $nameByCodeunit[$failure.CodeunitId] }
+            $failingTests += "${codeunitName}:$($failure.Function) -- $($failure.Error)"
         }
     }
 
     if ($failingTests.Count -gt 0) {
-        throw "Publish-MutBaseline: the baseline test run had $($failingTests.Count) failing test(s); aborting (§6.5.4 step 3 must pass before the schemata can be built). Failures:`n$($failingTests -join "`n")"
-    }
-
-    $flakyKeys = @($verdictsByKey.Keys | Where-Object { ($verdictsByKey[$_].Failed -gt 0) -and ($verdictsByKey[$_].Failed -lt $repeats) })
-    [System.Array]::Sort($flakyKeys, [System.StringComparer]::Ordinal)
-    $flakyTests = @()
-    foreach ($key in $flakyKeys) {
-        $verdict = $verdictsByKey[$key]
-        $flakyTests += [pscustomobject]@{ test = $key; passed = $verdict.Passed; failed = $verdict.Failed; error = $verdict.Error }
-        Write-Warning "Publish-MutBaseline: flaky baseline test $key -- failed in $($verdict.Failed) and passed in $($verdict.Passed) of $repeats pass(es); first error: $($verdict.Error). A kill by this test alone is reported as unreliable (§6.11.3)."
+        $flakyNote = ''
+        if ($flakyTests.Count -gt 0) {
+            $flakyNote = "`nFlaky tests found in the same baseline (not counted as failures):`n$(@($flakyTests | ForEach-Object { $_.test }) -join "`n")"
+        }
+        throw "Publish-MutBaseline: the baseline test run had $($failingTests.Count) failing test(s); aborting (§6.5.4 step 3 must pass before the schemata can be built). Failures:`n$($failingTests -join "`n")$flakyNote"
     }
 
     $baselineDoc = [pscustomobject]@{ tests = $allTests; durationsByCodeunit = $durationsByCodeunit; repeats = $repeats; flakyTests = @($flakyTests) }

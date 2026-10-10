@@ -960,10 +960,13 @@ Describe 'Publish-MutBaseline: repeated baseline and flaky tests (§6.11.2)' {
 
     It 'a test failing in some passes only is flaky: warning, flakyTests sorted by key with counts and first error, no abort' {
         $script:PassScript[50300] = @(
-            @(@($script:LongName, 'Zeta', 'Pass', $null), @('CU A', 'Alpha', 'Fail', "first boom`r`nsecond line")),
-            @(@($script:LongName, 'Zeta', 'Fail', 'zeta failed'), @('CU A', 'Alpha', 'Pass', $null)),
-            @(@($script:LongName, 'Zeta', 'Pass', $null), @('CU A', 'Alpha', 'Fail', 'later boom')))
-        $script:PassScript[50301] = @(@(, @('CU B', 'T2', 'Pass', $null)), @(, @('CU B', 'T2', 'Pass', $null)), @(, @('CU B', 'T2', 'Pass', $null)))
+            @(, @('CU A', 'Alpha', 'Fail', "first boom`r`nsecond line")),
+            @(, @('CU A', 'Alpha', 'Pass', $null)),
+            @(, @('CU A', 'Alpha', 'Fail', 'later boom')))
+        $script:PassScript[50301] = @(
+            @(, @($script:LongName, 'Zeta', 'Pass', $null)),
+            @(, @($script:LongName, 'Zeta', 'Fail', 'zeta failed')),
+            @(, @($script:LongName, 'Zeta', 'Pass', $null)))
 
         $warnings = @()
         $result = Publish-MutBaseline -Config $script:Config -Env $script:EnvHandle -RunDir $script:RunDir -WarningVariable warnings -WarningAction SilentlyContinue
@@ -1005,8 +1008,81 @@ Describe 'Publish-MutBaseline: repeated baseline and flaky tests (§6.11.2)' {
         $caught.Exception.Message | Should -BeLike '*2 failing test(s)*'
         $caught.Exception.Message | Should -BeLike '*CU A:Always -- e1*'
         $caught.Exception.Message | Should -BeLike '*CU B:AlsoAlways -- e3*'
-        $caught.Exception.Message | Should -Not -BeLike '*Sometimes*'
+        $caught.Exception.Message | Should -Not -BeLike '*Sometimes --*'
         Test-Path (Join-Path $script:RunDir 'baseline.json') | Should -BeFalse
+    }
+
+    # Realistic shapes: pass 1 (-Coverage, --raw xUnit path) carries the codeunit ID in Codeunit; passes 2..N
+    # (--json path) carry the codeunit NAME.
+    It 'realistic shapes: a test failing in all 3 passes aborts although pass 1 reports the id and later passes the name' {
+        $script:PassScript[50300] = @(
+            @(, @('50300', 'Always', 'Fail', 'e1')),
+            @(, @('CU A', 'Always', 'Fail', 'e1')),
+            @(, @('CU A', 'Always', 'Fail', 'e1')))
+        $script:PassScript[50301] = @(@(, @('50301', 'T2', 'Pass', $null)), @(, @('CU B', 'T2', 'Pass', $null)), @(, @('CU B', 'T2', 'Pass', $null)))
+
+        $caught = $null
+        try { Publish-MutBaseline -Config $script:Config -Env $script:EnvHandle -RunDir $script:RunDir -WarningAction SilentlyContinue } catch { $caught = $_ }
+
+        $caught | Should -Not -BeNullOrEmpty
+        $caught.Exception.Message | Should -BeLike '*1 failing test(s)*'
+        Test-Path (Join-Path $script:RunDir 'baseline.json') | Should -BeFalse
+    }
+
+    It 'realistic shapes: a test failing in pass 1 only is flaky under the name key' {
+        $script:PassScript[50300] = @(
+            @(, @('50300', 'T1', 'Fail', 'boom')),
+            @(, @('CU A', 'T1', 'Pass', $null)),
+            @(, @('CU A', 'T1', 'Pass', $null)))
+        $script:PassScript[50301] = @(@(, @('50301', 'T2', 'Pass', $null)), @(, @('CU B', 'T2', 'Pass', $null)), @(, @('CU B', 'T2', 'Pass', $null)))
+
+        $result = Publish-MutBaseline -Config $script:Config -Env $script:EnvHandle -RunDir $script:RunDir -WarningAction SilentlyContinue
+
+        @($result.FlakyTests).Count | Should -Be 1
+        $result.FlakyTests[0].test | Should -Be 'CU A:T1'
+        $result.FlakyTests[0].failed | Should -Be 1
+        $result.FlakyTests[0].passed | Should -Be 2
+        $result.FlakyTests[0].error | Should -Be 'boom'
+    }
+
+    It 'realistic shapes: a test failing in pass 2 only is flaky; the key cuts a long codeunit name to 30 characters' {
+        $script:PassScript[50300] = @(
+            @(, @('50300', 'T1', 'Pass', $null)),
+            @(, @($script:LongName, 'T1', 'Fail', 'late')),
+            @(, @($script:LongName, 'T1', 'Pass', $null)))
+        $script:PassScript[50301] = @(@(, @('50301', 'T2', 'Pass', $null)), @(, @('CU B', 'T2', 'Pass', $null)), @(, @('CU B', 'T2', 'Pass', $null)))
+
+        $result = Publish-MutBaseline -Config $script:Config -Env $script:EnvHandle -RunDir $script:RunDir -WarningAction SilentlyContinue
+
+        @($result.FlakyTests).Count | Should -Be 1
+        $result.FlakyTests[0].test | Should -Be "$($script:LongName.Substring(0, 30)):T1"
+        $result.FlakyTests[0].failed | Should -Be 1
+        $result.FlakyTests[0].passed | Should -Be 2
+    }
+
+    It 'realistic shapes: stable tests give no flaky entry' {
+        $script:PassScript[50300] = @(@(, @('50300', 'T1', 'Pass', $null)), @(, @('CU A', 'T1', 'Pass', $null)), @(, @('CU A', 'T1', 'Pass', $null)))
+        $script:PassScript[50301] = @(@(, @('50301', 'T2', 'Pass', $null)), @(, @('CU B', 'T2', 'Pass', $null)), @(, @('CU B', 'T2', 'Pass', $null)))
+
+        $result = Publish-MutBaseline -Config $script:Config -Env $script:EnvHandle -RunDir $script:RunDir
+
+        @($result.FlakyTests).Count | Should -Be 0
+    }
+
+    It 'realistic shapes: the abort message names the flaky tests found in the same baseline' {
+        $script:PassScript[50300] = @(
+            @(@('50300', 'Always', 'Fail', 'e1'), @('50300', 'Wobbly', 'Pass', $null)),
+            @(@('CU A', 'Always', 'Fail', 'e1'), @('CU A', 'Wobbly', 'Fail', 'w')),
+            @(@('CU A', 'Always', 'Fail', 'e1'), @('CU A', 'Wobbly', 'Pass', $null)))
+        $script:PassScript[50301] = @(@(, @('50301', 'T2', 'Pass', $null)), @(, @('CU B', 'T2', 'Pass', $null)), @(, @('CU B', 'T2', 'Pass', $null)))
+
+        $caught = $null
+        try { Publish-MutBaseline -Config $script:Config -Env $script:EnvHandle -RunDir $script:RunDir -WarningAction SilentlyContinue } catch { $caught = $_ }
+
+        $caught | Should -Not -BeNullOrEmpty
+        $caught.Exception.Message | Should -BeLike '*1 failing test(s)*'
+        $caught.Exception.Message | Should -BeLike '*CU A:Always*'
+        $caught.Exception.Message | Should -BeLike '*flaky*CU A:Wobbly*'
     }
 
     It 'a zero-test result in a later pass aborts, naming the pass' {
