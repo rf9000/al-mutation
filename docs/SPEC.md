@@ -1277,8 +1277,11 @@ This section adds two things: the failure message of each kill, and a repeated b
 - **Step 3 (§6.5.4).** The first pass is today's coverage run, one `Invoke-MutTests -Coverage` per codeunit.
   Passes 2..`repeats` run `Invoke-MutTests` per codeunit **without** `-Coverage`. Durations and coverage come from
   pass 1 only. A zero-test result in any pass aborts, as today.
-- **Verdict per test** (key `<Codeunit>:<Function>` with the codeunit name cut to 30 characters, so it matches
-  `killingTest` from every writer):
+- **Verdict per test.** Passes are counted per codeunit **id** and function. Pass 1 (`-Coverage`, the xUnit path)
+  reports the codeunit id, while passes 2..N (the `--json` path) report its name, so a name-based count would split
+  one test across two keys (T47 review). The reported key is built at the end as `<Codeunit>:<Function>` from the
+  codeunit **name** seen in passes 2..N, cut to 30 characters, so it matches `killingTest` from every writer.
+  Flaky tests are warned about before any abort, and the abort message names them too:
   - It passes in every pass: stable.
   - It fails in every pass: a real baseline failure, and the run aborts as today, listing every such test.
   - It fails in at least one pass but not all: **flaky**. A warning names each flaky test with its pass/fail
@@ -1296,7 +1299,8 @@ This section adds two things: the failure message of each kill, and a repeated b
 - **Flag.** A `Killed` row is `unreliable: true` when every known failing test is flaky. The loop computes the flag
   when it builds the row and stores it in `results.jsonl` and `loop-results.json` (neither stores the failing-test
   lists). A row rebuilt from the API knows only `killingTest`, so it is judged on that one test, and so is a
-  `results.jsonl` row without a stored flag. Every other row is `unreliable: false`.
+  `results.jsonl` row without a stored flag. Every other row is `unreliable: false`. On the SOAP path the known
+  failing tests are at most the first 10 the runner returns (§6.11.1).
 - **Score (§7.3).** `score` is unchanged. A new `strictScore` counts unreliable kills as survived:
   `(killed − unreliableKills + timeout) / (the same denominator)`, rounded and `null` on the same terms as `score`.
   `totals` gains `unreliableKills`. It is a subset of `killed`, not a tenth bucket, so the nine buckets still sum
