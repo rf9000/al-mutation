@@ -42,6 +42,10 @@ page 50002 "MUT Mutant Results API"
                 {
                     Caption = 'Recorded At';
                 }
+                field(killingError; Rec."Killing Error")
+                {
+                    Caption = 'Killing Error';
+                }
             }
         }
     }

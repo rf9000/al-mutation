@@ -30,6 +30,7 @@ codeunit 50003 "MUT Runner"
         MutantIdList: List of [Integer];
         MutantId: Integer;
         Tests: JsonArray;
+        Failures: JsonArray;
         Passed: Integer;
         Failed: Integer;
         KillingTest: Text;
@@ -62,7 +63,8 @@ codeunit 50003 "MUT Runner"
             SetActiveMutant(MutantId, RunNo);
 
             Clear(Tests);
-            RunSuite(Tests, Passed, Failed, KillingTest, DurationMs);
+            Clear(Failures);
+            RunSuite(Tests, Failures, Passed, Failed, KillingTest, DurationMs);
 
             if StopRequested(State) then
                 exit(StoppedResult(Results));
@@ -72,6 +74,7 @@ codeunit 50003 "MUT Runner"
             if Passed + Failed = 0 then begin
                 Entry.Add('status', 'Empty');
                 Entry.Add('killingTest', '');
+                Entry.Add('killingError', '');
             end else begin
                 if not MutantResult.Get(RunNo, MutantId) then begin
                     MutantResult.Init();
@@ -80,6 +83,7 @@ codeunit 50003 "MUT Runner"
                     if Failed > 0 then begin
                         MutantResult.Status := MutantResult.Status::Killed;
                         MutantResult."Killing Test" := CopyStr(KillingTest, 1, MaxStrLen(MutantResult."Killing Test"));
+                        MutantResult."Killing Error" := FirstFailureError(Failures);
                     end else
                         MutantResult.Status := MutantResult.Status::Survived;
                     MutantResult."Duration Ms" := DurationMs;
@@ -88,7 +92,9 @@ codeunit 50003 "MUT Runner"
                 end;
                 Entry.Add('status', GetStatusName(MutantResult.Status));
                 Entry.Add('killingTest', MutantResult."Killing Test");
+                Entry.Add('killingError', MutantResult."Killing Error");
             end;
+            Entry.Add('failures', Failures);
             Entry.Add('durationMs', DurationMs);
             Entry.Add('passed', Passed);
             Entry.Add('failed', Failed);
@@ -117,6 +123,7 @@ codeunit 50003 "MUT Runner"
     var
         Result: JsonObject;
         Tests: JsonArray;
+        Failures: JsonArray;
         Passed: Integer;
         Failed: Integer;
         KillingTest: Text;
@@ -125,7 +132,7 @@ codeunit 50003 "MUT Runner"
     begin
         SetActiveMutant(0, 0);
         PrepareSuite(CodeunitIds);
-        RunSuite(Tests, Passed, Failed, KillingTest, DurationMs);
+        RunSuite(Tests, Failures, Passed, Failed, KillingTest, DurationMs);
         DeleteSuite();
 
         Result.Add('passed', Passed);
@@ -293,17 +300,20 @@ codeunit 50003 "MUT Runner"
         Commit();
     end;
 
-    local procedure RunSuite(var Tests: JsonArray; var Passed: Integer; var Failed: Integer; var KillingTest: Text; var DurationMs: BigInteger)
+    local procedure RunSuite(var Tests: JsonArray; var Failures: JsonArray; var Passed: Integer; var Failed: Integer; var KillingTest: Text; var DurationMs: BigInteger)
     var
         TestMethodLine: Record "Test Method Line";
         TestSuiteMgt: Codeunit "Test Suite Mgt.";
+        MutationCore: Codeunit "MUT Mut";
         Test: JsonObject;
+        Failure: JsonObject;
         StartedAt: DateTime;
         TestMs: BigInteger;
     begin
         Passed := 0;
         Failed := 0;
         KillingTest := '';
+        Clear(Failures);
 
         StartedAt := CurrentDateTime();
         TestMethodLine.SetRange("Test Suite", SuiteName);
@@ -332,11 +342,30 @@ codeunit 50003 "MUT Runner"
                             Failed += 1;
                             if KillingTest = '' then
                                 KillingTest := GetCodeunitName(TestMethodLine."Test Codeunit") + ':' + TestMethodLine."Function";
+                            if Failures.Count() < 10 then begin
+                                Clear(Failure);
+                                Failure.Add('test', GetCodeunitName(TestMethodLine."Test Codeunit") + ':' + TestMethodLine."Function");
+                                Failure.Add('error', MutationCore.FormatKillReason(TestMethodLine."Error Message Preview"));
+                                Failures.Add(Failure);
+                            end;
                         end;
                 end;
                 Test.Add('error', TestMethodLine."Error Message Preview");
                 Tests.Add(Test);
             until TestMethodLine.Next() = 0;
+    end;
+
+    local procedure FirstFailureError(Failures: JsonArray): Text[250]
+    var
+        Token: JsonToken;
+        ErrorToken: JsonToken;
+    begin
+        // The error of the first failed line (RunSuite collected them in "Line No." order).
+        if not Failures.Get(0, Token) then
+            exit('');
+        if not Token.AsObject().Get('error', ErrorToken) then
+            exit('');
+        exit(CopyStr(ErrorToken.AsValue().AsText(), 1, 250));
     end;
 
     local procedure GetCodeunitName(TestCodeunitId: Integer): Text[30]

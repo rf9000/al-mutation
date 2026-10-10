@@ -36,6 +36,11 @@ table 50003 "MUT Mutant Result"
             Caption = 'Recorded At';
             DataClassification = SystemMetadata;
         }
+        field(7; "Killing Error"; Text[250])
+        {
+            Caption = 'Killing Error';
+            DataClassification = SystemMetadata;
+        }
     }
 
     keys

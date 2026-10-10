@@ -25,6 +25,7 @@ codeunit 50001 "MUT Test Hooks"
     var
         MutantResult: Record "MUT Mutant Result";
         MutationCore: Codeunit "MUT Mut";
+        ErrorText: Text;
         Id: Integer;
         RunNo: Integer;
     begin
@@ -32,6 +33,11 @@ codeunit 50001 "MUT Test Hooks"
             exit;
         if FunctionName = '' then
             exit;
+
+        // Read the test's error before ClearLastError() wipes it; fall back to the line's preview (SPEC 6.11.1).
+        ErrorText := GetLastErrorText();
+        if ErrorText = '' then
+            ErrorText := CurrentTestMethodLine."Error Message Preview";
 
         ClearLastError();
         if not TryReadActiveMutant(Id, RunNo) then begin
@@ -49,6 +55,7 @@ codeunit 50001 "MUT Test Hooks"
         MutantResult."Mutant Id" := Id;
         MutantResult.Status := MutantResult.Status::Killed;
         MutantResult."Killing Test" := CopyStr(CodeunitName + ':' + FunctionName, 1, 250);
+        MutantResult."Killing Error" := MutationCore.FormatKillReason(ErrorText);
         MutantResult."Recorded At" := CurrentDateTime();
         MutantResult.Insert();
     end;
