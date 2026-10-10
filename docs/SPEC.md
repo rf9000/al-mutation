@@ -189,7 +189,7 @@ mutation.fixture.config.json  Tier A config                          (§6.5.1)
 
 | App | App id | Publisher | Version | Id range |
 |---|---|---|---|---|
-| Mutation Core | `6f1d2c3a-8b4e-4d5f-9a6b-7c8d9e0f1a2b` | Continia Software | 1.1.1.0 (1.0.0.0 before the SOAP runner; 1.1.0.0 before the runner's stop guard, §6.10.2) | 50000–50199 |
+| Mutation Core | `6f1d2c3a-8b4e-4d5f-9a6b-7c8d9e0f1a2b` | Continia Software | 1.2.0.0 (1.0.0.0 before the SOAP runner; 1.1.0.0 before the runner's stop guard, §6.10.2; 1.1.1.0 before `Killing Error`, §6.11.1) | 50000–50199 |
 | Mutation Core Test | `7a2e3d4b-9c5f-4e6a-8b7c-8d9e0f1a2b3c` | Continia Software | 1.0.0.0 | 50400–50499 |
 | MUT Fixture AUT | `8b3f4e5c-ad6a-4f7b-9c8d-9e0f1a2b3c4d` | Continia Software | 1.0.0.1 (bumped from 1.0.0.0 by the U6 spike, T11) | 50200–50299 |
 | MUT Fixture Test | `9c4a5f6d-be7b-4a8c-8d9e-0f1a2b3c4d5e` | Continia Software | 1.0.0.0 | 50300–50399 |
@@ -219,7 +219,7 @@ Triggers `OnInsert` and `OnModify` call `MirrorToIsolatedStorage()`: `IsolatedSt
 `1 "Run No." Integer` (PK), `2 Started DateTime`, `3 Finished DateTime`, `4 Commit Text[50]`, `5 Backend Code[20]`, `6 Total Integer`, `7 Killed Integer`, `8 Survived Integer`, `9 Score Decimal`.
 
 **Table 50003 "MUT Mutant Result"** (`DataPerCompany = false`):
-PK `1 "Run No." Integer`, `2 "Mutant Id" Integer`; `3 Status Enum "MUT Mutant Status"`, `4 "Duration Ms" Integer`, `5 "Killing Test" Text[250]`, `6 "Recorded At" DateTime`.
+PK `1 "Run No." Integer`, `2 "Mutant Id" Integer`; `3 Status Enum "MUT Mutant Status"`, `4 "Duration Ms" Integer`, `5 "Killing Test" Text[250]`, `6 "Recorded At" DateTime`, `7 "Killing Error" Text[250]` (§6.11.1).
 
 #### 6.1.3 Codeunit 50000 "MUT Mut"
 `SingleInstance = true`, `Access = Public`. Global `ActiveId: Integer`.
@@ -256,6 +256,7 @@ local procedure OnAfterTestMethodRun(var CurrentTestMethodLine: Record "Test Met
 // if Id = 0 then exit;
 // if MutantResult.Get(Setup."Current Run No.", Setup."Active Mutant Id") then exit;
 // insert MutantResult: Status Killed, "Killing Test" = CopyStr(CodeunitName + ':' + FunctionName, 1, 250), "Recorded At" = CurrentDateTime()
+// §6.11.1: capture GetLastErrorText() BEFORE ClearLastError() and set "Killing Error" from it on the insert
 ```
 These signatures are copied from `TestRunnerMgt.Codeunit.al` in BCApps (lines 265 and 270) and MUST be used verbatim. `Test Method Line` and `TestPermissions` resolve from the Test Runner dependency (F14).
 
@@ -630,7 +631,7 @@ Each step is a function in `lib/*.psm1`; the script is idempotent per run number
 
 1. `Initialize-MutRun` — load config (§6.5.1), compute `RunNo` (next after highest in `results/`), create `<workDir>/runs/<RunNo>/`.
 2. `Ensure-MutEnvironment` — `Get-MutEnvironment` or `New-MutEnvironment` (`-SkipEnvironment` requires an existing one), else (an environment was found) a best-effort PATCH `activeMutantId = 0` (F3c: this branch can reach an environment Mutation Core is already installed on, from an earlier attempt at this or an earlier run; `activeMutantId` lives in the environment's own isolated storage and survives a crash, and the probe below runs a real test job, so a stale active mutant plus a failing probe test would misattribute a false `Killed` to it under the same `RunNo` — see §6.5.6's identical hazard) then `Start-MutEnvironment` unconditionally (F3, finding I6 — not only when not already `Running`, since a `Running` status is not proof of serving). Both `New-MutEnvironment` and this call pass `-RequireProbe $false` (F3b IMPORTANT 2): the settle-and-probe's target is the AUT's own test codeunit, which does not exist until step 3 installs it, so an unconfirmed probe here is a warning, not fatal. `Sync-MutAutCopy`.
-3. `Publish-Baseline` — `Install-MutDependencies` for `aut-original` and for `test-app`; `Publish-MutApp` for Mutation Core, then `aut-original`, then `test-app` (with ruleset and `-AllowDowngrade`); then `Grant-MutPermissionSet` for every entry of config `permissionSets` (§6.1.5b). `Invoke-MutTests` over `testApp.testCodeunits` with `-Coverage`. **Abort if any failure.** Save `baseline.json` (`{ tests[], durationsByCodeunit }`), `coverage.json` (§7.2) when job ids exist, and `references.json` (§6.5.5).
+3. `Publish-Baseline` — `Install-MutDependencies` for `aut-original` and for `test-app`; `Publish-MutApp` for Mutation Core, then `aut-original`, then `test-app` (with ruleset and `-AllowDowngrade`); then `Grant-MutPermissionSet` for every entry of config `permissionSets` (§6.1.5b). `Invoke-MutTests` over `testApp.testCodeunits` with `-Coverage`, then `baseline.repeats − 1` more passes without coverage (§6.11.2). **Abort if any test fails in every pass**; a test that fails in some passes only is flagged flaky (§6.11.2). Save `baseline.json` (`{ tests[], durationsByCodeunit, repeats, flakyTests[] }`), `coverage.json` (§7.2) when job ids exist, and `references.json` (§6.5.5).
 4. `Build-Schemata` — run the generator (§6.4.9) with config flags into `<workDir>/runs/<RunNo>/gen/`. On every iteration (the generator recreates the whole tree each time), before compiling, write `gen/aut-schemata/.vscode/settings.json` (BOM-less UTF-8) containing exactly `{ "al.codeAnalyzers": [] }`: the schemata app is generated, compiled once, never read by a human and never shipped, so **no style analyzer runs against it at all** — only genuine compiler errors can fail the compile. (Four consecutive attempts to instead downgrade one CodeCop rule at a time — `AA0072` naming, `AA0137` unused-variable, `AA0021` var-ordering, plus a defective generated ruleset missing `name` — each passed unit tests and then failed against the real 1,072-file AUT on a different rule; disabling analyzers entirely ended that whack-a-mole.) When `rulesets` is also configured, still write `<rulesets dir>/.cli-ruleset-schemata.json` (BOM-less UTF-8, regenerated every run): `includedRuleSets` = one entry `{ "action": "Default", "path": "./<rulesets.file>" }` (mirrors F12's own relative-include style), `rules` downgrades `AA0072` and `AA0137` to `Info` (the generator's injected `MutationCore`/`MutCond_<n>` declarations, §6.4.7, do not follow the AUT's own naming/unused-variable rules by design), and pass it to `Compile-MutApp` via `-Ruleset` — this remains a harmless second line of defence, not the mechanism that suppresses the diagnostics. `Compile-MutApp` on `gen/aut-schemata` uses this generated ruleset (not the configured one directly) when `rulesets` is set, else no `-Ruleset` at all. On errors: for each diagnostic with a `file`/`line`, find the `linemap.json` block containing that line → collect mutant ids → mark them `CompileError` in `results` → append their stable keys to `gen/exclude.json` → regenerate with `--exclude-stable-keys gen/exclude.json` → recompile. Cap at 10 iterations, then throw. Diagnostics without a mapped block are fatal.
 5. `Publish-Schemata` — per `schemata.publishStrategy`: `same-version`: `Publish-MutAppFile` schemata `.app`; `bump-build`: generator was called with `--aut-version <version with build+1>`, then `Publish-MutAppFile`; `unpublish-test-app`: `Unpublish-MutApp testApp` → `Publish-MutAppFile` schemata → `Publish-MutApp test-app`. Then PATCH setup `activeMutantId = 0` and rerun `Invoke-MutTests` over `testApp.testCodeunits`. **Abort if any failure** (the schemata must be behaviour-preserving when inactive).
 6. `Push-Manifest` — PATCH setup `currentRunNo = RunNo`; POST each mutant of `mutants.json` to `mutants` (skip ids already present, `status = Pending`).
@@ -656,7 +657,7 @@ For each remaining mutant, in id order:
 1. PATCH setup `activeMutantId = <id>`.
 2. Budget: `max(minSeconds, perTestFactor × baseline duration of the covering codeunits + jobOverheadSeconds × count)`.
 3. Run `Invoke-MutTests` on a background runspace under the budget (§6.5.6 implementation note: a runspace, not `Start-Job` — see the FIX comment on `Invoke-MutTestsWithBudget`). On timeout: PATCH `activeMutantId = 0` **before** the reset (F3b BLOCKER 1 — see below), then `Reset-MutEnvironment`, record `Timeout`, continue.
-4. On completion: if `Failed > 0`: GET `mutantResults?$filter=runNo eq <RunNo> and mutantId eq <id>`; if empty, POST `{ runNo, mutantId, status: 'Killed', killingTest: '<codeunit>:<function>' of the first failed test, durationMs }`. If `Failed = 0`: GET the same filter and, if empty, POST `Survived` — idempotent the same way as `Killed`, so a duplicate-key response from a resumed run's already-existing row is never POSTed again; a duplicate-key failure that does still occur (e.g. a race) is swallowed, never aborting the loop. Also write each result to `<workDir>/runs/<RunNo>/results.jsonl` immediately (crash safety): the append is retried up to 5 times with a short back-off, and a still-failing write is logged and skipped rather than thrown, since the API already holds the authoritative result.
+4. On completion: if `Failed > 0`: GET `mutantResults?$filter=runNo eq <RunNo> and mutantId eq <id>`; if empty, POST `{ runNo, mutantId, status: 'Killed', killingTest: '<codeunit>:<function>' of the first failed test that is not flaky (else the first failed test, §6.11.3), killingError (§6.11.1), durationMs }`. If `Failed = 0`: GET the same filter and, if empty, POST `Survived` — idempotent the same way as `Killed`, so a duplicate-key response from a resumed run's already-existing row is never POSTed again; a duplicate-key failure that does still occur (e.g. a race) is swallowed, never aborting the loop. Also write each result to `<workDir>/runs/<RunNo>/results.jsonl` immediately (crash safety): the append is retried up to 5 times with a short back-off, and a still-failing write is logged and skipped rather than thrown, since the API already holds the authoritative result.
 5. PATCH `activeMutantId = 0` after every mutant.
 6. Each mutant's entire body (steps 1–5) is wrapped so an unexpected error of any kind — not just a timeout or a `Failed`/`Passed` outcome — records `Status = 'Error'` with the exception message and moves on to the next mutant, **with one deliberate exception (F3b BLOCKER 2, amending F3): the environment-recovery-cap abort below is re-thrown, not swallowed into a per-mutant `Error`.** The loop reports how many mutants ended in `Error` when it finishes.
 
@@ -1129,7 +1130,7 @@ the active mutant does so with `Modify(true)` on `MUT Mutation Setup` (S3) follo
 
 | Procedure | Behaviour |
 |---|---|
-| `RunMutants(BatchId: Text; CodeunitIds: Text; MutantIds: Text; RunNo: Integer): Text` | `BatchId` is a client GUID. `CodeunitIds` is a `SelectTestMethodsByRange` filter such as `95155\|95110` (the mutant's covering set). First insert the state row (`Batch Id`, `Session Id` = `SessionId()`, `Run No.`, `Mutant Id` = 0) and commit. Then build the suite and commit. **Stop guard:** before each mutant, after the suite run, before incrementing `Mutants Done` and before setting `Finished`, the runner re-reads its row (`Get`, which also makes the following `Modify` work on the current version); if `Stop Requested` is set, or the row is gone, it returns the entries so far at once, writing nothing (no result row, no state change, no active-mutant change, no suite deletion). For each id in the comma list `MutantIds`, in order: (1) set the state row's `Mutant Id` and `Mutant Started At` = now, and commit; (2) set the active mutant (id, RunNo) and commit; (3) filter the suite, `FindFirst()` (S2), `RunAllTests`, timing the call for `Duration Ms`; (4) read the suite's `Function` lines with `Run = true`. `passed`/`failed` count `Result::Success`/`Result::Failure`. (5) If `passed + failed = 0`, insert no row; the entry's `status` is `Empty`. Otherwise, if no `MUT Mutant Result` exists for (RunNo, mutant), insert one: `Killed` when `failed > 0`, with `Killing Test` = `CopyStr(CopyStr(<Name of the suite's Codeunit line with the same "Test Codeunit">, 1, 30) + ':' + <"Function">, 1, 250)` of the first failed line in `"Line No."` order (the name is cut to 30 characters because the hook receives `CodeunitName: Text[30]`, §6.1.4), else `Survived`. Set `Duration Ms` and `Recorded At`. The entry's `status`/`killingTest` are those of the persisted row after this step, so a row the hook wrote first wins; `status` is the enum value **name** (`Killed`, `Survived`, ...), not its caption. (6) Increment `Mutants Done` and commit. After the loop: set the active mutant to 0 and commit; set the state row's `Mutant Id` = 0 and `Finished` = true; delete the suite; commit. Returns `[ { mutantId, status, killingTest, durationMs, passed, failed } ]`. |
+| `RunMutants(BatchId: Text; CodeunitIds: Text; MutantIds: Text; RunNo: Integer): Text` | `BatchId` is a client GUID. `CodeunitIds` is a `SelectTestMethodsByRange` filter such as `95155\|95110` (the mutant's covering set). First insert the state row (`Batch Id`, `Session Id` = `SessionId()`, `Run No.`, `Mutant Id` = 0) and commit. Then build the suite and commit. **Stop guard:** before each mutant, after the suite run, before incrementing `Mutants Done` and before setting `Finished`, the runner re-reads its row (`Get`, which also makes the following `Modify` work on the current version); if `Stop Requested` is set, or the row is gone, it returns the entries so far at once, writing nothing (no result row, no state change, no active-mutant change, no suite deletion). For each id in the comma list `MutantIds`, in order: (1) set the state row's `Mutant Id` and `Mutant Started At` = now, and commit; (2) set the active mutant (id, RunNo) and commit; (3) filter the suite, `FindFirst()` (S2), `RunAllTests`, timing the call for `Duration Ms`; (4) read the suite's `Function` lines with `Run = true`. `passed`/`failed` count `Result::Success`/`Result::Failure`. (5) If `passed + failed = 0`, insert no row; the entry's `status` is `Empty`. Otherwise, if no `MUT Mutant Result` exists for (RunNo, mutant), insert one: `Killed` when `failed > 0`, with `Killing Test` = `CopyStr(CopyStr(<Name of the suite's Codeunit line with the same "Test Codeunit">, 1, 30) + ':' + <"Function">, 1, 250)` of the first failed line in `"Line No."` order (the name is cut to 30 characters because the hook receives `CodeunitName: Text[30]`, §6.1.4), else `Survived`. Set `Duration Ms` and `Recorded At`. The entry's `status`/`killingTest` are those of the persisted row after this step, so a row the hook wrote first wins; `status` is the enum value **name** (`Killed`, `Survived`, ...), not its caption. (6) Increment `Mutants Done` and commit. After the loop: set the active mutant to 0 and commit; set the state row's `Mutant Id` = 0 and `Finished` = true; delete the suite; commit. Returns `[ { mutantId, status, killingTest, killingError, failures, durationMs, passed, failed } ]` (`killingError`, `failures` and the `"Killing Error"` value on an inserted `Killed` row: §6.11.1). |
 | `RunTests(CodeunitIds: Text): Text` | **First** sets the active mutant to 0 and `Current Run No.` to 0, and commits. Then it runs the suite as above, with no state row and no result rows. Returns `{ passed, failed, durationMs, tests: [ { codeunit, name, result, durationMs, error } ] }`. |
 | `GetRunnerState(): Text` | Returns `{ serverNowUtc, rows: [ { batchId, sessionId, runNo, mutantId, mutantStartedAt, mutantsDone, finished, stopRequested } ] }`, with datetimes as ISO-8601 UTC strings (`Format(<DateTime>, 0, 9)`). |
 | `StopRunner(BatchId: Text): Text` | Refuses (`Error`) unless a row with that `Batch Id` exists with `Finished = false` and a `Session Id` other than `SessionId()`. Otherwise sets the row's `Stop Requested` and commits (it calls `LockTable()` on the state table before reading the row, so a runner that commits its own row change at the same moment cannot make the `Modify` fail), **then** calls `StopSession(<row's Session Id>, '<reason>')` inside a `[TryFunction]`, so a session that already ended (for example after a fault) does not raise an error. Returns `stopped`, or `not stopped: <error text>`. It does not delete the row. |
@@ -1241,6 +1242,79 @@ functions of §6.10.3.
    seconds per mutant in `docs/spike-baseline.md`.
 3. With `testTransport = "cli"`, the Pester suite and behaviour are unchanged.
 
+### 6.11 Kill reasons and flaky baseline tests (issues.md, run 1015)
+Run 1015 scored 408/409, and two tests made 81 % of the kills. One of them killed mutants far outside its
+scenario, including the time code. A timing-dependent test fails on its own, and every mutant active at that
+moment is scored as killed. The run could not show this, because `reason` was `null` on every `Killed` row.
+This section adds two things: the failure message of each kill, and a repeated baseline that flags unstable tests.
+
+#### 6.11.1 Kill reason
+- **Format.** The kill reason is the first line of the first killing test's error message (split on CR or LF),
+  trimmed, cut to 250 characters. An empty message gives `null`.
+- **Table.** `MUT Mutant Result` (§6.1.2) gains `7 "Killing Error" Text[250]`. The API page `mutantResults`
+  gains `killingError`. Mutation Core becomes version `1.2.0.0` (§6.0.1 and every shipped config's
+  `coreApp.version`). The field is additive, so no upgrade code is needed.
+- **Hook (§6.1.4).** `OnAfterTestMethodRun` reads `GetLastErrorText()` into a local **before** its
+  `ClearLastError()` call. When it inserts the `Killed` row it sets `"Killing Error"` from that text, using the format
+  above. If BC no longer holds the test's error at that point (verify live), the hook uses
+  `CurrentTestMethodLine."Error Message Preview"` instead. The hook still never raises an error.
+- **SOAP runner (§6.10.2).** `RunSuite` already reads `"Error Message Preview"` per line. `RunMutants` sets
+  `"Killing Error"` on a `Killed` row it inserts, from the first failed line. Each entry gains `killingError`
+  (the persisted row's value, so a hook-written row wins, as for `killingTest`). Each entry also gains
+  `failures`: `[ { test, error } ]` for every failed line in `"Line No."` order, at most 10. `test` uses the
+  `killingTest` format, and `error` uses the reason format.
+- **CLI loop (§6.5.6 step 4).** The `Killed` POST adds `killingError` from the chosen killing test's `Error`.
+- **Loop rows.** Every loop row (CLI, SOAP, and rows rebuilt from the API or `results.jsonl` on resume) carries
+  `KillingError`. On the SOAP path a row also carries `Failures`, and on the CLI path it carries the failing tests
+  of the result. Neither is persisted to the API.
+- **Export (§7.3).** `reason` is set for `Killed` rows from `KillingError`, in addition to `Error` rows.
+
+#### 6.11.2 Repeated baseline
+- **Config.** Optional `baseline.repeats` is a positive integer, default 3. `Get-MutConfig` validates it, and 1
+  turns the repeats off. The shipped configs set it explicitly.
+- **Step 3 (§6.5.4).** The first pass is today's coverage run, one `Invoke-MutTests -Coverage` per codeunit.
+  Passes 2..`repeats` run `Invoke-MutTests` per codeunit **without** `-Coverage`. Durations and coverage come from
+  pass 1 only. A zero-test result in any pass aborts, as today.
+- **Verdict per test** (key `<Codeunit>:<Function>` with the codeunit name cut to 30 characters, so it matches
+  `killingTest` from every writer):
+  - It passes in every pass: stable.
+  - It fails in every pass: a real baseline failure, and the run aborts as today, listing every such test.
+  - It fails in at least one pass but not all: **flaky**. A warning names each flaky test with its pass/fail
+    count and its first error.
+- **Output.** `baseline.json` gains `repeats` (the number of passes) and `flakyTests`: `[ { test, passed, failed,
+  error } ]`, sorted by `test`. `Get-MutSkippedBaselineResult` (resume) reads both, and an older file without them
+  means `repeats = 1` and no flaky tests.
+- The step 5 rerun (§6.5.4) is unchanged: it runs once, and a flaky failure there still aborts.
+
+#### 6.11.3 Unreliable kills
+- **Choosing the killing test.** When the loop knows the failing tests of a mutant (the CLI result, or the SOAP
+  entry's `failures`), `killingTest` and `killingError` come from the first failing test that is **not** flaky. They
+  come from the first failing test only when every failing test is flaky. On the SOAP path the runner already wrote
+  the row with the first failed line, so the loop overrides only its own row values. The API row stays as written.
+- **Flag.** A `Killed` row is `unreliable: true` when every known failing test is flaky. A row rebuilt from the API
+  or `results.jsonl` knows only `killingTest`, so it is judged on that one test. Every other row is
+  `unreliable: false`.
+- **Score (§7.3).** `score` is unchanged. A new `strictScore` counts unreliable kills as survived:
+  `(killed − unreliableKills + timeout) / (the same denominator)`, rounded and `null` on the same terms as `score`.
+  `totals` gains `unreliableKills`. It is a subset of `killed`, not a tenth bucket, so the nine buckets still sum
+  to `total`.
+- **Summary (§7.5).** The score section shows both scores. A **"Flaky baseline tests"** table lists `flakyTests`.
+  An **"Unreliable kills"** table lists id, object, procedure, line, operator, killing test and reason. Both
+  sections are omitted when they are empty.
+
+#### 6.11.4 Acceptance
+1. Pester: the reason format (multi-line, empty, over-long); the CLI `Killed` POST carries `killingError`; the SOAP
+   entry's `killingError`/`failures` reach the row; resume rows carry `KillingError`; export writes `reason` for
+   `Killed`; flaky verdicts across 3 passes (stable, all-fail abort, mixed); `baseline.json` round-trip and an older
+   file without the new keys; choosing the killing test (one flaky + one stable failing, all flaky);
+   `strictScore`/`unreliableKills`; and summary sections present and omitted.
+2. AL: `core-app` and `core-app-test` compile with 0 errors. The reason format is one public procedure,
+   `"MUT Mut".FormatKillReason(ErrorText: Text): Text[250]`, which the hook and the runner both call. A
+   `core-app-test` test covers it with multi-line, empty and over-long input. A test cannot observe its own
+   `OnAfterTestMethodRun`, so item 3 proves the hook path live.
+3. Live, on `mut-spike-02` only, with the owner's go-ahead: a short targeted run where every `Killed` row has a
+   non-null `reason` on both the hook-written and the runner-written path, and `baseline.json` carries `repeats` 3.
+
 ---
 
 ## 7. Data schemas
@@ -1262,13 +1336,15 @@ functions of §6.10.3.
 { "runNo": 1, "backend": "DemoPortal", "environmentName": "mut-spike-01", "startedUtc": "…", "finishedUtc": "…",
   "autAppId": "…", "autVersion": "…", "coreAppVersion": "1.0.0.0",
   "generator": { "seed": 1, "maxMutants": 0, "onlyObjects": [], "operators": [] },
-  "totals": { "total": 26, "killed": 17, "survived": 6, "timeout": 3, "compileError": 0, "uncovered": 0, "equivalent": 0, "error": 0, "pending": 0 },
+  "totals": { "total": 26, "killed": 17, "survived": 6, "timeout": 3, "compileError": 0, "uncovered": 0, "equivalent": 0, "error": 0, "pending": 0, "unreliableKills": 0 },
   "score": 0.7692,
+  "strictScore": 0.7692,
   "aborted": false,
   "mutants": [{ "id": 1, "stableKey": "…", "objectId": 50200, "procedure": "IsLargeOrder", "line": 4, "operator": "REL",
                 "original": "…", "mutated": "…", "status": "Survived", "killingTest": null, "durationMs": 4200,
-                "coveringTests": [50300] }] }
+                "coveringTests": [50300], "reason": null, "unreliable": false }] }
 ```
+`reason` is the error text of an `Error` row and the kill reason of a `Killed` row (§6.11.1), else `null`. `unreliable` is `true` only on a `Killed` row whose every known failing test is flaky (§6.11.3). `strictScore` and `totals.unreliableKills` are defined in §6.11.3; `unreliableKills` is a subset of `killed` and is not one of the nine buckets that sum to `total`.
 `score = (killed + timeout) / (total − equivalent − compileError − error − pending)`, rounded to 4 decimals. `Uncovered` counts as survived in the denominator — the suite genuinely did not reach it. When the denominator is **zero or negative** (e.g. every mutant errored), `score` is **`null`**, not `0` — `0` is indistinguishable in JSON from “the suite killed nothing”, which is the opposite of what a collapsed run means. `Error` and `Pending` are **excluded** from the denominator: an infrastructure failure (a failed job, a zero-test result, an unhandled exception) is not evidence about the test suite, and leaving it in silently scored every such mutant as a survivor. The totals buckets MUST sum to `total`, and `<RunNo>-summary.md` (§7.5) MUST render an Errors section alongside Survivors/Timeouts/Compile errors/Uncovered. `aborted` (F3c) is `true` only for the partial export §6.5.4 step 9 writes when the mutant loop stopped on its environment-recovery cap rather than completing every mutant (§6.5.6) — `false` on every normal, complete run. It exists so a consumer never has to infer partial-ness from `totals.pending -gt 0`, an implicit artifact of how an unrun mutant happens to render rather than a deliberate marker.
 
 ### 7.4 `fixtures/expected-results.json`
@@ -1278,7 +1354,7 @@ functions of §6.10.3.
 One entry per row of §6.3.3 (26 entries). Matching key: `(procedure, operator, mutated)`; for DEL, `mutated` is `""` and `original` is added to the key.
 
 ### 7.5 `results/<RunNo>-summary.md`
-Sections: header table (run no, backend, environment, AUT version, started/finished, wall-clock), totals table, score, "Survivors" table (id, object, procedure, line, operator, original → mutated, covering tests), "Timeouts" table, "Compile errors" table, **"Errors" table** (mutants whose run failed for infrastructure reasons — a failed job, a zero-test result, an unhandled exception — with the reason), "Uncovered" count, and a **Pending** count when any mutant was never reached. The totals table carries all nine buckets of §7.3 and they MUST sum to `total`.
+Sections: header table (run no, backend, environment, AUT version, started/finished, wall-clock), totals table, score, "Survivors" table (id, object, procedure, line, operator, original → mutated, covering tests), "Timeouts" table, "Compile errors" table, **"Errors" table** (mutants whose run failed for infrastructure reasons — a failed job, a zero-test result, an unhandled exception — with the reason), "Uncovered" count, and a **Pending** count when any mutant was never reached. The totals table carries all nine buckets of §7.3 and they MUST sum to `total`. When non-empty, a **"Flaky baseline tests"** table and an **"Unreliable kills"** table follow, and the score section shows `strictScore` next to `score` (§6.11.3).
 
 ### 7.6 `docs/spike-baseline.md` template
 Sections in this order, each a table with columns `Metric | Value | Backend | Date | Source task`: Environment (create s, start s, activation-app install s, deps install s, AUT deploy s, test app deploy s); U1/U3; U4; U5; U6; U7 (single-method job s, 95155 s, 95913 s, per-test median s); U8 (API base URL pattern); U9 (job id field name, CSV header line); Tier B baseline (pass/fail per codeunit); Hand mutants (20 rows + kill count); Recommendation (`go` / `no-go`, `--max-mutants` default, `timeouts.jobOverheadSeconds`, `schemata.publishStrategy`).
