@@ -1293,9 +1293,10 @@ This section adds two things: the failure message of each kill, and a repeated b
   entry's `failures`), `killingTest` and `killingError` come from the first failing test that is **not** flaky. They
   come from the first failing test only when every failing test is flaky. On the SOAP path the runner already wrote
   the row with the first failed line, so the loop overrides only its own row values. The API row stays as written.
-- **Flag.** A `Killed` row is `unreliable: true` when every known failing test is flaky. A row rebuilt from the API
-  or `results.jsonl` knows only `killingTest`, so it is judged on that one test. Every other row is
-  `unreliable: false`.
+- **Flag.** A `Killed` row is `unreliable: true` when every known failing test is flaky. The loop computes the flag
+  when it builds the row and stores it in `results.jsonl` and `loop-results.json` (neither stores the failing-test
+  lists). A row rebuilt from the API knows only `killingTest`, so it is judged on that one test, and so is a
+  `results.jsonl` row without a stored flag. Every other row is `unreliable: false`.
 - **Score (§7.3).** `score` is unchanged. A new `strictScore` counts unreliable kills as survived:
   `(killed − unreliableKills + timeout) / (the same denominator)`, rounded and `null` on the same terms as `score`.
   `totals` gains `unreliableKills`. It is a subset of `killed`, not a tenth bucket, so the nine buckets still sum
