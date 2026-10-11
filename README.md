@@ -105,6 +105,7 @@ root of the repository that contains it.
 | `Invoke-MutFixVerify.ps1` | Verify completed, whatever the verdicts | Config or environment error; restore failure; lock held |
 | `Remove-MutRunEnvironment.ps1` | Environment deleted, or already gone | Refused (`^mut-` name, Shared) or any error |
 | `Remove-MutOrphanEnvironments.ps1` | Sweep ran (a failed single delete is only a warning) | Prefix refused or environments could not be listed |
+| `Get-MutReferencingTests.ps1` | JSON printed, also `[]` when nothing references the objects | A folder does not exist, or `-Objects` is empty or not all integers |
 
 ### Environment cleanup
 
@@ -114,6 +115,14 @@ removes it with `Remove-MutRunEnvironment.ps1 -ConfigPath <cfg>`, which deletes 
 deletes every non-Shared environment whose name starts with the prefix. The prefix must start with `mut-` and be
 longer than it, so a sweep never reaches the `mut-spike-*` environments. `-ConfigPath` only supplies the backend and
 CLI path and defaults to `mutation.config.json`.
+
+### Test selection
+
+`Get-MutReferencingTests.ps1 -AutPath <dir> -TestAppPath <dir> -Objects <id,id>` prints one JSON
+line: the test codeunits that reference the given AUT objects, each with the objects it
+references (`[{ "codeunit": 95312, "objects": [72918731] }]`), sorted by codeunit id. It uses the
+§6.5.5 reference map and starts no environment. mutant-fixer calls it to choose each PR's
+`testApp.testCodeunits`. Parser warnings go to stderr.
 
 ### DemoPortal profile
 
