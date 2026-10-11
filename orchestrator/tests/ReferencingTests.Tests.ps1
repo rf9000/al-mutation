@@ -76,6 +76,8 @@ codeunit 50303 "Test Commented"
 
     function script:Invoke-Referencing {
         param([string]$Objects, [string]$AutPath = $script:AutPath)
+        # Windows PowerShell 5.1 turns native stderr into errors; under Stop they would throw.
+        $ErrorActionPreference = 'Continue'
         $out = & $script:Shell -NoProfile -File $script:Script -AutPath $AutPath -TestAppPath $script:TestAppPath -Objects $Objects 2>$null
         $code = $LASTEXITCODE
         $line = @($out | Where-Object { "$_".StartsWith('[') }) | Select-Object -Last 1
@@ -120,6 +122,15 @@ Describe 'Get-MutReferencingTests.ps1' {
 
     It 'exits 1 when a folder does not exist' {
         (Invoke-Referencing -Objects '50000' -AutPath (Join-Path $TestDrive 'missing')).Code | Should -Be 1
+    }
+
+    It 'writes the failure line to stderr, so a caller that shows stderr sees the cause' {
+        $ErrorActionPreference = 'Continue'
+        $all = & $script:Shell -NoProfile -File $script:Script -AutPath (Join-Path $TestDrive 'missing') -TestAppPath $script:TestAppPath -Objects '50000' 2>&1
+        $stderr = @($all | Where-Object { $_ -is [System.Management.Automation.ErrorRecord] } | ForEach-Object { $_.ToString() }) -join "`n"
+        $stdout = @($all | Where-Object { $_ -isnot [System.Management.Automation.ErrorRecord] }) -join "`n"
+        $stderr | Should -Match 'Get-MutReferencingTests failed: folder not found'
+        $stdout | Should -Not -Match 'Get-MutReferencingTests failed'
     }
 
     It 'exits 1 when -Objects is not a list of integers' {

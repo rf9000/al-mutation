@@ -15,9 +15,9 @@
 
     .NOTES
     Prints one JSON line: [ { "codeunit": <id>, "objects": [<ids>] } ], sorted by codeunit id,
-    objects ascending; [] when no test codeunit references any of the objects. Parser warnings go
-    to stderr. Exit codes: 0 on success, also for []; 1 when a folder does not exist, or -Objects
-    is empty or holds a value that is not an integer. Starts no environment.
+    objects ascending; [] when no test codeunit references any of the objects. Parser warnings and
+    the failure line go to stderr. Exit codes: 0 on success, also for []; 1 when a folder does not
+    exist, or -Objects is empty or holds a value that is not an integer. Starts no environment.
 #>
 param(
     [Parameter(Mandatory = $true)]
@@ -92,6 +92,7 @@ try {
     exit 0
 }
 catch {
-    Write-Output "Get-MutReferencingTests failed: $($_.Exception.Message)"
+    # stderr, so a caller that shows stderr before stdout still sees the cause after any warnings.
+    [Console]::Error.WriteLine("Get-MutReferencingTests failed: $($_.Exception.Message)")
     exit 1
 }
