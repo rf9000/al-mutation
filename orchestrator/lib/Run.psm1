@@ -406,10 +406,12 @@ function Ensure-MutEnvironment {
 function Publish-MutBaseline {
     <#
         .SYNOPSIS
-        §6.5.4 step 3. Install-MutDependencies for aut-original and test-app (their response is
-        never gated on -- "nothing to install" for a dependency-free app, e.g. the fixture AUT,
-        is a normal outcome, not a failure); Publish-MutApp for Mutation Core, then aut-original,
-        then test-app (ruleset only when $Config.rulesets is not null; -AllowDowngrade always);
+        §6.5.4 step 3. Install-MutDependencies for aut-original, Mutation Core and (when
+        configured) its test app (the response is never gated on -- "nothing to install" for a
+        dependency-free app, e.g. the fixture AUT, is a normal outcome, not a failure);
+        Publish-MutApp for Mutation Core, then aut-original; then Install-MutDependencies for
+        test-app (after the AUT, so the AUT dependency is already satisfied) and Publish-MutApp
+        for test-app (ruleset only when $Config.rulesets is not null; -AllowDowngrade always);
         Grant-MutPermissionSet for every $Config.permissionSets entry; then, per test codeunit
         (so each codeunit's own test duration and coverage rows are unambiguous -- a single
         combined Invoke-MutTests call across codeunits would leave DurationMs and JobIds summed
@@ -460,8 +462,17 @@ function Publish-MutBaseline {
     $autPath = Join-Path $Config.workDir 'aut-original'
     $testAppPath = Join-Path $Config.workDir 'test-app'
 
+    # The test app's dependencies are installed after aut-original is published, not here: the
+    # test app depends on the AUT, and before the AUT is published `deps install` fetches the
+    # AUT's latest catalogue build instead. Run 1022 (mutant-fixer): that build had a table the
+    # PR branch did not have yet, and publishing aut-original over it was refused as a table
+    # removal. Mutation Core and its test app need Test Runner and Library Assert, which used to
+    # arrive with the test app's dependencies, so theirs are installed here explicitly.
     Install-MutDependencies -Env $Env -AppPath $autPath | Out-Null
-    Install-MutDependencies -Env $Env -AppPath $testAppPath | Out-Null
+    Install-MutDependencies -Env $Env -AppPath $Config.coreApp.path | Out-Null
+    if ((Test-MutHasProperty $Config 'coreAppTest') -and ($null -ne $Config.coreAppTest)) {
+        Install-MutDependencies -Env $Env -AppPath $Config.coreAppTest.path | Out-Null
+    }
 
     $rulesetFile = $null
     if ((Test-MutHasProperty $Config 'rulesets') -and ($null -ne $Config.rulesets)) {
@@ -519,6 +530,9 @@ function Publish-MutBaseline {
     if (-not $autResult.Success) {
         throw "Publish-MutBaseline: publishing aut-original failed. Code: $($autResult.Code); Message: $($autResult.ErrorMessage); Diagnostics: $(($autResult.Diagnostics | ConvertTo-Json -Depth 10 -Compress))"
     }
+
+    # The AUT is installed now, so this skips it and installs only the test app's other dependencies.
+    Install-MutDependencies -Env $Env -AppPath $testAppPath | Out-Null
 
     $testAppPublishParams = @{ Env = $Env; Path = $testAppPath; AllowDowngrade = $true }
     if ($rulesetFile) { $testAppPublishParams['Ruleset'] = $rulesetFile }

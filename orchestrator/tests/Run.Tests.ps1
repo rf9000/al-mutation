@@ -793,6 +793,69 @@ Describe 'Publish-MutBaseline: Mutation Core test app (coreAppTest)' {
     }
 }
 
+Describe 'Publish-MutBaseline: test app dependencies after the AUT (mutant-fixer run 1022)' {
+    <#
+        .SYNOPSIS
+        The test app depends on the AUT. Installing its dependencies before the AUT is published
+        made `deps install` fetch the AUT's latest catalogue build. That build had a table the PR
+        branch did not have yet, so publishing aut-original was refused as a table removal.
+        Installed after the AUT, the AUT dependency is already satisfied and skipped.
+    #>
+    BeforeEach {
+        $script:WorkDir = "$TestDrive/work-$([guid]::NewGuid().ToString('N'))"
+        $script:RunDir = Join-Path $script:WorkDir 'runs/1'
+        New-Item -ItemType Directory -Path $script:RunDir -Force | Out-Null
+        $script:Config = New-MutRunTestConfig -WorkDir $script:WorkDir
+        $script:Calls = New-Object System.Collections.ArrayList
+
+        Mock -ModuleName Run Install-MutDependencies { $null = $script:Calls.Add("deps:$AppPath") }
+        Mock -ModuleName Run Grant-MutPermissionSet { }
+        Mock -ModuleName Run Publish-MutApp {
+            $null = $script:Calls.Add("publish:$Path")
+            [pscustomobject]@{ Success = $true; Code = $null; Diagnostics = @(); DurationSec = 0.1 }
+        }
+        Mock -ModuleName Run Invoke-MutTests { throw 'stop-after-publishes' }
+    }
+
+    It 'installs the AUT dependencies before the AUT and the test app dependencies after it' {
+        { Publish-MutBaseline -Config $script:Config -Env $script:EnvHandle -RunDir $script:RunDir } |
+            Should -Throw '*stop-after-publishes*'
+
+        $calls = [string[]]@($script:Calls)
+        $find = { param($pattern) [array]::FindIndex($calls, [Predicate[string]] { param($c) $c -like $pattern }) }
+        $autDeps = & $find 'deps:*aut-original'
+        $autPublish = & $find 'publish:*aut-original'
+        $testDeps = & $find 'deps:*test-app'
+        $testPublish = & $find 'publish:*test-app'
+
+        $autDeps | Should -BeGreaterThan -1
+        $autPublish | Should -BeGreaterThan $autDeps
+        $testDeps | Should -BeGreaterThan $autPublish
+        $testPublish | Should -BeGreaterThan $testDeps
+    }
+
+    It 'installs the dependencies of Mutation Core and its test app before publishing them' {
+        # They used to arrive with the test app's dependencies (Test Runner, Library Assert).
+        $script:Config | Add-Member -NotePropertyName 'coreAppTest' -NotePropertyValue ([pscustomobject]@{
+            path  = 'C:/repo/core-app-test'
+            appId = '7a2e3d4b-9c5f-4e6a-8b7c-8d9e0f1a2b3c'
+        }) -Force
+
+        { Publish-MutBaseline -Config $script:Config -Env $script:EnvHandle -RunDir $script:RunDir } |
+            Should -Throw '*stop-after-publishes*'
+
+        $calls = [string[]]@($script:Calls)
+        $find = { param($pattern) [array]::FindIndex($calls, [Predicate[string]] { param($c) $c -like $pattern }) }
+        $coreDeps = & $find 'deps:*core-app'
+        $coreTestDeps = & $find 'deps:*core-app-test'
+
+        $coreDeps | Should -BeGreaterThan -1
+        $coreTestDeps | Should -BeGreaterThan -1
+        (& $find 'publish:*core-app') | Should -BeGreaterThan $coreDeps
+        (& $find 'publish:*core-app-test') | Should -BeGreaterThan $coreTestDeps
+    }
+}
+
 Describe 'Publish-MutBaseline: stale installed test suite (runs 5, 7 and 14)' {
     <#
         .SYNOPSIS
