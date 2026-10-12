@@ -1277,14 +1277,17 @@ This section adds two things: the failure message of each kill, and a repeated b
   turns the repeats off. The shipped configs set it explicitly.
 - **Step 3 (§6.5.4).** The first pass is today's coverage run, one `Invoke-MutTests -Coverage` per codeunit.
   Passes 2..`repeats` run `Invoke-MutTests` per codeunit **without** `-Coverage`. Durations and coverage come from
-  pass 1 only. A zero-test result in any pass aborts, as today.
+  pass 1 only. A zero-test result in pass 1 aborts, as today. A zero-test result in a later pass is retried once;
+  if it is empty again, that pass is left out for that codeunit with a warning, and the verdicts below count only
+  the passes that ran (mutant-fixer PR 57711, 2026-10-12: pass 2 of codeunit 95117 came back empty after pass 1 ran its tests). When a
+  `--json` response has no `summary`, `Invoke-MutTests` warns with the response text.
 - **Verdict per test.** Passes are counted per codeunit **id** and function. Pass 1 (`-Coverage`, the xUnit path)
   reports the codeunit id, while passes 2..N (the `--json` path) report its name, so a name-based count would split
   one test across two keys (T47 review). The reported key is built at the end as `<Codeunit>:<Function>` from the
   codeunit **name** seen in passes 2..N, cut to 30 characters, so it matches `killingTest` from every writer.
   Flaky tests are warned about before any abort, and the abort message names them too:
-  - It passes in every pass: stable.
-  - It fails in every pass: a real baseline failure, and the run aborts as today, listing every such test.
+  - It passes in every pass that ran: stable.
+  - It fails in every pass that ran: a real baseline failure, and the run aborts as today, listing every such test.
   - It fails in at least one pass but not all: **flaky**. A warning names each flaky test with its pass/fail
     count and its first error.
 - **Output.** `baseline.json` gains `repeats` (the number of passes) and `flakyTests`: `[ { test, passed, failed,

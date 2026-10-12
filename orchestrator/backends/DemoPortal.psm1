@@ -1754,6 +1754,11 @@ function Invoke-MutTests {
                 $totalDurationMs += [int][math]::Round($response.summary.durationSeconds * 1000)
             }
         }
+        else {
+            # Counts as zero tests; the response is the only clue to why (mutant-fixer PR 57711, 2026-10-12).
+            $responseJson = $response | ConvertTo-Json -Depth 6 -Compress
+            Write-Warning "Invoke-MutTests: test run for codeunit $($target.CodeunitId) returned no summary. Response: $($responseJson.Substring(0, [Math]::Min(2000, $responseJson.Length)))"
+        }
 
         $responseTests = $null
         if (Test-MutHasProperty $response 'tests') {

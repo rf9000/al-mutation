@@ -1148,13 +1148,52 @@ Describe 'Publish-MutBaseline: repeated baseline and flaky tests (§6.11.2)' {
         $caught.Exception.Message | Should -BeLike '*flaky*CU A:Wobbly*'
     }
 
-    It 'a zero-test result in a later pass aborts, naming the pass' {
-        $script:PassScript[50300] = @(@(, @('CU A', 'T1', 'Pass', $null)), @(), @(, @('CU A', 'T1', 'Pass', $null)))
-        $script:PassScript[50301] = @(@(, @('CU B', 'T2', 'Pass', $null)), @(, @('CU B', 'T2', 'Pass', $null)), @(, @('CU B', 'T2', 'Pass', $null)))
+    # mutant-fixer, PR 57711, 2026-10-12: pass 1 of codeunit 95117 ran its tests, pass 2 (--json) came back
+    # with zero. Later passes only look for flaky tests, so a zero-test pass is retried once and then left
+    # out for that codeunit instead of aborting the run.
+    It 'a zero-test result in a later pass is retried once; the retry counts as that pass' {
+        $script:PassScript[50300] = @(@(, @('50300', 'T1', 'Pass', $null)), @(), @(, @('CU A', 'T1', 'Pass', $null)), @(, @('CU A', 'T1', 'Pass', $null)))
+        $script:PassScript[50301] = @(@(, @('50301', 'T2', 'Pass', $null)), @(, @('CU B', 'T2', 'Pass', $null)), @(, @('CU B', 'T2', 'Pass', $null)))
 
-        { Publish-MutBaseline -Config $script:Config -Env $script:EnvHandle -RunDir $script:RunDir } |
-            Should -Throw '*pass 2*50300*zero tests*'
-        Test-Path (Join-Path $script:RunDir 'baseline.json') | Should -BeFalse
+        $result = Publish-MutBaseline -Config $script:Config -Env $script:EnvHandle -RunDir $script:RunDir -WarningVariable warnings -WarningAction SilentlyContinue
+
+        @($script:Calls | Where-Object { $_.Codeunit -eq 50300 }).Count | Should -Be 4
+        @($result.FlakyTests).Count | Should -Be 0
+        @($warnings | Where-Object { "$_" -like '*pass 2*50300*zero tests*retrying*' }).Count | Should -Be 1
+        Test-Path (Join-Path $script:RunDir 'baseline.json') | Should -BeTrue
+    }
+
+    It 'a later pass with zero tests twice is left out for that codeunit, with a warning, and the run goes on' {
+        $script:PassScript[50300] = @(@(, @('50300', 'T1', 'Pass', $null)), @(), @(), @(, @('CU A', 'T1', 'Pass', $null)))
+        $script:PassScript[50301] = @(@(, @('50301', 'T2', 'Pass', $null)), @(, @('CU B', 'T2', 'Pass', $null)), @(, @('CU B', 'T2', 'Pass', $null)))
+
+        $result = Publish-MutBaseline -Config $script:Config -Env $script:EnvHandle -RunDir $script:RunDir -WarningVariable warnings -WarningAction SilentlyContinue
+
+        @($result.FlakyTests).Count | Should -Be 0
+        @($warnings | Where-Object { "$_" -like '*pass 2*50300*left out*' }).Count | Should -Be 1
+        Test-Path (Join-Path $script:RunDir 'baseline.json') | Should -BeTrue
+    }
+
+    It 'a test failing in every pass that ran aborts although one pass was left out' {
+        $script:PassScript[50300] = @(@(, @('50300', 'Always', 'Fail', 'e1')), @(), @(), @(, @('CU A', 'Always', 'Fail', 'e1')))
+        $script:PassScript[50301] = @(@(, @('50301', 'T2', 'Pass', $null)), @(, @('CU B', 'T2', 'Pass', $null)), @(, @('CU B', 'T2', 'Pass', $null)))
+
+        $caught = $null
+        try { Publish-MutBaseline -Config $script:Config -Env $script:EnvHandle -RunDir $script:RunDir -WarningAction SilentlyContinue } catch { $caught = $_ }
+
+        $caught | Should -Not -BeNullOrEmpty
+        $caught.Exception.Message | Should -BeLike '*1 failing test(s)*CU A:Always -- e1*'
+    }
+
+    It 'a test failing in some of the passes that ran is flaky, with passes counted from those that ran' {
+        $script:PassScript[50300] = @(@(, @('50300', 'T1', 'Fail', 'boom')), @(), @(), @(, @('CU A', 'T1', 'Pass', $null)))
+        $script:PassScript[50301] = @(@(, @('50301', 'T2', 'Pass', $null)), @(, @('CU B', 'T2', 'Pass', $null)), @(, @('CU B', 'T2', 'Pass', $null)))
+
+        $result = Publish-MutBaseline -Config $script:Config -Env $script:EnvHandle -RunDir $script:RunDir -WarningAction SilentlyContinue
+
+        @($result.FlakyTests).Count | Should -Be 1
+        $result.FlakyTests[0].failed | Should -Be 1
+        $result.FlakyTests[0].passed | Should -Be 1
     }
 
     It 'repeats 1 reproduces today: one Invoke-MutTests -Coverage per codeunit, no flaky tests, repeats 1 in baseline.json' {

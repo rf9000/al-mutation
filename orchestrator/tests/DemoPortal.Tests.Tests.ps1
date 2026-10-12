@@ -79,6 +79,18 @@ Describe 'Invoke-MutTests' {
         } -Times 1
     }
 
+    It 'warns with the response when it has no summary, and counts zero tests' {
+        Mock -ModuleName DemoPortal Invoke-Continia {
+            [pscustomobject]@{ status = 'failed'; message = 'job never started' }
+        }
+
+        $result = Invoke-MutTests -Env $envHandle -Targets @([pscustomobject]@{ CodeunitId = 95117; Function = $null }) -TimeoutSec 30 -WarningVariable warnings -WarningAction SilentlyContinue
+
+        $result.Passed | Should -Be 0
+        $result.Failed | Should -Be 0
+        @($warnings | Where-Object { "$_" -like '*95117*no summary*job never started*' }).Count | Should -Be 1
+    }
+
     It 'uses TimeoutSec + 60s margin for its own process timeout' {
         Mock -ModuleName DemoPortal Invoke-Continia {
             [pscustomobject]@{

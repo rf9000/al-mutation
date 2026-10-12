@@ -625,18 +625,33 @@ function Publish-MutBaseline {
         }
     }
 
-    # §6.11.2: passes 2..repeats, without -Coverage; only the verdicts are used from them.
+    # §6.11.2: passes 2..repeats, without -Coverage; only the verdicts are used from them. Pass 1 has
+    # already shown each codeunit runs, so a zero-test later pass is retried once and then left out for
+    # that codeunit (mutant-fixer PR 57711, 2026-10-12: pass 2 of 95117 came back empty after pass 1 ran its tests). The verdicts
+    # count only the passes that ran ($passesByCodeunit).
+    $passesByCodeunit = @{}
+    foreach ($codeunitId in $testCodeunits) { $passesByCodeunit["$codeunitId"] = 1 }
     for ($pass = 2; $pass -le $repeats; $pass++) {
         foreach ($codeunitId in $testCodeunits) {
             $target = @([pscustomobject]@{ CodeunitId = $codeunitId; Function = $null })
             $result = Invoke-MutTests -Env $Env -Targets $target -TimeoutSec $script:MutWholeSuiteTimeoutSec
 
             if (($result.Passed + $result.Failed) -eq 0) {
-                throw "Publish-MutBaseline: the baseline test run (pass $pass of $repeats) for codeunit $codeunitId reported zero tests (Passed=0, Failed=0); aborting rather than recording an empty baseline."
+                Write-Warning "Publish-MutBaseline: the baseline test run (pass $pass of $repeats) for codeunit $codeunitId reported zero tests (Passed=0, Failed=0); retrying once."
+                $result = Invoke-MutTests -Env $Env -Targets $target -TimeoutSec $script:MutWholeSuiteTimeoutSec
+            }
+            if (($result.Passed + $result.Failed) -eq 0) {
+                Write-Warning "Publish-MutBaseline: the baseline test run (pass $pass of $repeats) for codeunit $codeunitId reported zero tests again; this pass is left out for the codeunit, so its flaky-test check has one pass fewer."
+                continue
             }
 
             & $recordPass $result.Tests $pass $codeunitId
+            $passesByCodeunit["$codeunitId"]++
         }
+    }
+    $passesOf = {
+        param([string]$IdKey)
+        return $passesByCodeunit[$IdKey.Substring(0, $IdKey.IndexOf('|'))]
     }
 
     # Display name per codeunit id: any row whose Codeunit is not the id (passes 2..N always supply the name).
@@ -653,7 +668,7 @@ function Publish-MutBaseline {
 
     # A test failing in some passes only is flaky; computed and warned before the all-fail abort so the
     # abort message can name them too.
-    $flakyKeys = @($verdictsByKey.Keys | Where-Object { ($verdictsByKey[$_].Failed -gt 0) -and ($verdictsByKey[$_].Failed -lt $repeats) })
+    $flakyKeys = @($verdictsByKey.Keys | Where-Object { ($verdictsByKey[$_].Failed -gt 0) -and ($verdictsByKey[$_].Failed -lt (& $passesOf $_)) })
     $flakyTests = @()
     foreach ($idKey in $flakyKeys) {
         $separator = $idKey.IndexOf('|')
@@ -666,12 +681,12 @@ function Publish-MutBaseline {
     [System.Array]::Sort($flakyKeysOrdinal, $flakyItems, [System.StringComparer]::Ordinal)
     $flakyTests = @($flakyItems)
     foreach ($flaky in $flakyTests) {
-        Write-Warning "Publish-MutBaseline: flaky baseline test $($flaky.test) -- failed in $($flaky.failed) and passed in $($flaky.passed) of $repeats pass(es); first error: $($flaky.error). A kill by this test alone is reported as unreliable (§6.11.3)."
+        Write-Warning "Publish-MutBaseline: flaky baseline test $($flaky.test) -- failed in $($flaky.failed) and passed in $($flaky.passed) of $($flaky.failed + $flaky.passed) pass(es); first error: $($flaky.error). A kill by this test alone is reported as unreliable (§6.11.3)."
     }
 
     # A test failing in every pass is a real baseline failure.
     foreach ($failure in $pass1Failures) {
-        if ($verdictsByKey[$failure.Key].Failed -ge $repeats) {
+        if ($verdictsByKey[$failure.Key].Failed -ge (& $passesOf $failure.Key)) {
             $codeunitName = $failure.CodeunitId
             if ($nameByCodeunit.ContainsKey($failure.CodeunitId)) { $codeunitName = $nameByCodeunit[$failure.CodeunitId] }
             $failingTests += "${codeunitName}:$($failure.Function) -- $($failure.Error)"
