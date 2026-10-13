@@ -482,12 +482,14 @@ interface MutantCandidate {
   target: { kind: 'condition'; cond: Condition } | { kind: 'statement'; stmt: SimpleStatement };
   original: string;                    // original condition or statement text (tokens joined with original spacing)
   mutated: string;                     // replacement text; '' for DEL
-  occurrence: number;                  // 0-based index among candidates with the same (procedure, operator, original, mutated)
+  occurrence: number;                  // 0-based index among candidates with the same (procedure name, operator, original, mutated); overloads share the count
 }
 interface Operator { name: OperatorName; kind: 'condition' | 'statement'; apply(ctx: { tokens: Token[]; span: ProcedureSpan; header: ObjectHeader; source: string }, target: Condition | SimpleStatement): MutantCandidate[]; }
 // `source` is the original file text; `original`/`mutated` are built from source slices by token offsets so spacing is preserved.
 // Operators emit occurrence = 0; the pipeline calls assignOccurrences(candidatesOfOneProcedure) (src/operators/types.ts),
-// which fills `occurrence` per (operator|original|mutated) group in order.
+// which fills `occurrence` per (operator|original|mutated) group in order. Overloads (same procedure name in one
+// object) pass one shared counter, because the stableKey has no parameter list: restarting at 0 gave two
+// overloads the same stableKey (mutant-fixer run 1027, Internal_EntityWithSameKeyExists on MUT Mutant).
 ```
 `OPERATOR_ORDER = ['REL','BOOL','NOT','COND','DEL','INSFLAG','BREAK']`.
 

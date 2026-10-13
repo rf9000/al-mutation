@@ -280,3 +280,41 @@ test('generate(): a leading UTF-8 BOM is stripped instead of failing the whole f
     'expected mutants from the BOM-prefixed file',
   );
 });
+
+// Banking !58617 (mutant-fixer run 1027): two overloads of HandleErrorResponse held the same
+// statement once each; occurrence restarted at 0 per procedure body, so both mutants got the
+// same stableKey and the MUT Mutant POST hit the table's unique index.
+const OVERLOAD_CODEUNIT = `codeunit 50212 "Overload Cu"
+{
+    procedure Handle(A: Integer)
+    begin
+        if Check(A) then
+            exit;
+    end;
+
+    procedure Handle(A: Integer; B: Integer)
+    begin
+        if Check(A) then
+            exit;
+    end;
+
+    procedure Check(A: Integer): Boolean
+    begin
+        exit(A > 0);
+    end;
+}
+`;
+
+test('generate() gives mutants in overloaded procedures distinct stableKeys (run 1027)', () => {
+  const autDir = tmpDir();
+  fs.writeFileSync(path.join(autDir, 'app.json'), APP_JSON, 'utf8');
+  fs.mkdirSync(path.join(autDir, 'src'));
+  fs.writeFileSync(path.join(autDir, 'src', 'Overload.Codeunit.al'), OVERLOAD_CODEUNIT, 'utf8');
+
+  const result = generate(baseOptions(autDir, tmpDir()));
+
+  const inHandle = result.mutants.filter((m) => m.procedureName === 'Handle');
+  assert.ok(inHandle.length >= 2, 'expected mutants in both Handle overloads');
+  const keys = result.mutants.map((m) => m.stableKey);
+  assert.equal(new Set(keys).size, keys.length, 'every stableKey must be unique');
+});

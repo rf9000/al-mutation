@@ -120,6 +120,8 @@ function generateCandidatesForFile(
   const procedures: ProcedureSpan[] = findProcedures(tokens);
   const allowedOperators = new Set(options.operators);
   const candidates: CandidateWithFile[] = [];
+  // Occurrence counters per procedure name (AL names are case-insensitive), shared by overloads.
+  const occurrenceCounts = new Map<string, Map<string, number>>();
 
   for (const span of procedures) {
     const conditions = findConditions(tokens, span);
@@ -193,7 +195,13 @@ function generateCandidatesForFile(
       }
     }
 
-    const withOccurrence = assignOccurrences(procCandidates);
+    const procKey = span.name.toLowerCase();
+    let counts = occurrenceCounts.get(procKey);
+    if (counts === undefined) {
+      counts = new Map<string, number>();
+      occurrenceCounts.set(procKey, counts);
+    }
+    const withOccurrence = assignOccurrences(procCandidates, counts);
     for (const candidate of withOccurrence) {
       candidates.push({ ...candidate, file: relPath });
     }

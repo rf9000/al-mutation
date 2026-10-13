@@ -142,9 +142,16 @@ export function statementCandidateBase(
  * cannot see siblings); the pipeline (T21) calls this once per procedure,
  * over all of that procedure's candidates in enumeration order (§6.4.8),
  * before moving to the next procedure.
+ *
+ * `counts` lets overloads (same procedure name in one object) share one
+ * counter: the stableKey has no parameter list, so an overload restarting at
+ * 0 repeats its sibling's key (mutant-fixer run 1027). A procedure without
+ * overloads gets the same occurrences as before.
  */
-export function assignOccurrences(candidates: readonly MutantCandidate[]): MutantCandidate[] {
-  const counts = new Map<string, number>();
+export function assignOccurrences(
+  candidates: readonly MutantCandidate[],
+  counts: Map<string, number> = new Map<string, number>(),
+): MutantCandidate[] {
   return candidates.map((c) => {
     const key = JSON.stringify([c.operator, c.original, c.mutated]);
     const occurrence = counts.get(key) ?? 0;
