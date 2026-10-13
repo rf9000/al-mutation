@@ -859,12 +859,60 @@ function Invoke-MutFixVerify {
     return $doc
 }
 
+function New-MutFixStepPatches {
+    <#
+        .SYNOPSIS
+        Private. §6.8.3 step 4. One patch per fix, in fixId order. Step k is built from
+        $SourcePath with fixes 1..k (Invoke-MutFixApply locates anchors on the unpatched copy,
+        so a step is never built on the previous step's folder). Patch k is the diff between
+        step k-1 and step k (step 0 = $SourcePath). Applied in order they give the patch of all
+        fixes. A fix whose patch is empty is left out. Only two step folders exist at a time,
+        under $StepsDir, which is deleted at the end. Returns `{ fixId; patch }` entries.
+    #>
+    param(
+        [Parameter(Mandatory = $true)][string]$SourcePath,
+        [Parameter(Mandatory = $true)][AllowEmptyCollection()][object[]]$Fixes,
+        [Parameter(Mandatory = $true)][string]$StepsDir
+    )
+
+    $ordered = @($Fixes | Sort-Object -Property fixId)
+    $entries = @()
+    if ($ordered.Count -eq 0) {
+        return , $entries
+    }
+
+    $utf8 = New-Object System.Text.UTF8Encoding($false)
+    $patchFile = Join-Path $StepsDir 'step.patch'
+    if (Test-Path -LiteralPath $StepsDir) {
+        Remove-Item -LiteralPath $StepsDir -Recurse -Force
+    }
+    New-Item -ItemType Directory -Force -Path $StepsDir | Out-Null
+    try {
+        $prev = $SourcePath
+        for ($k = 0; $k -lt $ordered.Count; $k++) {
+            $cur = Join-Path $StepsDir ('step' + ($k % 2))
+            Invoke-MutFixApply -SourcePath $SourcePath -DestinationPath $cur -Fixes @($ordered[0..$k]) | Out-Null
+            New-MutTestPatch -OriginalPath $prev -PatchedPath $cur -OutPath $patchFile
+            $text = $utf8.GetString([System.IO.File]::ReadAllBytes($patchFile))
+            if ($text.Length -gt 0) {
+                $entries += [pscustomobject][ordered]@{ fixId = [string]$ordered[$k].fixId; patch = $text }
+            }
+            $prev = $cur
+        }
+    }
+    finally {
+        Remove-Item -LiteralPath $StepsDir -Recurse -Force -ErrorAction SilentlyContinue
+    }
+    return , $entries
+}
+
 function Export-MutFixDelivery {
     <#
         .SYNOPSIS
         §6.8.3 step 4. (-Config: a config object, or a path loaded through Get-MutConfig.) Applies only the `verified` entries of results/<N>-fixes.json to
         <workDir>/fix-verify/<N>/delivery/test-app, writes results/<N>-tests.patch against
-        <workDir>/test-app (New-MutTestPatch) and results/<N>-verified.md. Pure file work.
+        <workDir>/test-app (New-MutTestPatch), results/<N>-fix-patches.json (one step patch
+        per verified fix, New-MutFixStepPatches) and results/<N>-verified.md. Pure file work.
     #>
     param(
         [Parameter(Mandatory = $true)][int]$RunNo,
@@ -894,6 +942,7 @@ function Export-MutFixDelivery {
     $verifiedPath = Join-Path (Get-MutResultsDir -RepoRoot $RepoRoot) "$RunNo-verified.json"
     $patchPath = Join-Path (Get-MutResultsDir -RepoRoot $RepoRoot) "$RunNo-tests.patch"
     $mdPath = Join-Path (Get-MutResultsDir -RepoRoot $RepoRoot) "$RunNo-verified.md"
+    $fixPatchesPath = Join-Path (Get-MutResultsDir -RepoRoot $RepoRoot) "$RunNo-fix-patches.json"
     foreach ($p in @($fixesPath, $verifiedPath)) {
         if (-not (Test-Path -LiteralPath $p)) { throw "Export-MutFixDelivery: $p not found" }
     }
@@ -910,6 +959,12 @@ function Export-MutFixDelivery {
 
     Invoke-MutFixApply -SourcePath $sourceTestApp -DestinationPath $deliveryApp -Fixes @($toApply) | Out-Null
     New-MutTestPatch -OriginalPath $sourceTestApp -PatchedPath $deliveryApp -OutPath $patchPath
+
+    # fix-patches.json: one step patch per verified fix, for a commit per fix.
+    $stepsDir = Join-Path (Join-Path (Join-Path $workDir 'fix-verify') ([string]$RunNo)) 'steps'
+    $stepPatches = New-MutFixStepPatches -SourcePath $sourceTestApp -Fixes @($toApply) -StepsDir $stepsDir
+    $fixPatchesDoc = [ordered]@{ runNo = $RunNo; root = 'test-app'; patches = @($stepPatches) }
+    [System.IO.File]::WriteAllText($fixPatchesPath, ($fixPatchesDoc | ConvertTo-Json -Depth 5), (New-Object System.Text.UTF8Encoding($false)))
 
     # verified.md
     $verdicts = @('verified', 'compile-failed', 'fails-on-original', 'not-killed', 'env-error', 'skipped-equivalent')

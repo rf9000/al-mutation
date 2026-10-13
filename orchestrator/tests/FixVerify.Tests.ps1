@@ -937,6 +937,150 @@ Describe 'Export-MutFixDelivery' {
     }
 }
 
+Describe 'Export-MutFixDelivery fix-patches.json' {
+    BeforeAll {
+        function script:Write-FpRun {
+            # Writes fixes.json with $Fixes and verified.json with every fixId in $VerifiedIds verified.
+            param([object[]]$Fixes, [string[]]$VerifiedIds)
+            $fixesDoc = [pscustomobject]@{ runNo = 7; generatedUtc = '2026-10-01T00:00:00Z'; fixes = @($Fixes) }
+            $fixesDoc | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath (Join-Path $script:Repo 'results\7-fixes.json') -Encoding UTF8
+            $entries = @()
+            foreach ($f in $Fixes) {
+                $verdict = 'not-killed'
+                if ($VerifiedIds -contains $f.fixId) { $verdict = 'verified' }
+                $entries += [ordered]@{ fixId = $f.fixId; revision = 0; verdict = $verdict; verifiedUtc = '2026-10-02T09:58:00Z'
+                    compile = [ordered]@{ ok = $true; diagnostics = @() }; original = [ordered]@{ result = 'Pass'; error = $null; durationMs = 1 }
+                    mutants = @([ordered]@{ mutantId = 5; outcome = 'killed'; error = 'x'; durationMs = 1 }) }
+            }
+            [ordered]@{ runNo = 7; verifyRunNo = -7; updatedUtc = '2026-10-02T10:00:00Z'; environmentName = 'mut-x'; entries = @($entries); unmappedDiagnostics = @() } |
+                ConvertTo-Json -Depth 10 | Set-Content -LiteralPath (Join-Path $script:Repo 'results\7-verified.json') -Encoding UTF8
+        }
+
+        function script:Read-FpDoc {
+            $path = Join-Path $script:Repo 'results\7-fix-patches.json'
+            $bytes = [System.IO.File]::ReadAllBytes($path)
+            ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF) | Should -BeFalse
+            return ConvertFrom-Json -InputObject ((New-Object System.Text.UTF8Encoding($false)).GetString($bytes))
+        }
+
+        function script:Get-FpTree {
+            # Relative path -> raw bytes as base64, for an exact tree comparison.
+            param([string]$Root)
+            $full = (Resolve-Path -LiteralPath $Root).Path.TrimEnd('\')
+            $map = [ordered]@{}
+            foreach ($f in @(Get-ChildItem -LiteralPath $full -Recurse -File | Sort-Object FullName)) {
+                $map[$f.FullName.Substring($full.Length + 1)] = [Convert]::ToBase64String([System.IO.File]::ReadAllBytes($f.FullName))
+            }
+            return $map
+        }
+
+        function script:Invoke-FpGitApply {
+            param([string]$Dir, [string]$PatchText)
+            $p = Join-Path $TestDrive ('p' + [guid]::NewGuid().ToString('N') + '.patch')
+            [System.IO.File]::WriteAllText($p, $PatchText, (New-Object System.Text.UTF8Encoding($false)))
+            Push-Location $Dir
+            try {
+                & git -c core.autocrlf=false apply -p1 $p
+                $LASTEXITCODE | Should -Be 0
+            }
+            finally { Pop-Location }
+        }
+    }
+
+    BeforeEach {
+        $id = [guid]::NewGuid().ToString('N')
+        $script:Repo = Join-Path $TestDrive "repo$id"
+        $script:Work = Join-Path $TestDrive "work$id"
+        New-Item -ItemType Directory -Force -Path (Join-Path $script:Repo 'results') | Out-Null
+        Write-FvFile -Path (Join-Path $script:Work 'test-app\Sub\T.Codeunit.al') -Lines $script:BaseLines -Eol "`r`n"
+        Write-FvFile -Path (Join-Path $script:Work 'test-app\Other\U.Codeunit.al') -Lines ($script:BaseLines -replace '50300 "T One"', '50301 "U Two"')
+        $script:Cfg = [pscustomobject]@{ workDir = $script:Work }
+    }
+
+    It 'writes one entry per verified fix in fixId order, UTF-8 without BOM, and removes the step folders' {
+        $f3 = New-FvFix -Id 'F003' -Procedure 'C' -Change 'new-test' -Code "    [Test]`n    procedure C()`n    begin`n    end;"
+        $f1 = New-FvFix -Id 'F001' -Procedure 'A' -After 8 -Code '        Assert.AreEqual(1, X, ''one'');'
+        $f2 = New-FvFix -Id 'F002' -File 'Other/U.Codeunit.al' -Procedure 'B' -After 14 -Code '        Assert.AreEqual(2, Y, ''two'');'
+        $f4 = New-FvFix -Id 'F004' -Procedure 'B' -After 14 -Code '        NotVerified;'
+        Write-FpRun -Fixes @($f3, $f1, $f4, $f2) -VerifiedIds @('F001', 'F002', 'F003')
+
+        Export-MutFixDelivery -RunNo 7 -RepoRoot $script:Repo -Config $script:Cfg
+
+        $doc = Read-FpDoc
+        $doc.runNo | Should -Be 7
+        $doc.root | Should -Be 'test-app'
+        @($doc.patches | ForEach-Object { $_.fixId }) | Should -Be @('F001', 'F002', 'F003')
+        @($doc.patches)[0].patch | Should -Match '(?m)^diff --git a/Sub/T\.Codeunit\.al b/Sub/T\.Codeunit\.al'
+        @($doc.patches)[0].patch | Should -Match "\+        Assert.AreEqual\(1, X, 'one'\);\r"
+        @($doc.patches)[0].patch | Should -Not -Match 'Other/U'
+        @($doc.patches)[1].patch | Should -Match '(?m)^diff --git a/Other/U\.Codeunit\.al b/Other/U\.Codeunit\.al'
+        @($doc.patches)[1].patch | Should -Not -Match 'Sub/T'
+        @($doc.patches)[2].patch | Should -Match 'procedure C\(\)'
+        @($doc.patches)[2].patch | Should -Not -Match 'Assert.AreEqual\(1'
+        Test-Path -LiteralPath (Join-Path $script:Work 'fix-verify\7\steps') | Should -BeFalse
+    }
+
+    It 'step patches applied in order with git apply -p1 give the same tree as tests.patch, also for adjacent edits in one procedure' {
+        # F001 and F002 sit on adjacent anchors (lines 7 and 8) of procedure A: overlapping context.
+        $f1 = New-FvFix -Id 'F001' -Procedure 'A' -After 8 -Code '        Assert.AreEqual(1, X, ''one'');'
+        $f2 = New-FvFix -Id 'F002' -Procedure 'A' -After 7 -Code "        Setup();`n        Init();"
+        $f3 = New-FvFix -Id 'F003' -Procedure 'B' -After 13 -Code '        Pre;'
+        $f4 = New-FvFix -Id 'F004' -Procedure 'D' -Change 'new-test' -Code "    [Test]`n    procedure D()`n    begin`n    end;"
+        Write-FpRun -Fixes @($f4, $f2, $f3, $f1) -VerifiedIds @('F001', 'F002', 'F003', 'F004')
+
+        Export-MutFixDelivery -RunNo 7 -RepoRoot $script:Repo -Config $script:Cfg
+
+        $doc = Read-FpDoc
+        @($doc.patches).Count | Should -Be 4
+        $stepCopy = Join-Path $TestDrive ('steps' + [guid]::NewGuid().ToString('N'))
+        $fullCopy = Join-Path $TestDrive ('full' + [guid]::NewGuid().ToString('N'))
+        Copy-Item -Recurse -LiteralPath (Join-Path $script:Work 'test-app') -Destination $stepCopy
+        Copy-Item -Recurse -LiteralPath (Join-Path $script:Work 'test-app') -Destination $fullCopy
+        foreach ($p in @($doc.patches)) { Invoke-FpGitApply -Dir $stepCopy -PatchText $p.patch }
+        $full = (New-Object System.Text.UTF8Encoding($false)).GetString([System.IO.File]::ReadAllBytes((Join-Path $script:Repo 'results\7-tests.patch')))
+        Invoke-FpGitApply -Dir $fullCopy -PatchText $full
+
+        $stepTree = Get-FpTree $stepCopy
+        $fullTree = Get-FpTree $fullCopy
+        $deliveryTree = Get-FpTree (Join-Path $script:Work 'fix-verify\7\delivery\test-app')
+        @($stepTree.Keys) | Should -Be @($fullTree.Keys)
+        foreach ($k in @($fullTree.Keys)) {
+            $stepTree[$k] | Should -BeExactly $fullTree[$k]
+            $stepTree[$k] | Should -BeExactly $deliveryTree[$k]
+        }
+    }
+
+    It 'leaves out a fix whose step patch is empty' {
+        $f1 = New-FvFix -Id 'F001' -Procedure 'A' -After 8 -Code '        One;'
+        $f2 = New-FvFix -Id 'F002' -Procedure 'B' -After 14 -Code '        Never;' -Verdict 'equivalent'
+        Write-FpRun -Fixes @($f1, $f2) -VerifiedIds @('F001', 'F002')
+        Export-MutFixDelivery -RunNo 7 -RepoRoot $script:Repo -Config $script:Cfg
+        @((Read-FpDoc).patches | ForEach-Object { $_.fixId }) | Should -Be @('F001')
+    }
+
+    It 'writes an empty patches array when nothing is verified' {
+        $f1 = New-FvFix -Id 'F001' -Procedure 'A' -After 8 -Code '        One;'
+        Write-FpRun -Fixes @($f1) -VerifiedIds @()
+        Export-MutFixDelivery -RunNo 7 -RepoRoot $script:Repo -Config $script:Cfg
+        $raw = [System.IO.File]::ReadAllText((Join-Path $script:Repo 'results\7-fix-patches.json'))
+        $raw | Should -Match '"patches":\s*\[\s*\]'
+        $doc = Read-FpDoc
+        $doc.runNo | Should -Be 7
+        $doc.root | Should -Be 'test-app'
+        @($doc.patches).Count | Should -Be 0
+    }
+
+    It 'writes a one-element patches array for a single verified fix' {
+        $f1 = New-FvFix -Id 'F001' -Procedure 'A' -After 8 -Code '        One;'
+        Write-FpRun -Fixes @($f1) -VerifiedIds @('F001')
+        Export-MutFixDelivery -RunNo 7 -RepoRoot $script:Repo -Config $script:Cfg
+        $raw = [System.IO.File]::ReadAllText((Join-Path $script:Repo 'results\7-fix-patches.json'))
+        $raw | Should -Match '"patches":\s*\[\s*\{'
+        $raw | Should -Not -Match '"Count"'
+        @((Read-FpDoc).patches)[0].fixId | Should -Be 'F001'
+    }
+}
+
 Describe 'Export-MutFixDelivery with MUT_RESULTS_DIR and MUT_WORK_DIR (Linux port)' {
     BeforeEach {
         $id = [guid]::NewGuid().ToString('N')

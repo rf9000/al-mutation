@@ -991,12 +991,19 @@ Invoked as `/mutation-fix-verify <RunNo>`. Procedure the skill MUST prescribe:
    loop if rounds are left; otherwise it is marked by this run's verdict.
 4. **Deliver.** `Export-MutFixDelivery -RunNo <N>` applies only the `verified` entries to
    `out/fix-verify/<N>/delivery/test-app`, writes `results/<N>-tests.patch` with `New-MutTestPatch` against `out/test-app`,
-   and writes `results/<N>-verified.md`. The markdown has:
+   writes `results/<N>-fix-patches.json` (§7.10), and writes `results/<N>-verified.md`. The markdown has:
    - counts per verdict;
    - one line per entry: fixId, mutants killed out of total, revision;
    - every failure with its evidence;
    - how to apply: `git apply -p1 <patch>` in the test-app root, and the reminder that line numbers came from the
      `out/test-app` snapshot (§6.7.5).
+
+   `fix-patches.json` holds one step patch per verified fix, in `fixId` order. Step k is the test app with verified
+   fixes 1..k applied, always built from `out/test-app` with `Invoke-MutFixApply` (anchors are found on the unpatched
+   copy, so a step is never built on top of the previous one). Step 0 is `out/test-app` itself. Patch k is
+   `New-MutTestPatch` between step k-1 and step k. Applied in order, the patches give the same tree as `tests.patch`.
+   A fix whose patch is empty is left out. Only two step folders exist at a time, under `out/fix-verify/<N>/steps`,
+   and they are deleted at the end.
 5. The skill never commits to, or writes into, the test-app repository.
 
 ### 6.9 Headless use (external callers)
@@ -1013,8 +1020,8 @@ repository. `<N>` is chosen by the caller.
 3. An agent session runs `/mutation-fix-suggest <N>` with a headless prompt (§6.9.6).
 4. `powershell -NoProfile -File orchestrator/Test-MutFixReport.ps1 -RunNo <N>` prints `ok`.
 5. An agent session runs `/mutation-fix-verify <N>` with a headless prompt and a list of fix ids.
-6. The caller reads `results/<N>-fixes.json`, `results/<N>-fixes.md`, `results/<N>-verified.json` and
-   `results/<N>-tests.patch`.
+6. The caller reads `results/<N>-fixes.json`, `results/<N>-fixes.md`, `results/<N>-verified.json`,
+   `results/<N>-tests.patch` and `results/<N>-fix-patches.json`.
 
 #### 6.9.2 External config and sources
 - The config file may live anywhere. Relative paths inside it still resolve against the repository root (§6.5.1), so
@@ -1066,8 +1073,8 @@ A prompt that contains `HEADLESS RUN` makes both skills run unattended:
 - every hard rule of §6.7.3 and §6.8 still applies.
 
 #### 6.9.7 Stable outputs
-External callers depend on the file names and fields of §7.8 and §7.9 (`results/<N>-fixes.json`,
-`results/<N>-fixes.md`, `results/<N>-verified.json`, `results/<N>-tests.patch`). Paths in `results/<N>-tests.patch`
+External callers depend on the file names and fields of §7.8, §7.9 and §7.10 (`results/<N>-fixes.json`,
+`results/<N>-fixes.md`, `results/<N>-verified.json`, `results/<N>-tests.patch`, `results/<N>-fix-patches.json`). Paths in `results/<N>-tests.patch`
 are relative to the test-app root (`testApp.sourcePath`), as `a/<file>` and `b/<file>`: apply it with
 `git apply -p1 results/<N>-tests.patch` run in the test-app root, or with `git apply -p1 --directory=<test-app folder>`
 from the repository root that contains the test app (§6.8.1). Renaming a file or a field is a breaking change: tell the callers
@@ -1438,6 +1445,23 @@ Validation rules are in §6.7.4.
 
 `results/<RunNo>-fixes.json` (§7.8) gains one optional field: `revision` (integer, default 0). Only §6.8.3 increments
 it. `Test-MutFixReport` ignores it.
+
+### 7.10 `results/<RunNo>-fix-patches.json`
+```json
+{ "runNo": 1033, "root": "test-app",
+  "patches": [{ "fixId": "F001", "patch": "diff --git a/Sub/T.Codeunit.al b/Sub/T.Codeunit.al
+..." }] }
+```
+Written by `Export-MutFixDelivery` (§6.8.3 step 4), UTF-8 without BOM. One entry per verified fix, sorted by `fixId`
+(ordinal). A fix whose patch is empty has no entry. No verified fix gives `"patches": []`.
+
+`patch` is a step patch: the diff from the test app with the earlier verified fixes applied to the test app with this
+fix applied as well. Its text is exactly the bytes `New-MutTestPatch` wrote, CRLF lines included. Paths are
+`a/<file>` and `b/<file>` relative to the test-app root, as in `tests.patch`. `root` names that root.
+
+Apply the patches in order. Each one needs the ones before it. Together they give the same tree as `tests.patch`.
+DevOpsCoder applies them one commit per fix with `git apply -p1 --directory=<test app path in repo>`, run from the
+repository root.
 
 ---
 
