@@ -459,6 +459,15 @@ Describe 'Publish-MutAppFile' {
         (Publish-MutAppFile -Env $envHandle -AppFile 'C:/out/schemata.app').Success | Should -Be $false
     }
 
+    It 'carries the raw response as ErrorMessage when a failure has neither code nor error' {
+        Mock -ModuleName DemoPortal Invoke-Continia { [pscustomobject]@{ success = $false; status = 'environment_not_running' } }
+
+        $result = Publish-MutAppFile -Env $envHandle -AppFile 'C:/out/schemata.app'
+
+        $result.Success | Should -Be $false
+        $result.ErrorMessage | Should -BeLike 'no code or error in the CLI response: *environment_not_running*'
+    }
+
     It 'returns Success=$false with Code and ErrorMessage from the single-object run-level failure shape (M6)' {
         Mock -ModuleName DemoPortal Invoke-Continia {
             [pscustomobject]@{

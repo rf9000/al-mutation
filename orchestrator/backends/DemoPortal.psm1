@@ -1475,6 +1475,14 @@ function Publish-MutAppFile {
         $errorMessage = $result.error
     }
 
+    # A failure with neither field (run 1034: "Code: ; Message:") names nothing; carry the
+    # raw response instead, so the reason reaches the job log.
+    if (-not $success -and [string]::IsNullOrWhiteSpace([string]$code) -and [string]::IsNullOrWhiteSpace([string]$errorMessage)) {
+        $raw = ConvertTo-Json -InputObject $result -Depth 6 -Compress
+        if ($raw.Length -gt 2000) { $raw = $raw.Substring(0, 2000) + '...' }
+        $errorMessage = "no code or error in the CLI response: $raw"
+    }
+
     return [pscustomobject]@{
         Success      = $success
         DurationSec  = $durationSec
