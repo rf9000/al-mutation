@@ -433,6 +433,13 @@ function Assert-MutWorkDirOutsideSources {
     if ((Test-MutHasProperty $Config 'rulesets') -and ($null -ne $Config.rulesets)) {
         $sources += [pscustomobject]@{ KeyPath = 'rulesets.sourcePath'; Path = $Config.rulesets.sourcePath }
     }
+    if ((Test-MutHasProperty $Config 'extraApps') -and ($null -ne $Config.extraApps)) {
+        $index = 0
+        foreach ($extraApp in @($Config.extraApps)) {
+            $sources += [pscustomobject]@{ KeyPath = "extraApps[$index].sourcePath"; Path = $extraApp.sourcePath }
+            $index++
+        }
+    }
 
     foreach ($source in $sources) {
         $sourceLiteral = Remove-MutTrailingSeparator ([System.IO.Path]::GetFullPath((Resolve-MutConfigPath -RepoRoot $RepoRoot -Path $source.Path)))
@@ -541,6 +548,28 @@ function Assert-MutConfigShape {
         Assert-MutNonEmptyString $Config.coreAppTest 'appId' 'coreAppTest.appId'
     }
 
+    # extraApps is OPTIONAL: apps the tests need at runtime only (no app.json dependency pulls them
+    # in), published from source after the AUT. Each name becomes the folder <workDir>/extra-apps/<name>.
+    if ((Test-MutHasProperty $Config 'extraApps') -and ($null -ne $Config.extraApps)) {
+        if ($Config.extraApps -isnot [array]) {
+            throw "Get-MutConfig: config key 'extraApps' must be an array (for example [ { ""name"": ""import"", ""sourcePath"": ""../import"" } ])."
+        }
+        $names = @{}
+        $index = 0
+        foreach ($extraApp in $Config.extraApps) {
+            Assert-MutNonEmptyString $extraApp 'name' "extraApps[$index].name"
+            Assert-MutNonEmptyString $extraApp 'sourcePath' "extraApps[$index].sourcePath"
+            if ($extraApp.name -notmatch '^[A-Za-z0-9._-]+$') {
+                throw "Get-MutConfig: config key 'extraApps[$index].name' ('$($extraApp.name)') may contain only letters, digits, '.', '_' and '-'."
+            }
+            if ($names.ContainsKey($extraApp.name.ToLowerInvariant())) {
+                throw "Get-MutConfig: config key 'extraApps[$index].name' ('$($extraApp.name)') is used twice."
+            }
+            $names[$extraApp.name.ToLowerInvariant()] = $true
+            $index++
+        }
+    }
+
     Assert-MutRequiredKey $Config 'workDir' 'workDir'
     if ([string]::IsNullOrWhiteSpace([string]$Config.workDir)) {
         throw "Get-MutConfig: config key 'workDir' must be a non-empty string."
@@ -633,7 +662,7 @@ function Get-MutConfig {
         .SYNOPSIS
         Loads, validates and returns the run configuration (§6.5.1). Relative paths
         (coreApp.path, workDir, aut.sourcePath, testApp.sourcePath, rulesets.sourcePath,
-        demoPortal.cliPath) are resolved to absolute paths against the repo root; already
+        extraApps[].sourcePath, demoPortal.cliPath) are resolved to absolute paths against the repo root; already
         absolute paths are left unchanged.
         .OUTPUTS
         PSCustomObject: the parsed config with resolved paths.
@@ -684,6 +713,13 @@ function Get-MutConfig {
 
     if ((Test-MutHasProperty $config 'rulesets') -and ($null -ne $config.rulesets)) {
         $config.rulesets.sourcePath = Resolve-MutConfigPath -RepoRoot $repoRoot -Path $config.rulesets.sourcePath
+    }
+
+    if ((-not (Test-MutHasProperty $config 'extraApps')) -or ($null -eq $config.extraApps)) {
+        $config | Add-Member -NotePropertyName 'extraApps' -NotePropertyValue @() -Force
+    }
+    foreach ($extraApp in @($config.extraApps)) {
+        $extraApp.sourcePath = Resolve-MutConfigPath -RepoRoot $repoRoot -Path $extraApp.sourcePath
     }
 
     if ($config.backend -eq 'DemoPortal') {

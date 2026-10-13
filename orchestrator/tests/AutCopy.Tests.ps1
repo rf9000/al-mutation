@@ -148,6 +148,22 @@ Describe 'Sync-MutAutCopy' {
         Test-Path (Join-Path $result.RulesetsPath '.cli-ruleset-localdeploy.json') | Should -Be $true
     }
 
+    It 'mirrors each extra app into extra-apps/<name>; ExtraAppPaths is empty without extraApps' {
+        $importSource = "$TestDrive/src/import"
+        New-MutFixtureSourceTree -Root $importSource
+        $config = New-MutTestConfig -WorkDir $script:workDir -AutSource $script:autSource -TestAppSource $script:testAppSource
+
+        @((Sync-MutAutCopy -Config $config).ExtraAppPaths).Count | Should -Be 0
+
+        $config | Add-Member -NotePropertyName 'extraApps' -NotePropertyValue @([pscustomobject]@{ name = 'import'; sourcePath = $importSource })
+        $result = Sync-MutAutCopy -Config $config
+
+        $expected = Join-Path (Join-Path $script:workDir 'extra-apps') 'import'
+        @($result.ExtraAppPaths) | Should -Be @($expected)
+        Test-Path (Join-Path $expected 'Foo.Codeunit.al') | Should -Be $true
+        Test-Path (Join-Path $expected 'MyApp.app') | Should -Be $false
+    }
+
     It 'throws when robocopy reports a failure exit code (>= 8), e.g. a missing source directory' {
         $config = New-MutTestConfig -WorkDir $script:workDir -AutSource "$TestDrive/does-not-exist" -TestAppSource $script:testAppSource
 

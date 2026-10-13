@@ -186,14 +186,15 @@ function Sync-MutAutCopy {
         (`$Config.testApp.sourcePath`) and, if configured, the rulesets folder
         (`$Config.rulesets.sourcePath`) into working copies under `$Config.workDir`
         (§6.5.2/§6.5.4 step 2): `<workDir>/aut-original`, `<workDir>/test-app`,
-        `<workDir>/rulesets`. This is the ONLY function in the orchestrator that reads the real
-        AUT/test-app/rulesets source trees, and it never writes to them -- every robocopy call
+        `<workDir>/rulesets`, and each `$Config.extraApps` entry into
+        `<workDir>/extra-apps/<name>`. This is the ONLY function in the orchestrator that reads the
+        real source trees, and it never writes to them -- every robocopy call
         mirrors FROM the configured source path INTO a path under workDir, never the reverse.
         Config paths are assumed already resolved to absolute paths (Get-MutConfig, §6.5.1).
 
         .OUTPUTS
-        [pscustomobject]@{ AutPath; TestAppPath; RulesetsPath } -- RulesetsPath is $null when
-        $Config.rulesets is absent or $null.
+        [pscustomobject]@{ AutPath; TestAppPath; RulesetsPath; ExtraAppPaths } -- RulesetsPath is
+        $null when $Config.rulesets is absent or $null; ExtraAppPaths is empty without extraApps.
     #>
     param(
         [Parameter(Mandatory = $true)]
@@ -217,10 +218,20 @@ function Sync-MutAutCopy {
         Invoke-MutRobocopyMirror -Source $Config.rulesets.sourcePath -Destination $rulesetsPath | Out-Null
     }
 
+    $extraAppPaths = @()
+    if ((Test-MutHasProperty $Config 'extraApps') -and ($null -ne $Config.extraApps)) {
+        foreach ($extraApp in @($Config.extraApps)) {
+            $extraAppPath = Join-Path (Join-Path $workDir 'extra-apps') $extraApp.name
+            Invoke-MutRobocopyMirror -Source $extraApp.sourcePath -Destination $extraAppPath | Out-Null
+            $extraAppPaths += $extraAppPath
+        }
+    }
+
     return [pscustomobject]@{
-        AutPath      = $autPath
-        TestAppPath  = $testAppPath
-        RulesetsPath = $rulesetsPath
+        AutPath       = $autPath
+        TestAppPath   = $testAppPath
+        RulesetsPath  = $rulesetsPath
+        ExtraAppPaths = $extraAppPaths
     }
 }
 

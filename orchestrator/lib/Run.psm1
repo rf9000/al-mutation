@@ -409,7 +409,9 @@ function Publish-MutBaseline {
         §6.5.4 step 3. Install-MutDependencies for aut-original, Mutation Core and (when
         configured) its test app (the response is never gated on -- "nothing to install" for a
         dependency-free app, e.g. the fixture AUT, is a normal outcome, not a failure);
-        Publish-MutApp for Mutation Core, then aut-original; then Install-MutDependencies for
+        Publish-MutApp for Mutation Core, then aut-original; then Install-MutDependencies and
+        Publish-MutApp for each $Config.extraApps entry (from <workDir>/extra-apps/<name>); then
+        Install-MutDependencies for
         test-app (after the AUT, so the AUT dependency is already satisfied) and Publish-MutApp
         for test-app (ruleset only when $Config.rulesets is not null; -AllowDowngrade always);
         Grant-MutPermissionSet for every $Config.permissionSets entry; then, per test codeunit
@@ -529,6 +531,25 @@ function Publish-MutBaseline {
 
     if (-not $autResult.Success) {
         throw "Publish-MutBaseline: publishing aut-original failed. Code: $($autResult.Code); Message: $($autResult.ErrorMessage); Diagnostics: $(($autResult.Diagnostics | ConvertTo-Json -Depth 10 -Compress))"
+    }
+
+    # Extra apps: apps the tests need at runtime only, so no app.json dependency brings them in
+    # (Banking codeunit 95050 calls NavApp.GetModuleInfo on the Import app, run 1031). Published
+    # from source after the AUT they depend on; a catalogue build would pull the catalogue AUT
+    # over aut-original (run 1022).
+    $extraApps = @()
+    if (Test-MutHasProperty $Config 'extraApps') {
+        $extraApps = @($Config.extraApps | Where-Object { $null -ne $_ })
+    }
+    foreach ($extraApp in $extraApps) {
+        $extraAppPath = Join-Path (Join-Path $Config.workDir 'extra-apps') $extraApp.name
+        Install-MutDependencies -Env $Env -AppPath $extraAppPath | Out-Null
+        $extraAppPublishParams = @{ Env = $Env; Path = $extraAppPath; AllowDowngrade = $true }
+        if ($rulesetFile) { $extraAppPublishParams['Ruleset'] = $rulesetFile }
+        $extraAppResult = Publish-MutApp @extraAppPublishParams
+        if (-not $extraAppResult.Success) {
+            throw "Publish-MutBaseline: publishing extra app '$($extraApp.name)' failed. Code: $($extraAppResult.Code); Message: $($extraAppResult.ErrorMessage); Diagnostics: $(($extraAppResult.Diagnostics | ConvertTo-Json -Depth 10 -Compress))"
+        }
     }
 
     # The AUT is installed now, so this skips it and installs only the test app's other dependencies.

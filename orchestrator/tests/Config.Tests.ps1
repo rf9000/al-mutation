@@ -605,6 +605,47 @@ Describe 'Get-MutConfig: coreAppTest (optional Mutation Core test app)' {
     }
 }
 
+Describe 'Get-MutConfig: extraApps (optional apps the tests need at runtime)' {
+    It 'defaults extraApps to an empty array when absent' {
+        $cfg = Get-MutConfig -Path (New-MutTestConfigFile)
+        @($cfg.extraApps).Count | Should -Be 0
+    }
+
+    It 'resolves each extraApps sourcePath to an absolute path' {
+        $path = New-MutTestConfigFile -Overrides @{ extraApps = @(@{ name = 'import'; sourcePath = './somewhere/import' }) }
+        $cfg = Get-MutConfig -Path $path
+        @($cfg.extraApps).Count | Should -Be 1
+        $cfg.extraApps[0].name | Should -Be 'import'
+        $cfg.extraApps[0].sourcePath | Should -Be (Join-Path $script:RepoRoot 'somewhere/import')
+    }
+
+    It 'throws when extraApps is not an array' {
+        $path = New-MutTestConfigFile -Overrides @{ extraApps = @{ name = 'import'; sourcePath = './import' } }
+        { Get-MutConfig -Path $path } | Should -Throw -ExpectedMessage "*'extraApps' must be an array*"
+    }
+
+    It 'throws naming the key when an entry has no sourcePath' {
+        $path = New-MutTestConfigFile -Overrides @{ extraApps = @(@{ name = 'import' }) }
+        { Get-MutConfig -Path $path } | Should -Throw -ExpectedMessage "*extraApps``[0``].sourcePath*"
+    }
+
+    It 'throws when a name is not a plain folder name' {
+        $path = New-MutTestConfigFile -Overrides @{ extraApps = @(@{ name = '../import'; sourcePath = './import' }) }
+        { Get-MutConfig -Path $path } | Should -Throw -ExpectedMessage "*may contain only letters*"
+    }
+
+    It 'throws when two entries share a name' {
+        $path = New-MutTestConfigFile -Overrides @{ extraApps = @(@{ name = 'import'; sourcePath = './a' }, @{ name = 'Import'; sourcePath = './b' }) }
+        { Get-MutConfig -Path $path } | Should -Throw -ExpectedMessage "*is used twice*"
+    }
+
+    It 'throws when workDir is nested inside an extraApps sourcePath' {
+        $src = "$TestDrive/import-src-$([guid]::NewGuid().ToString('N'))"
+        $path = New-MutTestConfigFile -Overrides @{ extraApps = @(@{ name = 'import'; sourcePath = $src }); workDir = "$src/out" }
+        { Get-MutConfig -Path $path } | Should -Throw -ExpectedMessage "*workDir*extraApps``[0``].sourcePath*"
+    }
+}
+
 Describe 'Get-MutConfig: environment-variable expansion in paths' {
     AfterEach {
         Remove-Item Env:\MUT_TEST_AUT_ROOT -ErrorAction SilentlyContinue

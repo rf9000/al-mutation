@@ -856,6 +856,60 @@ Describe 'Publish-MutBaseline: test app dependencies after the AUT (mutant-fixer
     }
 }
 
+Describe 'Publish-MutBaseline: extra apps (mutant-fixer run 1031)' {
+    <#
+        .SYNOPSIS
+        Banking codeunit 95050 calls NavApp.GetModuleInfo on the Import app, which no app.json
+        dependency brings in. extraApps are published from <workDir>/extra-apps/<name> after the
+        AUT and before the test app.
+    #>
+    BeforeEach {
+        $script:WorkDir = "$TestDrive/work-$([guid]::NewGuid().ToString('N'))"
+        $script:RunDir = Join-Path $script:WorkDir 'runs/1'
+        New-Item -ItemType Directory -Path $script:RunDir -Force | Out-Null
+        $script:Config = New-MutRunTestConfig -WorkDir $script:WorkDir
+        $script:Config | Add-Member -NotePropertyName 'extraApps' -NotePropertyValue @(
+            [pscustomobject]@{ name = 'import'; sourcePath = "$script:WorkDir/src-import" }
+        )
+        $script:Calls = New-Object System.Collections.ArrayList
+        $script:FailPublishOf = $null
+
+        Mock -ModuleName Run Install-MutDependencies { $null = $script:Calls.Add("deps:$AppPath") }
+        Mock -ModuleName Run Grant-MutPermissionSet { }
+        Mock -ModuleName Run Publish-MutApp {
+            $null = $script:Calls.Add("publish:$Path")
+            $failed = $script:FailPublishOf -and ($Path -like $script:FailPublishOf)
+            [pscustomobject]@{ Success = (-not $failed); Code = $(if ($failed) { 'publish-failed' } else { $null }); Diagnostics = @(); DurationSec = 0.1; ErrorMessage = $(if ($failed) { 'boom' } else { $null }) }
+        }
+        Mock -ModuleName Run Invoke-MutTests { throw 'stop-after-publishes' }
+    }
+
+    It 'installs the dependencies of each extra app and publishes it after the AUT and before the test app' {
+        { Publish-MutBaseline -Config $script:Config -Env $script:EnvHandle -RunDir $script:RunDir } |
+            Should -Throw '*stop-after-publishes*'
+
+        $calls = [string[]]@($script:Calls)
+        $find = { param($pattern) [array]::FindIndex($calls, [Predicate[string]] { param($c) $c -like $pattern }) }
+        $autPublish = & $find 'publish:*aut-original'
+        $extraDeps = & $find 'deps:*extra-apps*import'
+        $extraPublish = & $find 'publish:*extra-apps*import'
+        $testDeps = & $find 'deps:*test-app'
+
+        $extraDeps | Should -BeGreaterThan $autPublish
+        $extraPublish | Should -BeGreaterThan $extraDeps
+        $testDeps | Should -BeGreaterThan $extraPublish
+    }
+
+    It 'throws naming the extra app when its publish fails, before the test app is published' {
+        $script:FailPublishOf = '*extra-apps*import'
+
+        { Publish-MutBaseline -Config $script:Config -Env $script:EnvHandle -RunDir $script:RunDir } |
+            Should -Throw "*publishing extra app 'import' failed*boom*"
+
+        @([string[]]@($script:Calls) | Where-Object { $_ -like 'publish:*test-app' }).Count | Should -Be 0
+    }
+}
+
 Describe 'Publish-MutBaseline: stale installed test suite (runs 5, 7 and 14)' {
     <#
         .SYNOPSIS
