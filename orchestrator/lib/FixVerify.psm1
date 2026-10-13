@@ -278,6 +278,12 @@ if (-not (Get-Command -Name 'Start-MutEnvironment' -ErrorAction SilentlyContinue
         throw 'Start-MutEnvironment: no backend module has been imported into this session.'
     }
 }
+if (-not (Get-Command -Name 'Request-MutEnvironmentStart' -ErrorAction SilentlyContinue)) {
+    function global:Request-MutEnvironmentStart {
+        param($Env, $Config)
+        throw 'Request-MutEnvironmentStart: no backend module has been imported into this session.'
+    }
+}
 if (-not (Get-Command -Name 'Reset-MutEnvironment' -ErrorAction SilentlyContinue)) {
     function global:Reset-MutEnvironment {
         param($Env, $Config)
@@ -307,8 +313,14 @@ $script:FixJobTimeoutSec = 120
 $script:FixPublishTimeoutSec = 900
 $script:FixMaxPublishRounds = 3
 $script:FixJobRetries = 2
-$script:FixRecoveryPolls = 30
+# 40 polls of 30 s: a start from Stopped took 150-190 s (2026-10-13), then the probe runs.
+$script:FixRecoveryPolls = 40
 $script:FixRecoveryPollSec = 30
+# Statuses in which recovery requests a start. `env start` exits 0 in every live status, and a
+# start sent while Stopping took (measured 2026-10-13), so a repeat is harmless.
+$script:FixRecoveryStartStatuses = @('Stopped', 'Stopping', 'Draft')
+# Statuses no wait can recover from.
+$script:FixRecoveryGoneStatuses = @('Deleted')
 $script:FixClientWaitExpiredFraction = 0.9
 
 function Write-MutFixLog {
@@ -349,11 +361,19 @@ function Get-MutFixActive {
 function Wait-MutFixRecovery {
     <#
         .SYNOPSIS
-        Private. §6.8.2 step 6 / §6.5.6: polls every 30 s (at most 30 polls, about 15 min) until
-        the environment serves again. Each poll PATCHes activeMutantId 0 first (the readiness
-        check is a real test job and must never run with a mutant active), then re-reads the
-        environment and runs Start-MutEnvironment (its probe confirms serving). Updates
-        $Ctx.Env. Throws when the environment does not come back.
+        Private. §6.8.2 step 6 / §6.5.6: polls every 30 s (at most 40 polls, about 20 min) until
+        the environment serves again. Each poll reads the environment status and acts on it:
+        - Running: PATCH activeMutantId 0, then Start-MutEnvironment (its probe confirms
+          serving). The PATCH comes first because the probe is a real test job and must never
+          run with a mutant active.
+        - Stopped, Stopping, Draft: request a start (`env start`, no wait) and poll on.
+        - Deleted, or not found: throw at once; no wait brings it back.
+        - Anything else (Starting, Deploying, Creating): wait.
+        Updates $Ctx.Env. Throws when the environment does not come back.
+
+        FIX (2026-10-13): each poll used to PATCH first. The BC API of a Stopped environment
+        answers 404, so the PATCH threw, the start in Start-MutEnvironment was never reached,
+        and recovery could only succeed if someone started the environment by hand.
     #>
     param(
         [Parameter(Mandatory = $true)]$Ctx,
@@ -361,22 +381,46 @@ function Wait-MutFixRecovery {
     )
 
     Write-Warning "Invoke-MutFixVerify: an environment call failed ($Reason); waiting for the environment to serve again."
-    $lastError = $Reason
+    $name = $Ctx.Config.environmentName
+    $status = 'unknown'
+    $lastError = $null
     for ($poll = 1; $poll -le $script:FixRecoveryPolls; $poll++) {
+        $gone = $null
         try {
-            Set-MutFixActive -Ctx $Ctx -MutantId 0
-            $h = Get-MutEnvironment -Name $Ctx.Config.environmentName -Config $Ctx.Config
-            if ($null -eq $h) { throw "environment '$($Ctx.Config.environmentName)' not found" }
-            $Ctx.Env = Start-MutEnvironment -Env $h -Config $Ctx.Config
-            return
+            $h = Get-MutEnvironment -Name $name -Config $Ctx.Config
+            $status = 'unknown'
+            if ($null -ne $h -and $h.PSObject.Properties['Status'] -and $h.Status) { $status = [string]$h.Status }
+            if ($null -eq $h) {
+                $gone = "environment '$name' not found"
+            }
+            elseif ($status -in $script:FixRecoveryGoneStatuses) {
+                $gone = "environment '$name' is $status"
+            }
+            elseif ($status -eq 'Running') {
+                $Ctx.Env = $h
+                Set-MutFixActive -Ctx $Ctx -MutantId 0
+                $Ctx.Env = Start-MutEnvironment -Env $h -Config $Ctx.Config
+                Write-MutFixLog "recovery poll ${poll}: status Running, serving again"
+                return
+            }
+            elseif ($status -in $script:FixRecoveryStartStatuses) {
+                Request-MutEnvironmentStart -Env $h -Config $Ctx.Config
+                Write-MutFixLog "recovery poll ${poll}: status $status, start requested"
+            }
+            else {
+                Write-MutFixLog "recovery poll ${poll}: status $status, waiting"
+            }
         }
         catch {
             $lastError = $_.Exception.Message
-            Write-MutFixLog "recovery poll $poll failed: $lastError"
+            Write-MutFixLog "recovery poll ${poll}: status $status, failed: $lastError"
         }
+        if ($gone) { throw "environment cannot recover ($Reason): $gone" }
         Start-Sleep -Seconds $script:FixRecoveryPollSec
     }
-    throw "environment did not return to serving ($Reason; last error: $lastError)"
+    $detail = "last status $status"
+    if ($lastError) { $detail += "; last error: $lastError" }
+    throw "environment did not return to serving ($Reason; $detail)"
 }
 
 function Invoke-MutFixPublish {

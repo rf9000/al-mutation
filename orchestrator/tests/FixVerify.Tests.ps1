@@ -417,6 +417,10 @@ Describe 'Invoke-MutFixVerify' {
             & $global:FvTests $t.Function $global:FvActive $global:FvCalls.Tests
         }
         Mock -ModuleName FixVerify Stop-MutFixRunawaySessions { $global:FvLog.Add('STOPSESSIONS') }
+        Mock -ModuleName FixVerify Request-MutEnvironmentStart {
+            $global:FvLog.Add("REQSTART:$($global:FvEnvStatus)")
+            $global:FvEnvStatus = 'Starting'
+        }
         Mock -ModuleName FixVerify Start-Sleep { }
     }
 
@@ -700,6 +704,98 @@ Describe 'Invoke-MutFixVerify' {
         (@($global:FvLog | Where-Object { $_ -eq 'TEST:50300/B@0' })).Count | Should -Be 2
         # Recovery waited for the environment (readiness check) between the attempts.
         $global:FvLog | Should -Contain 'STARTENV'
+    }
+
+    Context 'recovery reads the environment status (2026-10-13: a Stopped environment was never started)' {
+        BeforeEach {
+            # The BC API of an environment that is not Running answers 404, as DemoPortal does.
+            Mock -ModuleName FixVerify Invoke-MutApi {
+                if ($global:FvEnvStatus -ne 'Running') { throw 'Response status code does not indicate success: 404 (Not Found).' }
+                if ($Method -eq 'GET') { return [pscustomobject]@{ activeMutantId = $global:FvActive } }
+                $global:FvActive = [int]$Body.activeMutantId
+                $global:FvLog.Add("PATCH:$($Body.activeMutantId)")
+                return $null
+            }
+            # Each 30 s wait moves a starting environment on to Running.
+            Mock -ModuleName FixVerify Start-Sleep { if ($global:FvEnvStatus -eq 'Starting') { $global:FvEnvStatus = 'Running' } }
+            # The first run of test B finds the environment gone to $global:FvStatusOnFailure.
+            $global:FvTests = {
+                param($Function, $Active, $Call)
+                if ($Function -eq 'B' -and $Active -eq 0 -and -not $global:FvFailed) {
+                    $global:FvFailed = $true
+                    $global:FvEnvStatus = $global:FvStatusOnFailure
+                    throw 'Response status code does not indicate success: 404 (Not Found).'
+                }
+                if ($Active -eq 0) {
+                    return [pscustomobject]@{ Passed = 1; Failed = 0; DurationMs = 100; JobIds = @(); Tests = @([pscustomobject]@{ Function = $Function; Result = 'Pass'; DurationMs = 100; Error = $null }) }
+                }
+                [pscustomobject]@{ Passed = 0; Failed = 1; DurationMs = 120; JobIds = @(); Tests = @([pscustomobject]@{ Function = $Function; Result = 'Fail'; DurationMs = 120; Error = 'k' }) }
+            }
+            $global:FvFailed = $false
+        }
+
+        AfterEach {
+            Remove-Variable -Name FvFailed, FvStatusOnFailure -Scope Global -ErrorAction SilentlyContinue
+        }
+
+        It 'starts a Stopped environment, waits for Running, then deactivates and probes' {
+            $global:FvStatusOnFailure = 'Stopped'
+            $r = Invoke-MutFixVerify -Config $script:Cfg -RunNo 15 -RepoRoot $script:Repo
+            ($r.entries | Where-Object fixId -eq 'F002').verdict | Should -Be 'verified'
+            $log = @($global:FvLog)
+            $req = [array]::IndexOf($log, 'REQSTART:Stopped')
+            $req | Should -BeGreaterThan -1
+            # After the start: PATCH 0 first, then the readiness probe.
+            $patch = [array]::IndexOf($log, 'PATCH:0', $req)
+            $patch | Should -BeGreaterThan $req
+            [array]::IndexOf($log, 'STARTENV', $patch) | Should -BeGreaterThan $patch
+        }
+
+        It 'requests a start while Stopping too' {
+            $global:FvStatusOnFailure = 'Stopping'
+            $r = Invoke-MutFixVerify -Config $script:Cfg -RunNo 15 -RepoRoot $script:Repo
+            ($r.entries | Where-Object fixId -eq 'F002').verdict | Should -Be 'verified'
+            $global:FvLog | Should -Contain 'REQSTART:Stopping'
+        }
+
+        It 'waits for a Starting environment without requesting a start' {
+            $global:FvStatusOnFailure = 'Starting'
+            $r = Invoke-MutFixVerify -Config $script:Cfg -RunNo 15 -RepoRoot $script:Repo
+            ($r.entries | Where-Object fixId -eq 'F002').verdict | Should -Be 'verified'
+            ($global:FvLog | Where-Object { $_ -like 'REQSTART:*' }) | Should -BeNullOrEmpty
+        }
+
+        It 'gives up at once on a Deleted environment' {
+            $global:FvEnvStatus = 'Deleted'
+            InModuleScope FixVerify -Parameters @{ Cfg = $script:Cfg } {
+                param($Cfg)
+                $ctx = @{ Env = [pscustomobject]@{ Id = 'E1' }; Config = $Cfg; RunNo = 15 }
+                { Wait-MutFixRecovery -Ctx $ctx -Reason '404' } | Should -Throw '*Deleted*'
+            }
+            ($global:FvLog | Where-Object { $_ -like 'REQSTART:*' }) | Should -BeNullOrEmpty
+            Should -Invoke -ModuleName FixVerify Start-Sleep -Times 0 -Exactly
+        }
+
+        It 'gives up at once when the environment is not found' {
+            Mock -ModuleName FixVerify Get-MutEnvironment { $null }
+            InModuleScope FixVerify -Parameters @{ Cfg = $script:Cfg } {
+                param($Cfg)
+                $ctx = @{ Env = [pscustomobject]@{ Id = 'E1' }; Config = $Cfg; RunNo = 15 }
+                { Wait-MutFixRecovery -Ctx $ctx -Reason '404' } | Should -Throw '*not found*'
+            }
+            Should -Invoke -ModuleName FixVerify Start-Sleep -Times 0 -Exactly
+        }
+
+        It 'stops after the poll budget when the environment never serves' {
+            $global:FvEnvStatus = 'Deploying'
+            Mock -ModuleName FixVerify Start-Sleep { }
+            InModuleScope FixVerify -Parameters @{ Cfg = $script:Cfg } {
+                param($Cfg)
+                $ctx = @{ Env = [pscustomobject]@{ Id = 'E1' }; Config = $Cfg; RunNo = 15 }
+                { Wait-MutFixRecovery -Ctx $ctx -Reason '404' } | Should -Throw '*did not return to serving*status Deploying*'
+            }
+            Should -Invoke -ModuleName FixVerify Start-Sleep -Times 40 -Exactly
+        }
     }
 
     It 'treats an empty test result like an outage and ends env-error after 2 retries' {

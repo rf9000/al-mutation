@@ -62,6 +62,28 @@ Describe 'Get-MutEnvironment' {
     }
 }
 
+Describe 'Request-MutEnvironmentStart' {
+    It 'issues env start once and does not wait' {
+        $script:calls = @()
+        Mock -ModuleName DemoPortal Invoke-Continia { $script:calls += ,@($Arguments) }
+        Mock -ModuleName DemoPortal Start-Sleep {}
+        $env = [pscustomobject]@{ Id = 'E1'; Name = 'mut-spike-01'; Url = 'https://x'; Backend = 'DemoPortal'; Shared = $false }
+
+        Request-MutEnvironmentStart -Env $env -Config $cfg
+
+        $script:calls.Count | Should -Be 1
+        ($script:calls[0] -join ' ') | Should -Be 'env start E1'
+        Should -Invoke -ModuleName DemoPortal Start-Sleep -Times 0 -Exactly
+    }
+
+    It 'refuses an environment without the mut- prefix' {
+        Mock -ModuleName DemoPortal Invoke-Continia { throw 'must not be called' }
+        $env = [pscustomobject]@{ Id = 'E1'; Name = 'someone-elses-env'; Url = 'https://x'; Backend = 'DemoPortal'; Shared = $false }
+        { Request-MutEnvironmentStart -Env $env -Config $cfg } | Should -Throw
+        Should -Invoke -ModuleName DemoPortal Invoke-Continia -Times 0 -Exactly
+    }
+}
+
 Describe 'Assert-MutEnvironmentAllowed' {
     It 'throws for a name without the mut- prefix' {
         $env = [pscustomobject]@{ Id = 'E1'; Name = 'fix-auth-share-sibling-apply'; Url = 'https://x'; Backend = 'DemoPortal'; Shared = $false }

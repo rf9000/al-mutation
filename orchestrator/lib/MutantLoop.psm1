@@ -62,6 +62,12 @@ if (-not (Get-Command -Name 'Start-MutEnvironment' -ErrorAction SilentlyContinue
         throw 'Start-MutEnvironment: no backend module has been imported into this session.'
     }
 }
+if (-not (Get-Command -Name 'Request-MutEnvironmentStart' -ErrorAction SilentlyContinue)) {
+    function global:Request-MutEnvironmentStart {
+        param($Env, $Config)
+        throw 'Request-MutEnvironmentStart: no backend module has been imported into this session.'
+    }
+}
 
 # T42 (§6.10.4): the SOAP test transport's backend functions (§6.10.3). Same placeholder-for-Mock
 # pattern as above; importing a real backend module always wins.
@@ -130,6 +136,10 @@ $script:MutEnvironmentRecoveryCount = 0
 #                                recovery slots, and published `aborted: false` with a score.
 $script:OutageWaitDeadlineSec = 900
 $script:OutagePollIntervalSec = 30
+# Statuses in which the wait requests a start, and statuses no wait recovers from (measured
+# 2026-10-13: `env start` exits 0 in every live status, and one sent while Stopping took).
+$script:OutageStartStatuses = @('Stopped', 'Stopping', 'Draft')
+$script:OutageGoneStatuses = @('Deleted')
 $script:MaxOutageRetriesPerMutant = 2
 $script:MaxConsecutiveErrors = 5
 
@@ -307,8 +317,10 @@ function Wait-MutOutageRecovery {
         again, bounded by $script:OutageWaitDeadlineSec, so the caller can retry the SAME mutant
         instead of recording Error and moving on.
 
-        Each poll first PATCHes `activeMutantId = 0`, and runs the readiness check only when that
-        succeeded. The readiness check (Start-MutEnvironment) runs a real probe test job, and
+        Each poll first reads the environment status. Stopped, Stopping or Draft: it requests a
+        start and polls again. Deleted: it aborts at once. Another non-Running status: it waits.
+        Running, or a status it cannot read: it PATCHes `activeMutantId = 0`, and runs the
+        readiness check only when that succeeded. The readiness check (Start-MutEnvironment) runs a real probe test job, and
         Mutation Core's OnAfterTestMethodRun records a Killed row for ANY failing test while a
         mutant is active (the F3b BLOCKER 1 hazard). During an outage the caller's own
         best-effort deactivation may itself have failed, so this cannot assume it happened.
@@ -347,14 +359,45 @@ function Wait-MutOutageRecovery {
 
     $deadline = [datetime]::UtcNow.AddSeconds($script:OutageWaitDeadlineSec)
     $lastError = $Reason
+    $envName = $null
+    if (Test-MutHasProperty $Env 'Name') { $envName = $Env.Name }
     while ($true) {
-        $deactivated = $false
+        # FIX (2026-10-13): read the status first. The BC API of a Stopped environment answers
+        # the PATCH below with 404, so the start inside Start-MutEnvironment was never reached.
+        # A status that cannot be read keeps the PATCH-then-probe path.
+        $status = $null
         try {
-            Invoke-MutApi -Env $Env -Method 'PATCH' -Path 'mutationSetup(0)' -Body @{ activeMutantId = 0; currentRunNo = $RunNo } | Out-Null
-            $deactivated = $true
+            $recheck = Get-MutEnvironment -Name $envName -Config $Config
+            if (Test-MutHasProperty $recheck 'Status') { $status = [string]$recheck.Status }
         }
-        catch {
-            $lastError = "deactivating the mutant failed: $($_.Exception.Message)"
+        catch { $status = $null }
+
+        if ($status -in $script:OutageGoneStatuses) {
+            $message = "Invoke-MutMutantLoop: mutant $MutantId -- the environment is $status after an environment call failed ($Reason). Aborting: no wait brings it back."
+            throw [System.Management.Automation.ErrorRecord]::new([System.Exception]::new($message), 'MutEnvironmentGone', [System.Management.Automation.ErrorCategory]::LimitsExceeded, $null)
+        }
+
+        $deactivated = $false
+        if ($status -and $status -ne 'Running') {
+            if ($status -in $script:OutageStartStatuses) {
+                try {
+                    Request-MutEnvironmentStart -Env $recheck -Config $Config
+                    $lastError = "status $status, start requested"
+                }
+                catch { $lastError = "status $status, start request failed: $($_.Exception.Message)" }
+            }
+            else {
+                $lastError = "status $status"
+            }
+        }
+        else {
+            try {
+                Invoke-MutApi -Env $Env -Method 'PATCH' -Path 'mutationSetup(0)' -Body @{ activeMutantId = 0; currentRunNo = $RunNo } | Out-Null
+                $deactivated = $true
+            }
+            catch {
+                $lastError = "deactivating the mutant failed: $($_.Exception.Message)"
+            }
         }
 
         $readyToProbe = $deactivated

@@ -564,6 +564,27 @@ function Start-MutEnvironment {
     return $handle
 }
 
+function Request-MutEnvironmentStart {
+    <#
+        .SYNOPSIS
+        Issues `env start` and returns at once: no wait for Running, no settle, no probe. For a
+        caller that polls the status itself (Wait-MutFixRecovery). Measured 2026-10-13: the CLI
+        exits 0 for a start in Draft, Deploying, Starting, Running, Stopping and Stopped, so a
+        repeated request is harmless; for a deleted environment it fails with
+        environment_not_found.
+    #>
+    param(
+        [Parameter(Mandatory = $true)]
+        $Env,
+        [Parameter(Mandatory = $true)]
+        $Config
+    )
+
+    Assert-MutEnvironmentAllowed $Env
+    $script:CliPath = Resolve-MutCliPath -Config $Config
+    Invoke-Continia -Arguments @('env', 'start', $Env.Id) -ExpectJson:$false | Out-Null
+}
+
 function ConvertTo-MutBcVersion {
     <#
         .SYNOPSIS
@@ -2982,4 +3003,4 @@ function Invoke-MutMutantBatch {
     }
 }
 
-Export-ModuleMember -Function Get-MutEnvironment, New-MutEnvironment, Start-MutEnvironment, Remove-MutEnvironment, Remove-MutRunEnvironment, Remove-MutOrphanEnvironments, Reset-MutEnvironment, Assert-MutEnvironmentAllowed, Get-MutApiBase, Get-MutCompanyId, Get-MutCompanyName, Get-MutRunnerState, Stop-MutRunnerBatch, Remove-MutRunnerState, Invoke-MutMutantBatch, Test-MutSoapRunner, Grant-MutPermissionSet, Invoke-MutApi, Install-MutDependencies, Compile-MutApp, Publish-MutApp, Publish-MutAppFile, Unpublish-MutApp, Invoke-MutTests, Get-MutCoverageRaw, Get-MutCoverage, Stop-MutBackendChildProcesses
+Export-ModuleMember -Function Get-MutEnvironment, New-MutEnvironment, Start-MutEnvironment, Request-MutEnvironmentStart, Remove-MutEnvironment, Remove-MutRunEnvironment, Remove-MutOrphanEnvironments, Reset-MutEnvironment, Assert-MutEnvironmentAllowed, Get-MutApiBase, Get-MutCompanyId, Get-MutCompanyName, Get-MutRunnerState, Stop-MutRunnerBatch, Remove-MutRunnerState, Invoke-MutMutantBatch, Test-MutSoapRunner, Grant-MutPermissionSet, Invoke-MutApi, Install-MutDependencies, Compile-MutApp, Publish-MutApp, Publish-MutAppFile, Unpublish-MutApp, Invoke-MutTests, Get-MutCoverageRaw, Get-MutCoverage, Stop-MutBackendChildProcesses

@@ -1730,11 +1730,71 @@ Describe 'Wait-MutOutageRecovery' {
             $global:MutWaitLog.Add("PATCH:$($Body.activeMutantId)")
             return $null
         }
+        $global:MutWaitStatus = 'Running'
+        Mock -ModuleName MutantLoop Get-MutEnvironment { [pscustomobject]@{ Id = 'E1'; Name = $Name; Status = $global:MutWaitStatus } }
+        Mock -ModuleName MutantLoop Request-MutEnvironmentStart { $global:MutWaitLog.Add("REQSTART:$($global:MutWaitStatus)"); $global:MutWaitStatus = 'Starting' }
     }
 
     AfterEach {
         InModuleScope MutantLoop { $script:OutageWaitDeadlineSec = 900 }
-        Remove-Variable -Name MutWaitLog -Scope Global -ErrorAction SilentlyContinue
+        Remove-Variable -Name MutWaitLog, MutWaitStatus -Scope Global -ErrorAction SilentlyContinue
+    }
+
+    It 'starts a Stopped environment, skips the PATCH until it is Running, then deactivates and probes (2026-10-13)' {
+        $global:MutWaitStatus = 'Stopped'
+        Mock -ModuleName MutantLoop Start-Sleep { $global:MutWaitLog.Add('SLEEP'); if ($global:MutWaitStatus -eq 'Starting') { $global:MutWaitStatus = 'Running' } }
+        Mock -ModuleName MutantLoop Start-MutEnvironment { $global:MutWaitLog.Add('PROBE'); [pscustomobject]@{ Id = 'E2'; Status = 'Running' } }
+
+        $handle = InModuleScope MutantLoop -Parameters @{ E = $script:EnvHandle } {
+            param($E)
+            Wait-MutOutageRecovery -Env $E -Config ([pscustomobject]@{}) -MutantId 7 -RunNo 3 -Reason '404' -WarningAction SilentlyContinue
+        }
+
+        $handle.Id | Should -Be 'E2'
+        ($global:MutWaitLog -join ',') | Should -Be 'REQSTART:Stopped,SLEEP,PATCH:0,PROBE'
+    }
+
+    It 'waits for a Starting environment without requesting a start or patching' {
+        $global:MutWaitStatus = 'Starting'
+        Mock -ModuleName MutantLoop Start-Sleep { $global:MutWaitLog.Add('SLEEP'); $global:MutWaitStatus = 'Running' }
+        Mock -ModuleName MutantLoop Start-MutEnvironment { $global:MutWaitLog.Add('PROBE'); [pscustomobject]@{ Id = 'E2'; Status = 'Running' } }
+
+        InModuleScope MutantLoop -Parameters @{ E = $script:EnvHandle } {
+            param($E)
+            Wait-MutOutageRecovery -Env $E -Config ([pscustomobject]@{}) -MutantId 7 -RunNo 3 -Reason '404' -WarningAction SilentlyContinue
+        } | Out-Null
+
+        ($global:MutWaitLog -join ',') | Should -Be 'SLEEP,PATCH:0,PROBE'
+    }
+
+    It 'throws LimitsExceeded at once for a Deleted environment' {
+        $global:MutWaitStatus = 'Deleted'
+        Mock -ModuleName MutantLoop Start-MutEnvironment { [pscustomobject]@{ Id = 'E2'; Status = 'Running' } }
+
+        $caught = $null
+        try {
+            InModuleScope MutantLoop -Parameters @{ E = $script:EnvHandle } {
+                param($E)
+                Wait-MutOutageRecovery -Env $E -Config ([pscustomobject]@{}) -MutantId 7 -RunNo 3 -Reason '404' -WarningAction SilentlyContinue
+            }
+        }
+        catch { $caught = $_ }
+
+        $caught.CategoryInfo.Category | Should -Be ([System.Management.Automation.ErrorCategory]::LimitsExceeded)
+        $caught.Exception.Message | Should -BeLike '*Deleted*'
+        $global:MutWaitLog.Count | Should -Be 0
+    }
+
+    It 'keeps the old PATCH-then-probe path when the status cannot be read' {
+        Mock -ModuleName MutantLoop Get-MutEnvironment { throw 'env list failed' }
+        Mock -ModuleName MutantLoop Start-MutEnvironment { $global:MutWaitLog.Add('PROBE'); [pscustomobject]@{ Id = 'E2'; Status = 'Running' } }
+
+        InModuleScope MutantLoop -Parameters @{ E = $script:EnvHandle } {
+            param($E)
+            Wait-MutOutageRecovery -Env $E -Config ([pscustomobject]@{}) -MutantId 7 -RunNo 3 -Reason '(503)' -WarningAction SilentlyContinue
+        } | Out-Null
+
+        ($global:MutWaitLog -join ',') | Should -Be 'PATCH:0,PROBE'
     }
 
     It 'deactivates before every readiness check, polls until Start-MutEnvironment confirms serving, and returns that handle' {
