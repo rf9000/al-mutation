@@ -55,6 +55,26 @@ Describe 'Invoke-MutTests' {
         $result.Failed | Should -Be 0
     }
 
+    It 'fetches the reason with one --raw call when a --json run fails with zero tests (runs 1027/1028)' {
+        Mock -ModuleName DemoPortal Invoke-Continia -ParameterFilter { $Arguments -contains '--json' } {
+            [pscustomobject]@{
+                status  = 'failed'
+                passed  = $false
+                summary = [pscustomobject]@{ total = 0; passed = 0; failed = 0; skipped = 0; durationSeconds = 0; codeunitName = '' }
+                tests   = @()
+            }
+        }
+        Mock -ModuleName DemoPortal Invoke-Continia -ParameterFilter { $Arguments -contains '--raw' } {
+            [pscustomobject]@{ ExitCode = 1; StdOut = 'POST .../tests/jobs.json failed: 500 job already running'; StdErr = 'Starting test: codeunit 95117' }
+        }
+
+        $result = Invoke-MutTests -Env $envHandle -Targets @([pscustomobject]@{ CodeunitId = 95117; Function = $null }) -TimeoutSec 30 -WarningVariable warnings -WarningAction SilentlyContinue
+
+        Should -Invoke -ModuleName DemoPortal Invoke-Continia -ParameterFilter { $Arguments -contains '--raw' -and $Arguments[3] -eq 95117 } -Times 1
+        ($warnings -join "`n") | Should -Match '--raw says: POST .*failed: 500 job already running'
+        ($result.Passed + $result.Failed) | Should -Be 0
+    }
+
     It 'passes --json and --timeout <TimeoutSec>, and only includes Function when given' {
         Mock -ModuleName DemoPortal Invoke-Continia {
             [pscustomobject]@{

@@ -1760,6 +1760,28 @@ function Invoke-MutTests {
             Write-Warning "Invoke-MutTests: test run for codeunit $($target.CodeunitId) returned no summary. Response: $($responseJson.Substring(0, [Math]::Min(2000, $responseJson.Length)))"
         }
 
+        # The CLI turns a failed job start or result fetch into status 'failed' with an empty
+        # summary, and `--json` drops resultsXml, the field holding the error message. `--raw`
+        # prints it, so one `--raw` call fetches the reason (mutant-fixer runs 1027/1028: repeat
+        # baseline passes all came back 0/0 within a second).
+        if ((Test-MutHasProperty $response 'status') -and $response.status -eq 'failed' -and
+            (Test-MutHasProperty $response 'summary') -and (Test-MutHasProperty $response.summary 'total') -and
+            [int]$response.summary.total -eq 0) {
+            $rawArguments = @('test', 'run', $Env.Id, $target.CodeunitId)
+            if ($target.Function) { $rawArguments += $target.Function }
+            $rawArguments += @('--raw', '--timeout', $TimeoutSec)
+            $reason = '(no output)'
+            try {
+                $raw = Invoke-Continia -Arguments $rawArguments -TimeoutSec ($TimeoutSec + 60) -ExpectJson:$false -AllowNonZeroExit
+                $reason = (([string]$raw.StdOut) + ' ' + ([string]$raw.StdErr)).Trim()
+            }
+            catch {
+                $reason = "the --raw rerun failed too: $($_.Exception.Message)"
+            }
+            if ($reason.Length -gt 2000) { $reason = $reason.Substring(0, 2000) }
+            Write-Warning "Invoke-MutTests: test run for codeunit $($target.CodeunitId) failed with no tests; --raw says: $reason"
+        }
+
         $responseTests = $null
         if (Test-MutHasProperty $response 'tests') {
             $responseTests = $response.tests
