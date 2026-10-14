@@ -33,6 +33,15 @@ $script:MutCompanyCache = @{}
 # This module's own path: the SOAP background runspace imports it by path (§6.5.6 pattern).
 $script:DemoPortalModulePath = $PSCommandPath
 
+# An environment serves about 36-38 test jobs per boot; then a job hangs and every later
+# `POST .../tests/jobs.json` fails until a restart (measured 2026-10-15, environment 395e566e).
+# Invoke-MutTests restarts the environment before the next job once this many ran since the
+# last start. The count lives in a file per environment, because verify runs in its own process.
+$script:MutMaxTestJobsPerBoot = 30
+$script:MutTestJobCountDir = Join-Path ([System.IO.Path]::GetTempPath()) 'mut-test-jobs'
+# The config the last environment call got; the budget restart passes it on for the settle probe.
+$script:MutLastConfig = $null
+
 function Resolve-MutCliPath {
     param($Config)
 
@@ -119,6 +128,11 @@ function Invoke-Continia {
 
     $cliPath = $script:CliPath
     $quotedArgs = ($Arguments | ForEach-Object { ConvertTo-MutQuotedArgument $_ }) -join ' '
+
+    # Every `test run` starts a DemoPortal test job; count it against the environment's boot.
+    if ($Arguments.Count -ge 3 -and $Arguments[0] -eq 'test' -and $Arguments[1] -eq 'run') {
+        Set-MutTestJobCount -EnvId $Arguments[2] -Count ((Get-MutTestJobCount -EnvId $Arguments[2]) + 1)
+    }
 
     $psi = New-Object System.Diagnostics.ProcessStartInfo
     $psi.FileName = $cliPath
@@ -245,6 +259,7 @@ function Get-MutEnvironment {
     )
 
     $script:CliPath = Resolve-MutCliPath -Config $Config
+    $script:MutLastConfig = $Config
 
     $list = Invoke-Continia -Arguments @('env', 'list', '--json')
     if (-not $list) {
@@ -257,6 +272,32 @@ function Get-MutEnvironment {
     }
 
     return ConvertTo-MutEnvironmentHandle -Raw $match
+}
+
+function Get-MutTestJobCount {
+    <# Private. Test jobs started on the environment since its last start; 0 when unknown. #>
+    param([Parameter(Mandatory = $true)][string]$EnvId)
+
+    $path = Join-Path $script:MutTestJobCountDir "$EnvId.txt"
+    if (-not (Test-Path -Path $path)) {
+        return 0
+    }
+    $count = 0
+    if ([int]::TryParse(([string](Get-Content -Path $path -Raw)).Trim(), [ref]$count)) {
+        return $count
+    }
+    return 0
+}
+
+function Set-MutTestJobCount {
+    <# Private. Writes the environment's test job count (see $script:MutMaxTestJobsPerBoot). #>
+    param(
+        [Parameter(Mandatory = $true)][string]$EnvId,
+        [Parameter(Mandatory = $true)][int]$Count
+    )
+
+    New-Item -ItemType Directory -Force -Path $script:MutTestJobCountDir | Out-Null
+    Set-Content -Path (Join-Path $script:MutTestJobCountDir "$EnvId.txt") -Value $Count
 }
 
 function Start-MutEnvironmentWithRetry {
@@ -398,7 +439,8 @@ function Wait-MutEnvironmentSettled {
         [Parameter(Mandatory = $true)]
         [string]$Id,
         $Config,
-        [bool]$RequireProbe = $true
+        [bool]$RequireProbe = $true,
+        [switch]$SkipProbe
     )
 
     $start = Get-Date
@@ -419,7 +461,12 @@ function Wait-MutEnvironmentSettled {
     $hasProbeConfig = ($null -ne $Config) -and (Test-MutHasProperty $Config 'demoPortal') -and
         (Test-MutHasProperty $Config.demoPortal 'settleProbe') -and ($null -ne $Config.demoPortal.settleProbe)
 
-    if ($hasProbeConfig) {
+    if ($hasProbeConfig -and $SkipProbe) {
+        # A brand-new environment has no test app yet: every probe attempt would fail and still
+        # spend one of the ~36 test jobs the environment serves per boot (run 1038: ten).
+        $probeConfirmed = $false
+    }
+    elseif ($hasProbeConfig) {
         $probe = $Config.demoPortal.settleProbe
         $maxProbeAttempts = 10
         $probeReady = $false
@@ -522,12 +569,14 @@ function Start-MutEnvironment {
         $Env,
         [Parameter(Mandatory = $true)]
         $Config,
-        [bool]$RequireProbe = $true
+        [bool]$RequireProbe = $true,
+        [switch]$SkipProbe
     )
 
     Assert-MutEnvironmentAllowed $Env
 
     $script:CliPath = Resolve-MutCliPath -Config $Config
+    $script:MutLastConfig = $Config
 
     $current = Invoke-Continia -Arguments @('env', 'get', $Env.Id, '--json')
 
@@ -538,11 +587,12 @@ function Start-MutEnvironment {
         $startStart = Get-Date
         $running = Start-MutEnvironmentWithRetry -Id $Env.Id
         $startDurationSec = ((Get-Date) - $startStart).TotalSeconds
+        Set-MutTestJobCount -EnvId $Env.Id -Count 0
     }
 
     # FIX (F3, I6): unconditional -- see this function's own FIX note above. A `Running` status
     # alone is not proof of readiness; only this probe is.
-    $settled = Wait-MutEnvironmentSettled -Id $Env.Id -Config $Config -RequireProbe $RequireProbe
+    $settled = Wait-MutEnvironmentSettled -Id $Env.Id -Config $Config -RequireProbe $RequireProbe -SkipProbe:$SkipProbe
     $settleDurationSec = $settled.SettleDurationSec
     $settleProbeAttempts = $settled.SettleProbeAttempts
     $probeConfirmed = $settled.ProbeConfirmed
@@ -753,7 +803,7 @@ function New-MutEnvironment {
     $createDurationSec = ((Get-Date) - $createStart).TotalSeconds
 
     $envHandle = ConvertTo-MutEnvironmentHandle -Raw $appeared
-    $handle = Start-MutEnvironment -Env $envHandle -Config $Config -RequireProbe $false
+    $handle = Start-MutEnvironment -Env $envHandle -Config $Config -RequireProbe $false -SkipProbe
 
     Add-Member -InputObject $handle -NotePropertyName 'CreateDurationSec' -NotePropertyValue $createDurationSec
 
@@ -885,6 +935,7 @@ function Reset-MutEnvironment {
     Wait-MutEnvironmentStatus -Id $Env.Id -Status 'Stopped' | Out-Null
 
     Start-MutEnvironmentWithRetry -Id $Env.Id | Out-Null
+    Set-MutTestJobCount -EnvId $Env.Id -Count 0
 
     $settled = Wait-MutEnvironmentSettled -Id $Env.Id -Config $Config
 
@@ -1774,6 +1825,11 @@ function Invoke-MutTests {
         $arguments = @('test', 'run', $Env.Id, $target.CodeunitId)
         if ($target.Function) {
             $arguments += $target.Function
+        }
+        $jobCount = Get-MutTestJobCount -EnvId $Env.Id
+        if ($jobCount -ge $script:MutMaxTestJobsPerBoot) {
+            Write-Warning "Invoke-MutTests: environment $($Env.Id) has run $jobCount test jobs since its last start (it breaks after about 36); restarting it before codeunit $($target.CodeunitId)."
+            Reset-MutEnvironment -Env $Env -Config $script:MutLastConfig | Out-Null
         }
         $targetStart = Get-Date
         $passedBefore = $totalPassed

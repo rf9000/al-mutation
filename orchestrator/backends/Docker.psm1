@@ -33,7 +33,9 @@ function Start-MutEnvironment {
         $Env,
         [Parameter(Mandatory = $true)]
         $Config,
-        [bool]$RequireProbe = $true
+        [bool]$RequireProbe = $true,
+        # Parameter parity with DemoPortal.psm1; unused here.
+        [switch]$SkipProbe
     )
 
     throw [System.NotImplementedException]::new('Docker backend is not implemented in v1')

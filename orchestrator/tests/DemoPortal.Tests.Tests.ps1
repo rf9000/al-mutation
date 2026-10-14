@@ -96,6 +96,31 @@ Describe 'Invoke-MutTests' {
         ($warnings -join "`n") | Should -Match 'failed: 500; environment status: Stopped'
     }
 
+    It 'restarts the environment before a test job once this boot has served MutMaxTestJobsPerBoot jobs (an environment breaks after ~36)' {
+        InModuleScope DemoPortal -Parameters @{ Dir = "$TestDrive/jobs" } { param($Dir) $script:MutTestJobCountDir = $Dir; Set-MutTestJobCount -EnvId 'E1' -Count $script:MutMaxTestJobsPerBoot }
+        Mock -ModuleName DemoPortal Reset-MutEnvironment { [pscustomobject]@{ DurationSec = 1 } }
+        Mock -ModuleName DemoPortal Invoke-Continia {
+            [pscustomobject]@{ jobId = 77; status = 'passed'; summary = [pscustomobject]@{ total = 1; passed = 1; failed = 0; durationSeconds = 1 }; tests = @() }
+        }
+
+        Invoke-MutTests -Env $envHandle -Targets @([pscustomobject]@{ CodeunitId = 95078; Function = $null }) -TimeoutSec 30 -WarningVariable warnings -WarningAction SilentlyContinue | Out-Null
+
+        Should -Invoke -ModuleName DemoPortal Reset-MutEnvironment -Times 1 -Exactly
+        @($warnings | Where-Object { "$_" -like '*test jobs since its last start*restarting*' }).Count | Should -Be 1
+    }
+
+    It 'does not restart below the limit' {
+        InModuleScope DemoPortal -Parameters @{ Dir = "$TestDrive/jobs" } { param($Dir) $script:MutTestJobCountDir = $Dir; Set-MutTestJobCount -EnvId 'E1' -Count 3 }
+        Mock -ModuleName DemoPortal Reset-MutEnvironment { }
+        Mock -ModuleName DemoPortal Invoke-Continia {
+            [pscustomobject]@{ jobId = 77; status = 'passed'; summary = [pscustomobject]@{ total = 1; passed = 1; failed = 0; durationSeconds = 1 }; tests = @() }
+        }
+
+        Invoke-MutTests -Env $envHandle -Targets @([pscustomobject]@{ CodeunitId = 95078; Function = $null }) -TimeoutSec 30 | Out-Null
+
+        Should -Invoke -ModuleName DemoPortal Reset-MutEnvironment -Times 0 -Exactly
+    }
+
     It 'logs one line per codeunit with its job id, counts and time' {
         Mock -ModuleName DemoPortal Write-Host { }
         Mock -ModuleName DemoPortal Invoke-Continia {

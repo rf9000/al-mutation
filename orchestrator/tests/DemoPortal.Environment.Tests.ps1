@@ -209,6 +209,8 @@ Describe 'New-MutEnvironment' {
 
         $h.Status | Should -Be 'Running'
         $h.ProbeConfirmed | Should -Be $false
+        # Run 1038: ten failed probe jobs spent ten of the ~36 test jobs an environment serves per boot.
+        Should -Invoke -ModuleName DemoPortal Invoke-Continia -ParameterFilter { $Arguments[0] -eq 'test' } -Times 0 -Exactly
     }
 }
 
@@ -464,6 +466,19 @@ Describe 'Wait-MutEnvironmentStatus' {
 Describe 'Reset-MutEnvironment' {
     BeforeEach {
         Mock -ModuleName DemoPortal Start-Sleep {}
+    }
+
+    It 'sets the environment''s test job count back to zero' {
+        $env = [pscustomobject]@{ Id = 'E1'; Name = 'mut-spike-01'; Url = 'https://x/E1'; Backend = 'DemoPortal'; Shared = $false }
+        InModuleScope DemoPortal -Parameters @{ Dir = "$TestDrive/jobs" } { param($Dir) $script:MutTestJobCountDir = $Dir; Set-MutTestJobCount -EnvId 'E1' -Count 25 }
+        Mock -ModuleName DemoPortal Invoke-Continia -ParameterFilter { $Arguments[1] -eq 'stop' -or $Arguments[1] -eq 'start' } { [pscustomobject]@{ success = $true } }
+        Mock -ModuleName DemoPortal Invoke-Continia -ParameterFilter { $Arguments[1] -eq 'get' } { [pscustomobject]@{ id = 'E1'; status = 'Running'; description = 'mut-spike-01'; url = 'https://x/E1'; shared = $false } }
+        Mock -ModuleName DemoPortal Wait-MutEnvironmentStatus { }
+        Mock -ModuleName DemoPortal Invoke-Continia -ParameterFilter { $Arguments[1] -eq 'apps' } { @([pscustomobject]@{ id = 'app1' }) }
+
+        Reset-MutEnvironment -Env $env -WarningAction SilentlyContinue | Out-Null
+
+        InModuleScope DemoPortal { Get-MutTestJobCount -EnvId 'E1' } | Should -Be 0
     }
 
     It 'stops then starts the environment and returns DurationSec' {

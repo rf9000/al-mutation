@@ -570,6 +570,7 @@ function Publish-MutBaseline {
     $allTests = @()
     $durationsByCodeunit = @{}
     $jobIdsByCodeunit = @{}
+    $byTestCodeunit = @{}
     $failingTests = @()
 
     # §6.11.2: baseline.repeats passes (Get-MutConfig defaults it to 3; a hand-built config without
@@ -631,6 +632,11 @@ function Publish-MutBaseline {
         $allTests += @($result.Tests)
         $durationsByCodeunit["$codeunitId"] = $result.DurationMs
         $jobIdsByCodeunit["$codeunitId"] = @($result.JobIds)
+        # Right away: a restart discards the stored coverage of every earlier job, and coverage for
+        # such a job hangs (PR 58631: job 11, after a restart in pass 3).
+        if (@($result.JobIds).Count -gt 0) {
+            $byTestCodeunit["$codeunitId"] = @(Get-MutCoverage -Env $Env -JobIds @($result.JobIds))
+        }
 
         & $recordPass $result.Tests 1 $codeunitId
 
@@ -743,15 +749,7 @@ function Publish-MutBaseline {
         }
     }
 
-    $byTestCodeunit = @{}
     if ($anyJobIds) {
-        foreach ($codeunitId in $testCodeunits) {
-            $jobIds = @($jobIdsByCodeunit["$codeunitId"])
-            if ($jobIds.Count -gt 0) {
-                $rows = Get-MutCoverage -Env $Env -JobIds $jobIds
-                $byTestCodeunit["$codeunitId"] = @($rows)
-            }
-        }
         $coverageDoc = [pscustomobject]@{ byTestCodeunit = $byTestCodeunit }
         Write-MutTextFile -Path $coveragePath -Text ((($coverageDoc | ConvertTo-Json -Depth 10)) + [System.Environment]::NewLine)
     }

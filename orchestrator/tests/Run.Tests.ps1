@@ -1242,6 +1242,24 @@ Describe 'Publish-MutBaseline: repeated baseline and flaky tests (§6.11.2)' {
         @($warnings | Where-Object { "$_" -like '*pass 2*50300*zero tests*restarting the environment*' }).Count | Should -Be 1
     }
 
+    # A restart discards the stored coverage of every earlier job, and coverage for such a job hangs
+    # (PR 58631: job 11 after the pass-3 restart). So each codeunit's coverage is fetched right after
+    # its pass-1 run, before anything can restart the environment.
+    It 'fetches each codeunit''s coverage right after its pass-1 run, before pass 2' {
+        $script:PassScript[50300] = @(@(, @('50300', 'T1', 'Pass', $null)), @(, @('CU A', 'T1', 'Pass', $null)), @(, @('CU A', 'T1', 'Pass', $null)))
+        $script:PassScript[50301] = @(@(, @('50301', 'T2', 'Pass', $null)), @(, @('CU B', 'T2', 'Pass', $null)), @(, @('CU B', 'T2', 'Pass', $null)))
+        Mock -ModuleName Run Get-MutCoverage {
+            $null = $script:Calls.Add([pscustomobject]@{ Codeunit = "coverage:$($JobIds -join ',')"; Pass = 0; Coverage = $false })
+            @([pscustomobject]@{ ObjectType = 'Codeunit'; ObjectId = 50200; LineType = 'Code'; LineNo = 7; Hits = 1 })
+        }
+
+        $result = Publish-MutBaseline -Config $script:Config -Env $script:EnvHandle -RunDir $script:RunDir
+
+        @($script:Calls | Select-Object -First 4 | ForEach-Object { if ($_.Pass -gt 0) { "$($_.Codeunit):$($_.Pass)" } else { $_.Codeunit } }) |
+            Should -Be @('50300:1', 'coverage:j50300-1', '50301:1', 'coverage:j50301-1')
+        $result.Coverage.byTestCodeunit['50300'].Count | Should -Be 1
+    }
+
     It 'does not restart the environment when every pass returns tests' {
         $script:PassScript[50300] = @(@(, @('50300', 'T1', 'Pass', $null)), @(, @('CU A', 'T1', 'Pass', $null)), @(, @('CU A', 'T1', 'Pass', $null)))
         $script:PassScript[50301] = @(@(, @('50301', 'T2', 'Pass', $null)), @(, @('CU B', 'T2', 'Pass', $null)), @(, @('CU B', 'T2', 'Pass', $null)))
