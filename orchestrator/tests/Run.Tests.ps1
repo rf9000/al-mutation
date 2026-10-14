@@ -1043,6 +1043,7 @@ Describe 'Publish-MutBaseline: repeated baseline and flaky tests (§6.11.2)' {
             @([pscustomobject]@{ ObjectType = 'Codeunit'; ObjectId = 50200; LineType = 'Code'; LineNo = 7; Hits = 1 })
         }
         Mock -ModuleName Run Get-MutReferenceMap { @{ 50200 = @(50300) } }
+        Mock -ModuleName Run Reset-MutEnvironment { [pscustomobject]@{ DurationSec = 1 } }
     }
 
     It 'runs pass 1 with -Coverage and passes 2..repeats without it, one call per codeunit and pass; stable tests give no flaky tests' {
@@ -1228,6 +1229,28 @@ Describe 'Publish-MutBaseline: repeated baseline and flaky tests (§6.11.2)' {
         Test-Path (Join-Path $script:RunDir 'baseline.json') | Should -BeTrue
     }
 
+    # mutant-fixer run 1038: after test job 37 came back empty, every later test-job POST got a 500
+    # while the environment said Running. A restart clears a hung test job, so the first zero-test
+    # result in a later pass restarts the environment before the retry; at most once per baseline.
+    It 'the first zero-test result in a later pass restarts the environment before the retry, once per baseline' {
+        $script:PassScript[50300] = @(@(, @('50300', 'T1', 'Pass', $null)), @(), @(, @('CU A', 'T1', 'Pass', $null)), @(, @('CU A', 'T1', 'Pass', $null)))
+        $script:PassScript[50301] = @(@(, @('50301', 'T2', 'Pass', $null)), @(), @(, @('CU B', 'T2', 'Pass', $null)), @(, @('CU B', 'T2', 'Pass', $null)))
+
+        Publish-MutBaseline -Config $script:Config -Env $script:EnvHandle -RunDir $script:RunDir -WarningVariable warnings -WarningAction SilentlyContinue | Out-Null
+
+        Should -Invoke -ModuleName Run Reset-MutEnvironment -Times 1 -Exactly
+        @($warnings | Where-Object { "$_" -like '*pass 2*50300*zero tests*restarting the environment*' }).Count | Should -Be 1
+    }
+
+    It 'does not restart the environment when every pass returns tests' {
+        $script:PassScript[50300] = @(@(, @('50300', 'T1', 'Pass', $null)), @(, @('CU A', 'T1', 'Pass', $null)), @(, @('CU A', 'T1', 'Pass', $null)))
+        $script:PassScript[50301] = @(@(, @('50301', 'T2', 'Pass', $null)), @(, @('CU B', 'T2', 'Pass', $null)), @(, @('CU B', 'T2', 'Pass', $null)))
+
+        Publish-MutBaseline -Config $script:Config -Env $script:EnvHandle -RunDir $script:RunDir | Out-Null
+
+        Should -Invoke -ModuleName Run Reset-MutEnvironment -Times 0 -Exactly
+    }
+
     It 'a test failing in every pass that ran aborts although one pass was left out' {
         $script:PassScript[50300] = @(@(, @('50300', 'Always', 'Fail', 'e1')), @(), @(), @(, @('CU A', 'Always', 'Fail', 'e1')))
         $script:PassScript[50301] = @(@(, @('50301', 'T2', 'Pass', $null)), @(, @('CU B', 'T2', 'Pass', $null)), @(, @('CU B', 'T2', 'Pass', $null)))
@@ -1298,6 +1321,51 @@ Describe 'Publish-MutBaseline: repeated baseline and flaky tests (§6.11.2)' {
         $oldResult = InModuleScope Run -Parameters @{ RunDir = $old } { param($RunDir) Get-MutSkippedBaselineResult -RunDir $RunDir }
         $oldResult.Repeats | Should -Be 1
         @($oldResult.FlakyTests).Count | Should -Be 0
+    }
+}
+
+Describe 'Publish-MutSchemata: restart on a transient publish failure (mutant-fixer run 1038)' {
+    BeforeEach {
+        $script:WorkDir = "$TestDrive/work-$([guid]::NewGuid().ToString('N'))"
+        $script:RunDir = Join-Path $script:WorkDir 'runs/1'
+        New-Item -ItemType Directory -Path $script:RunDir -Force | Out-Null
+        $script:Config = New-MutRunTestConfig -WorkDir $script:WorkDir
+        $script:Schemata = [pscustomobject]@{ AppFile = "$script:WorkDir/gen/aut-schemata/aut.app" }
+        $script:PublishResults = New-Object System.Collections.Queue
+
+        Mock -ModuleName Run Publish-MutAppFile { $script:PublishResults.Dequeue() }
+        Mock -ModuleName Run Reset-MutEnvironment { [pscustomobject]@{ DurationSec = 1 } }
+        Mock -ModuleName Run Invoke-MutApi { }
+        Mock -ModuleName Run Invoke-MutTests { [pscustomobject]@{ Passed = 1; Failed = 0; Tests = @(); DurationMs = 1; JobIds = @() } }
+    }
+
+    It 'restarts the environment and retries once when the publish ran out of memory' {
+        $script:PublishResults.Enqueue([pscustomobject]@{ Success = $false; Code = $null; ErrorMessage = "no code or error in the CLI response: Failure while emitting metadata (Exception of type 'System.OutOfMemoryException' was thrown.); environment status: Running" })
+        $script:PublishResults.Enqueue([pscustomobject]@{ Success = $true; Code = $null; ErrorMessage = $null })
+
+        Publish-MutSchemata -Config $script:Config -Env $script:EnvHandle -Schemata $script:Schemata -RunDir $script:RunDir -RunNo 1 -WarningVariable warnings -WarningAction SilentlyContinue
+
+        Should -Invoke -ModuleName Run Reset-MutEnvironment -Times 1 -Exactly
+        Should -Invoke -ModuleName Run Publish-MutAppFile -Times 2 -Exactly
+        @($warnings | Where-Object { "$_" -like '*OutOfMemoryException*restarting the environment*' }).Count | Should -Be 1
+        Test-Path (Join-Path $script:RunDir 'publish-schemata.done') | Should -BeTrue
+    }
+
+    It 'restarts on a Bad Gateway too, and throws naming both failures when the retry fails' {
+        $script:PublishResults.Enqueue([pscustomobject]@{ Success = $false; Code = $null; ErrorMessage = '{"success":false,"message":"Bad Gateway"}' })
+        $script:PublishResults.Enqueue([pscustomobject]@{ Success = $false; Code = $null; ErrorMessage = 'still Bad Gateway' })
+
+        { Publish-MutSchemata -Config $script:Config -Env $script:EnvHandle -Schemata $script:Schemata -RunDir $script:RunDir -RunNo 1 -WarningAction SilentlyContinue } |
+            Should -Throw '*after restarting the environment*still Bad Gateway*First failure*Bad Gateway*'
+        Should -Invoke -ModuleName Run Reset-MutEnvironment -Times 1 -Exactly
+    }
+
+    It 'does not restart on a failure that a restart cannot fix' {
+        $script:PublishResults.Enqueue([pscustomobject]@{ Success = $false; Code = 'publish-failed'; ErrorMessage = 'The table CTS-CB X cannot be removed' })
+
+        { Publish-MutSchemata -Config $script:Config -Env $script:EnvHandle -Schemata $script:Schemata -RunDir $script:RunDir -RunNo 1 } |
+            Should -Throw '*cannot be removed*'
+        Should -Invoke -ModuleName Run Reset-MutEnvironment -Times 0 -Exactly
     }
 }
 

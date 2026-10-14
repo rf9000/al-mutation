@@ -650,7 +650,11 @@ function Publish-MutBaseline {
     # already shown each codeunit runs, so a zero-test later pass is retried once and then left out for
     # that codeunit (mutant-fixer PR 57711, 2026-10-12: pass 2 of 95117 came back empty after pass 1 ran its tests). The verdicts
     # count only the passes that ran ($passesByCodeunit).
+    # mutant-fixer run 1038: after one test job came back empty, every later test-job POST got a 500
+    # while the environment said Running. A restart clears a hung test job, so the first zero-test
+    # result restarts the environment before its retry; at most once per baseline.
     $passesByCodeunit = @{}
+    $environmentRestarted = $false
     foreach ($codeunitId in $testCodeunits) { $passesByCodeunit["$codeunitId"] = 1 }
     for ($pass = 2; $pass -le $repeats; $pass++) {
         foreach ($codeunitId in $testCodeunits) {
@@ -658,7 +662,14 @@ function Publish-MutBaseline {
             $result = Invoke-MutTests -Env $Env -Targets $target -TimeoutSec $script:MutWholeSuiteTimeoutSec
 
             if (($result.Passed + $result.Failed) -eq 0) {
-                Write-Warning "Publish-MutBaseline: the baseline test run (pass $pass of $repeats) for codeunit $codeunitId reported zero tests (Passed=0, Failed=0); retrying once."
+                if (-not $environmentRestarted) {
+                    Write-Warning "Publish-MutBaseline: the baseline test run (pass $pass of $repeats) for codeunit $codeunitId reported zero tests (Passed=0, Failed=0); restarting the environment and retrying once."
+                    Reset-MutEnvironment -Env $Env -Config $Config | Out-Null
+                    $environmentRestarted = $true
+                }
+                else {
+                    Write-Warning "Publish-MutBaseline: the baseline test run (pass $pass of $repeats) for codeunit $codeunitId reported zero tests (Passed=0, Failed=0); retrying once."
+                }
                 $result = Invoke-MutTests -Env $Env -Targets $target -TimeoutSec $script:MutWholeSuiteTimeoutSec
             }
             if (($result.Passed + $result.Failed) -eq 0) {
@@ -865,6 +876,9 @@ function Build-MutSchemataStep {
     }
 }
 
+# Publish failures a restart can clear: BC out of memory, a gateway or a timeout in front of it.
+$script:MutRestartablePublishFailure = 'OutOfMemoryException|Bad Gateway|Gateway Time-?out|Service Unavailable|timed out'
+
 function Publish-MutSchemata {
     <#
         .SYNOPSIS
@@ -908,6 +922,18 @@ function Publish-MutSchemata {
 
     if ($strategy -eq 'same-version' -or $strategy -eq 'bump-build' -or $strategy -eq 'unpublish-test-app') {
         $publishFileResult = Publish-MutAppFile -Env $Env -AppFile $Schemata.AppFile
+        # mutant-fixer run 1038: BC ran out of memory emitting the schemata's metadata after the
+        # baseline (run 1037: Bad Gateway at the same step). The same app published fine on a fresh
+        # environment, so a restart and one retry; a failure a restart cannot fix throws at once.
+        if ((-not $publishFileResult.Success) -and ([string]$publishFileResult.ErrorMessage -match $script:MutRestartablePublishFailure)) {
+            $firstFailure = $publishFileResult.ErrorMessage
+            Write-Warning "Publish-MutSchemata: publishing the schemata app failed ($firstFailure); restarting the environment and retrying once."
+            Reset-MutEnvironment -Env $Env -Config $Config | Out-Null
+            $publishFileResult = Publish-MutAppFile -Env $Env -AppFile $Schemata.AppFile
+            if (-not $publishFileResult.Success) {
+                throw "Publish-MutSchemata: publishing the schemata app ($($Schemata.AppFile)) failed again after restarting the environment. Code: $($publishFileResult.Code); Message: $($publishFileResult.ErrorMessage). First failure: $firstFailure"
+            }
+        }
         if (-not $publishFileResult.Success) {
             throw "Publish-MutSchemata: publishing the schemata app ($($Schemata.AppFile)) failed under publishStrategy '$strategy'. Code: $($publishFileResult.Code); Message: $($publishFileResult.ErrorMessage)"
         }
