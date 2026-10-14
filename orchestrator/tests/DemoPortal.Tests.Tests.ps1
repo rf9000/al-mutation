@@ -96,6 +96,17 @@ Describe 'Invoke-MutTests' {
         ($warnings -join "`n") | Should -Match 'failed: 500; environment status: Stopped'
     }
 
+    It 'logs one line per codeunit with its job id, counts and time' {
+        Mock -ModuleName DemoPortal Write-Host { }
+        Mock -ModuleName DemoPortal Invoke-Continia {
+            [pscustomobject]@{ jobId = 37; status = 'passed'; summary = [pscustomobject]@{ total = 2; passed = 2; failed = 0; durationSeconds = 1.5; codeunitName = 'CU A' }; tests = @() }
+        }
+
+        Invoke-MutTests -Env $envHandle -Targets @([pscustomobject]@{ CodeunitId = 95078; Function = $null }) -TimeoutSec 30 | Out-Null
+
+        Should -Invoke -ModuleName DemoPortal Write-Host -ParameterFilter { "$Object" -like 'Invoke-MutTests: codeunit 95078 job 37: 2 passed, 0 failed in * s' } -Times 1 -Exactly
+    }
+
     It 'passes --json and --timeout <TimeoutSec>, and only includes Function when given' {
         Mock -ModuleName DemoPortal Invoke-Continia {
             [pscustomobject]@{
@@ -408,6 +419,16 @@ Describe 'Invoke-Continia -AllowNonZeroExit' {
 }
 
 Describe 'Get-MutCoverageRaw' {
+    It 'logs the job before the call and its size and time after (PR 58631: coverage for job 11 never returned)' {
+        Mock -ModuleName DemoPortal Write-Host { }
+        Mock -ModuleName DemoPortal Invoke-Continia { [pscustomobject]@{ envId = 'E1'; jobId = '11'; csv = 'a,b' } }
+
+        Get-MutCoverageRaw -Env $envHandle -JobIds @('11') | Out-Null
+
+        Should -Invoke -ModuleName DemoPortal Write-Host -ParameterFilter { "$Object" -like 'Get-MutCoverageRaw: job 11: fetching coverage*' } -Times 1 -Exactly
+        Should -Invoke -ModuleName DemoPortal Write-Host -ParameterFilter { "$Object" -like 'Get-MutCoverageRaw: job 11: 3 chars in * s' } -Times 1 -Exactly
+    }
+
     It 'passes --timeout 600 to the CLI and a longer process timeout (PR 58631: coverage for job 11 timed out after the default 120s)' {
         Mock -ModuleName DemoPortal Invoke-Continia { [pscustomobject]@{ envId = 'E1'; jobId = '11'; csv = 'a,b' } }
 

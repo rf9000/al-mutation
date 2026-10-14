@@ -1761,11 +1761,23 @@ function Invoke-MutTests {
     $tests = @()
     $jobIds = @()
 
+    # One line per target in the job log: which job id ran which codeunit, and how long it took
+    # (PR 58631: coverage for job 11 hung, and nothing said which codeunit job 11 was).
+    $logTarget = {
+        param($Target, $JobId, [int]$Passed, [int]$Failed, [datetime]$Start)
+        $name = "codeunit $($Target.CodeunitId)"
+        if ($Target.Function) { $name += " $($Target.Function)" }
+        Write-Host ("Invoke-MutTests: {0} job {1}: {2} passed, {3} failed in {4:N1} s" -f $name, $JobId, $Passed, $Failed, ((Get-Date) - $Start).TotalSeconds)
+    }
+
     foreach ($target in $distinctTargets) {
         $arguments = @('test', 'run', $Env.Id, $target.CodeunitId)
         if ($target.Function) {
             $arguments += $target.Function
         }
+        $targetStart = Get-Date
+        $passedBefore = $totalPassed
+        $failedBefore = $totalFailed
 
         if ($Coverage) {
             $arguments += @('--raw', '--timeout', $TimeoutSec)
@@ -1805,6 +1817,7 @@ function Invoke-MutTests {
                 $totalDurationMs += $t.DurationMs
             }
 
+            & $logTarget $target $jobId ($totalPassed - $passedBefore) ($totalFailed - $failedBefore) $targetStart
             continue
         }
 
@@ -1880,12 +1893,17 @@ function Invoke-MutTests {
             }
         }
 
+        $responseJobId = $null
         if (Test-MutHasProperty $response 'jobId') {
-            $jobIds += $response.jobId
+            $responseJobId = $response.jobId
         }
         elseif (Test-MutHasProperty $response 'id') {
-            $jobIds += $response.id
+            $responseJobId = $response.id
         }
+        if ($null -ne $responseJobId) {
+            $jobIds += $responseJobId
+        }
+        & $logTarget $target $responseJobId ($totalPassed - $passedBefore) ($totalFailed - $failedBefore) $targetStart
     }
 
     return [pscustomobject]@{
@@ -1927,13 +1945,18 @@ function Get-MutCoverageRaw {
         }
         # The CLI waits 120 s by default; PR 58631 (run on 2026-10-14) timed out there on a busy
         # environment, so allow 600 s, and the process 60 s more.
+        # Logged before the call too, so a hang names its job.
+        Write-Host "Get-MutCoverageRaw: job ${jobId}: fetching coverage"
+        $coverageStart = Get-Date
         try {
             $response = Invoke-Continia -Arguments @('test', 'coverage', $Env.Id, $jobId, '--json', '--timeout', '600') -TimeoutSec 660
         }
         catch {
             throw "$($_.Exception.Message); $(Get-MutEnvironmentStatusNote -Env $Env)"
         }
-        $csvDocuments += [string]$response.csv
+        $csv = [string]$response.csv
+        Write-Host ("Get-MutCoverageRaw: job {0}: {1} chars in {2:N1} s" -f $jobId, $csv.Length, ((Get-Date) - $coverageStart).TotalSeconds)
+        $csvDocuments += $csv
     }
 
     # See the comment on ConvertTo-MutDiagnosticList: a bare `return [string[]]$csvDocuments`
