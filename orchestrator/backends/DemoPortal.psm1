@@ -1333,6 +1333,50 @@ function Compile-MutApp {
     }
 }
 
+function Get-MutEnvironmentStatusNote {
+    <#
+        .SYNOPSIS
+        Private. One `env get <id> --json` after a failed DemoPortal call, as text for the
+        failure message: "environment status: <Status>", or why the status is unknown. Never
+        throws, so any failure path can call it. It tells a stopped environment from a fault in
+        DemoPortal itself (run 1037: test-job 500s and a publish 502, with no status logged).
+    #>
+    param(
+        [Parameter(Mandatory = $true)]
+        $Env
+    )
+
+    try {
+        $current = Invoke-Continia -Arguments @('env', 'get', $Env.Id, '--json') -TimeoutSec 60
+        if (Test-MutHasProperty $current 'status') {
+            return "environment status: $($current.status)"
+        }
+        return 'environment status unknown: env get returned no status'
+    }
+    catch {
+        return "environment status unknown: $($_.Exception.Message)"
+    }
+}
+
+function Add-MutEnvironmentStatus {
+    <#
+        .SYNOPSIS
+        Private. Appends Get-MutEnvironmentStatusNote to a failed publish result's ErrorMessage;
+        a successful result passes through untouched.
+    #>
+    param(
+        [Parameter(Mandatory = $true)]
+        $Env,
+        [Parameter(Mandatory = $true)]
+        $Result
+    )
+
+    if (-not $Result.Success) {
+        $Result.ErrorMessage = "$($Result.ErrorMessage); $(Get-MutEnvironmentStatusNote -Env $Env)"
+    }
+    return $Result
+}
+
 function Publish-MutApp {
     <#
         .SYNOPSIS
@@ -1386,13 +1430,13 @@ function Publish-MutApp {
     $durationSec = ((Get-Date) - $start).TotalSeconds
 
     if (Test-MutIsCliRunLevelFailure $result) {
-        return [pscustomobject]@{
+        return Add-MutEnvironmentStatus -Env $Env -Result ([pscustomobject]@{
             Success      = $false
             Code         = $result.error.code
             Diagnostics  = @()
             DurationSec  = $durationSec
             ErrorMessage = $result.error.message
-        }
+        })
     }
 
     $row = @($result) | Select-Object -First 1
@@ -1404,13 +1448,13 @@ function Publish-MutApp {
         # an empty Diagnostics list -- verbatim the empty-diagnostics shape M6 was written to
         # eliminate (Run.psm1's caller then throws "publishing aut-original failed. Code: ;
         # Message: ; Diagnostics: []", which names nothing actionable).
-        return [pscustomobject]@{
+        return Add-MutEnvironmentStatus -Env $Env -Result ([pscustomobject]@{
             Success      = $false
             Code         = $null
             Diagnostics  = @()
             DurationSec  = $durationSec
             ErrorMessage = "Publish-MutApp: deploy returned no rows for '$Path' (empty array response)."
-        }
+        })
     }
 
     $diagnostics = @()
@@ -1430,13 +1474,13 @@ function Publish-MutApp {
 
     $success = (Test-MutHasProperty $row 'published') -and ($row.published -eq $true)
 
-    return [pscustomobject]@{
+    return Add-MutEnvironmentStatus -Env $Env -Result ([pscustomobject]@{
         Success      = $success
         Code         = $code
         Diagnostics  = $diagnostics
         DurationSec  = $durationSec
         ErrorMessage = $errorMessage
-    }
+    })
 }
 
 function Publish-MutAppFile {
@@ -1476,12 +1520,12 @@ function Publish-MutAppFile {
     $durationSec = ((Get-Date) - $start).TotalSeconds
 
     if (Test-MutIsCliRunLevelFailure $result) {
-        return [pscustomobject]@{
+        return Add-MutEnvironmentStatus -Env $Env -Result ([pscustomobject]@{
             Success      = $false
             DurationSec  = $durationSec
             Code         = $result.error.code
             ErrorMessage = $result.error.message
-        }
+        })
     }
 
     $success = (Test-MutHasProperty $result 'success') -and ($result.success -eq $true)
@@ -1504,12 +1548,12 @@ function Publish-MutAppFile {
         $errorMessage = "no code or error in the CLI response: $raw"
     }
 
-    return [pscustomobject]@{
+    return Add-MutEnvironmentStatus -Env $Env -Result ([pscustomobject]@{
         Success      = $success
         DurationSec  = $durationSec
         Code         = $code
         ErrorMessage = $errorMessage
-    }
+    })
 }
 
 function Unpublish-MutApp {
@@ -1808,7 +1852,7 @@ function Invoke-MutTests {
                 $reason = "the --raw rerun failed too: $($_.Exception.Message)"
             }
             if ($reason.Length -gt 2000) { $reason = $reason.Substring(0, 2000) }
-            Write-Warning "Invoke-MutTests: test run for codeunit $($target.CodeunitId) failed with no tests; --raw says: $reason"
+            Write-Warning "Invoke-MutTests: test run for codeunit $($target.CodeunitId) failed with no tests; --raw says: $reason; $(Get-MutEnvironmentStatusNote -Env $Env)"
         }
 
         $responseTests = $null
@@ -1881,7 +1925,12 @@ function Get-MutCoverageRaw {
         if ([string]::IsNullOrEmpty($jobId)) {
             continue
         }
-        $response = Invoke-Continia -Arguments @('test', 'coverage', $Env.Id, $jobId, '--json')
+        try {
+            $response = Invoke-Continia -Arguments @('test', 'coverage', $Env.Id, $jobId, '--json')
+        }
+        catch {
+            throw "$($_.Exception.Message); $(Get-MutEnvironmentStatusNote -Env $Env)"
+        }
         $csvDocuments += [string]$response.csv
     }
 

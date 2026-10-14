@@ -75,6 +75,27 @@ Describe 'Invoke-MutTests' {
         ($result.Passed + $result.Failed) | Should -Be 0
     }
 
+    It 'names the environment status in the zero-tests warning' {
+        Mock -ModuleName DemoPortal Invoke-Continia -ParameterFilter { $Arguments -contains '--json' -and $Arguments[0] -eq 'test' } {
+            [pscustomobject]@{
+                status  = 'failed'
+                passed  = $false
+                summary = [pscustomobject]@{ total = 0; passed = 0; failed = 0; skipped = 0; durationSeconds = 0; codeunitName = '' }
+                tests   = @()
+            }
+        }
+        Mock -ModuleName DemoPortal Invoke-Continia -ParameterFilter { $Arguments -contains '--raw' } {
+            [pscustomobject]@{ ExitCode = 1; StdOut = 'POST .../tests/jobs.json failed: 500'; StdErr = '' }
+        }
+        Mock -ModuleName DemoPortal Invoke-Continia -ParameterFilter { $Arguments[0] -eq 'env' -and $Arguments[1] -eq 'get' } {
+            [pscustomobject]@{ id = 'E1'; status = 'Stopped' }
+        }
+
+        Invoke-MutTests -Env $envHandle -Targets @([pscustomobject]@{ CodeunitId = 95110; Function = $null }) -TimeoutSec 30 -WarningVariable warnings -WarningAction SilentlyContinue | Out-Null
+
+        ($warnings -join "`n") | Should -Match 'failed: 500; environment status: Stopped'
+    }
+
     It 'passes --json and --timeout <TimeoutSec>, and only includes Function when given' {
         Mock -ModuleName DemoPortal Invoke-Continia {
             [pscustomobject]@{
@@ -387,6 +408,17 @@ Describe 'Invoke-Continia -AllowNonZeroExit' {
 }
 
 Describe 'Get-MutCoverageRaw' {
+    It 'rethrows a failed coverage call with the environment status (PR 58631: coverage timed out)' {
+        Mock -ModuleName DemoPortal Invoke-Continia -ParameterFilter { $Arguments[1] -eq 'coverage' } {
+            throw 'continia returned no JSON: test coverage E1 11 --json; stderr: Error: Code coverage for job 11 timed out after 120s'
+        }
+        Mock -ModuleName DemoPortal Invoke-Continia -ParameterFilter { $Arguments[0] -eq 'env' -and $Arguments[1] -eq 'get' } {
+            [pscustomobject]@{ id = 'E1'; status = 'Running' }
+        }
+
+        { Get-MutCoverageRaw -Env $envHandle -JobIds @('11') } | Should -Throw '*timed out after 120s; environment status: Running'
+    }
+
     It 'calls test coverage <id> <jobId> --json per job id and returns each csv string, in order' {
         Mock -ModuleName DemoPortal Invoke-Continia -ParameterFilter { $Arguments[3] -eq 'JOB-1' } {
             [pscustomobject]@{ envId = 'E1'; jobId = 'JOB-1'; csv = "a,b`n1,2" }

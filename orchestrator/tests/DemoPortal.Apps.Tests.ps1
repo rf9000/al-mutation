@@ -362,7 +362,7 @@ Describe 'Publish-MutApp' {
 
         $result.Success | Should -Be $false
         $result.Code | Should -Be 'symbol-fetch-failed'
-        $result.ErrorMessage | Should -Be 'dev-endpoint package failed validation (28.1.49838.50268)'
+        $result.ErrorMessage | Should -BeLike 'dev-endpoint package failed validation (28.1.49838.50268); environment status*'
         $result.Diagnostics.Count | Should -Be 0
     }
 
@@ -383,7 +383,20 @@ Describe 'Publish-MutApp' {
         $result.Success | Should -Be $false
         $result.Code | Should -Be 'publish-failed'
         $result.Diagnostics.Count | Should -Be 0
-        $result.ErrorMessage | Should -Be "Extension compilation failed ... error AL0185: Codeunit 'Assert' is missing"
+        $result.ErrorMessage | Should -BeLike "Extension compilation failed ... error AL0185: Codeunit 'Assert' is missing; environment status*"
+    }
+
+    It 'appends the environment status from env get to ErrorMessage on failure' {
+        Mock -ModuleName DemoPortal Invoke-Continia -ParameterFilter { $Arguments[0] -eq 'deploy' } {
+            [pscustomobject]@{ success = $false; error = [pscustomobject]@{ code = 'deploy-failed'; message = 'POST failed: 500' } }
+        }
+        Mock -ModuleName DemoPortal Invoke-Continia -ParameterFilter { $Arguments[0] -eq 'env' -and $Arguments[1] -eq 'get' } {
+            [pscustomobject]@{ id = 'E1'; status = 'Running' }
+        }
+
+        $result = Publish-MutApp -Env $envHandle -Path $script:dir
+
+        $result.ErrorMessage | Should -Be 'POST failed: 500; environment status: Running'
     }
 
     It 'refuses an environment not named mut-*' {
@@ -480,7 +493,40 @@ Describe 'Publish-MutAppFile' {
 
         $result.Success | Should -Be $false
         $result.Code | Should -Be 'app-lock-held'
-        $result.ErrorMessage | Should -Be 'the file is locked by another process'
+        $result.ErrorMessage | Should -BeLike 'the file is locked by another process; environment status*'
+    }
+
+    It 'appends the environment status from env get to ErrorMessage on failure (run 1037: Bad Gateway)' {
+        Mock -ModuleName DemoPortal Invoke-Continia -ParameterFilter { $Arguments[0] -eq 'publish' } {
+            [pscustomobject]@{ success = $false; message = 'Bad Gateway' }
+        }
+        Mock -ModuleName DemoPortal Invoke-Continia -ParameterFilter { $Arguments[0] -eq 'env' -and $Arguments[1] -eq 'get' } {
+            [pscustomobject]@{ id = 'E1'; status = 'Stopped' }
+        }
+
+        $result = Publish-MutAppFile -Env $envHandle -AppFile 'C:/out/schemata.app'
+
+        $result.ErrorMessage | Should -BeLike '*Bad Gateway*; environment status: Stopped'
+        Should -Invoke -ModuleName DemoPortal Invoke-Continia -ParameterFilter { $Arguments[0] -eq 'env' -and $Arguments[2] -eq 'E1' } -Times 1
+    }
+
+    It 'says the status is unknown when env get fails too' {
+        Mock -ModuleName DemoPortal Invoke-Continia -ParameterFilter { $Arguments[0] -eq 'publish' } {
+            [pscustomobject]@{ success = $false; error = 'boom' }
+        }
+        Mock -ModuleName DemoPortal Invoke-Continia -ParameterFilter { $Arguments[0] -eq 'env' } { throw 'continia returned no JSON: env get E1 --json' }
+
+        $result = Publish-MutAppFile -Env $envHandle -AppFile 'C:/out/schemata.app'
+
+        $result.ErrorMessage | Should -Be 'boom; environment status unknown: continia returned no JSON: env get E1 --json'
+    }
+
+    It 'does not ask for the environment status on success' {
+        Mock -ModuleName DemoPortal Invoke-Continia { [pscustomobject]@{ success = $true } }
+
+        Publish-MutAppFile -Env $envHandle -AppFile 'C:/out/schemata.app' | Out-Null
+
+        Should -Invoke -ModuleName DemoPortal Invoke-Continia -ParameterFilter { $Arguments[0] -eq 'env' } -Times 0
     }
 
     It 'refuses an environment not named mut-*' {
