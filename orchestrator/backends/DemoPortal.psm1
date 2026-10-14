@@ -1925,8 +1925,10 @@ function Get-MutCoverageRaw {
         if ([string]::IsNullOrEmpty($jobId)) {
             continue
         }
+        # The CLI waits 120 s by default; PR 58631 (run on 2026-10-14) timed out there on a busy
+        # environment, so allow 600 s, and the process 60 s more.
         try {
-            $response = Invoke-Continia -Arguments @('test', 'coverage', $Env.Id, $jobId, '--json')
+            $response = Invoke-Continia -Arguments @('test', 'coverage', $Env.Id, $jobId, '--json', '--timeout', '600') -TimeoutSec 660
         }
         catch {
             throw "$($_.Exception.Message); $(Get-MutEnvironmentStatusNote -Env $Env)"

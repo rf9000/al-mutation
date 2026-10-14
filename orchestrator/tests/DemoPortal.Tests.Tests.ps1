@@ -408,6 +408,17 @@ Describe 'Invoke-Continia -AllowNonZeroExit' {
 }
 
 Describe 'Get-MutCoverageRaw' {
+    It 'passes --timeout 600 to the CLI and a longer process timeout (PR 58631: coverage for job 11 timed out after the default 120s)' {
+        Mock -ModuleName DemoPortal Invoke-Continia { [pscustomobject]@{ envId = 'E1'; jobId = '11'; csv = 'a,b' } }
+
+        Get-MutCoverageRaw -Env $envHandle -JobIds @('11') | Out-Null
+
+        Should -Invoke -ModuleName DemoPortal Invoke-Continia -ParameterFilter {
+            $Arguments[1] -eq 'coverage' -and $Arguments -contains '--timeout' -and
+            ($Arguments[$Arguments.IndexOf('--timeout') + 1]) -eq '600' -and $TimeoutSec -eq 660
+        } -Times 1
+    }
+
     It 'rethrows a failed coverage call with the environment status (PR 58631: coverage timed out)' {
         Mock -ModuleName DemoPortal Invoke-Continia -ParameterFilter { $Arguments[1] -eq 'coverage' } {
             throw 'continia returned no JSON: test coverage E1 11 --json; stderr: Error: Code coverage for job 11 timed out after 120s'
