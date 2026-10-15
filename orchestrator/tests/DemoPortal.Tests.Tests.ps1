@@ -407,6 +407,56 @@ Describe 'Invoke-MutTests -Coverage (T24, U9 raw/xUnit path)' {
         { Invoke-MutTests -Env $envHandle -Targets @([pscustomobject]@{ CodeunitId = 95155; Function = $null }) -TimeoutSec 30 -Coverage } |
             Should -Throw '*ExitCode=2*recovered from an unexpected state*'
     }
+
+    Context 'a 5xx on the test job start (PR 58631, run 1043)' {
+        BeforeEach {
+            Mock -ModuleName DemoPortal Start-Sleep { }
+            Mock -ModuleName DemoPortal Write-Warning { }
+            $script:StartFailure = [pscustomobject]@{
+                ExitCode = 1
+                StdOut   = 'POST https://demoportaldev.continiaonline.com/api/v1.0/environments/E1/tests/jobs.json failed: 500 {"code":"500","message":"Unhandled error"}'
+                StdErr   = 'Starting test: codeunit 95086'
+            }
+        }
+
+        It 'starts the job again after the 30 s wait and uses the retry''s result' {
+            $script:calls = 0
+            Mock -ModuleName DemoPortal Invoke-Continia -ParameterFilter { $Arguments[0] -eq 'test' } {
+                $script:calls++
+                if ($script:calls -eq 1) { return $script:StartFailure }
+                [pscustomobject]@{ ExitCode = 0; StdOut = "Test job started: 2`n$script:SampleXunitXml"; StdErr = '' }
+            }
+
+            $result = Invoke-MutTests -Env $envHandle -Targets @([pscustomobject]@{ CodeunitId = 95086; Function = $null }) -TimeoutSec 30 -Coverage
+
+            $result.JobIds | Should -Be @('2')
+            $result.Passed | Should -Be 1
+            Should -Invoke -ModuleName DemoPortal Invoke-Continia -ParameterFilter { $Arguments[0] -eq 'test' } -Times 2 -Exactly
+            Should -Invoke -ModuleName DemoPortal Start-Sleep -ParameterFilter { $Seconds -eq 30 } -Times 1 -Exactly
+        }
+
+        It 'gives up after two retries and names the environment status' {
+            Mock -ModuleName DemoPortal Invoke-Continia -ParameterFilter { $Arguments[0] -eq 'test' } { $script:StartFailure }
+            Mock -ModuleName DemoPortal Invoke-Continia -ParameterFilter { $Arguments[0] -eq 'env' -and $Arguments[1] -eq 'get' } {
+                [pscustomobject]@{ status = 'Running' }
+            }
+
+            { Invoke-MutTests -Env $envHandle -Targets @([pscustomobject]@{ CodeunitId = 95086; Function = $null }) -TimeoutSec 30 -Coverage } |
+                Should -Throw '*failed: 500*environment status: Running*'
+            Should -Invoke -ModuleName DemoPortal Invoke-Continia -ParameterFilter { $Arguments[0] -eq 'test' } -Times 3 -Exactly
+            Should -Invoke -ModuleName DemoPortal Start-Sleep -ParameterFilter { $Seconds -eq 60 } -Times 1 -Exactly
+        }
+
+        It 'does not retry a failure that is not a 5xx on the job start' {
+            Mock -ModuleName DemoPortal Invoke-Continia -ParameterFilter { $Arguments[0] -eq 'test' } {
+                [pscustomobject]@{ ExitCode = 1; StdOut = 'POST .../tests/jobs.json failed: 404 not found'; StdErr = '' }
+            }
+
+            { Invoke-MutTests -Env $envHandle -Targets @([pscustomobject]@{ CodeunitId = 95086; Function = $null }) -TimeoutSec 30 -Coverage } |
+                Should -Throw '*failed: 404*'
+            Should -Invoke -ModuleName DemoPortal Invoke-Continia -ParameterFilter { $Arguments[0] -eq 'test' } -Times 1 -Exactly
+        }
+    }
 }
 
 Describe 'Invoke-Continia -AllowNonZeroExit' {

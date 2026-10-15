@@ -41,6 +41,10 @@ $script:MutMaxTestJobsPerBoot = 30
 $script:MutTestJobCountDir = Join-Path ([System.IO.Path]::GetTempPath()) 'mut-test-jobs'
 # The config the last environment call got; the budget restart passes it on for the settle probe.
 $script:MutLastConfig = $null
+# A coverage `test run --raw` whose `POST .../tests/jobs.json` gets a 5xx is started again after
+# each of these waits (mutant-fixer PR 58631, run 1043: a 500 on the first job of a fresh, Running
+# environment; the same call succeeded by hand 20 minutes later).
+$script:MutTestStartRetryDelaysSec = @(30, 60)
 
 function Resolve-MutCliPath {
     param($Config)
@@ -1839,6 +1843,16 @@ function Invoke-MutTests {
             $arguments += @('--raw', '--timeout', $TimeoutSec)
 
             $response = Invoke-Continia -Arguments $arguments -TimeoutSec ($TimeoutSec + 60) -ExpectJson:$false -AllowNonZeroExit
+            $attempt = 0
+            while ($attempt -lt $script:MutTestStartRetryDelaysSec.Count -and
+                $response.StdOut.IndexOf('<') -lt 0 -and
+                "$($response.StdOut) $($response.StdErr)" -match 'tests/jobs\.json failed: 5\d\d') {
+                $delaySec = $script:MutTestStartRetryDelaysSec[$attempt]
+                $attempt++
+                Write-Warning "Invoke-MutTests: starting the test job for codeunit $($target.CodeunitId) got a server error from DemoPortal; trying again in $delaySec s (retry $attempt of $($script:MutTestStartRetryDelaysSec.Count)). $($matches[0])"
+                Start-Sleep -Seconds $delaySec
+                $response = Invoke-Continia -Arguments $arguments -TimeoutSec ($TimeoutSec + 60) -ExpectJson:$false -AllowNonZeroExit
+            }
 
             $jobId = Get-MutTestJobId -StdOut $response.StdOut -StdErr $response.StdErr
             if ($jobId) {
@@ -1858,7 +1872,7 @@ function Invoke-MutTests {
             $xmlStart = $response.StdOut.IndexOf('<')
             $hasUnexpectedExitCode = ($response.ExitCode -ne 0) -and ($response.ExitCode -ne 1)
             if ($xmlStart -lt 0 -or $hasUnexpectedExitCode) {
-                throw "Invoke-MutTests: coverage run for codeunit $($target.CodeunitId) produced no parseable xUnit XML on stdout, or exited with an unexpected code (ExitCode=$($response.ExitCode); only 0 and 1 are expected). StdOut: $($response.StdOut); StdErr: $($response.StdErr)"
+                throw "Invoke-MutTests: coverage run for codeunit $($target.CodeunitId) produced no parseable xUnit XML on stdout, or exited with an unexpected code (ExitCode=$($response.ExitCode); only 0 and 1 are expected). StdOut: $($response.StdOut); StdErr: $($response.StdErr); $(Get-MutEnvironmentStatusNote -Env $Env)"
             }
 
             [xml]$xmlDoc = $response.StdOut.Substring($xmlStart)
