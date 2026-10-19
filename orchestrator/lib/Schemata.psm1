@@ -126,7 +126,8 @@ function New-MutGeneratorArguments {
         [string]$AutDir,
         [Parameter(Mandatory = $true)]
         [string]$OutDir,
-        [string]$ExcludeFile
+        [string]$ExcludeFile,
+        [string]$OnlyChangedFile
     )
 
     $arguments = @(
@@ -160,6 +161,10 @@ function New-MutGeneratorArguments {
 
     if ($ExcludeFile) {
         $arguments += @('--exclude-stable-keys', $ExcludeFile)
+    }
+
+    if ($OnlyChangedFile) {
+        $arguments += @('--only-changed', $OnlyChangedFile)
     }
 
     return , $arguments
@@ -410,13 +415,24 @@ function Build-MutSchemata {
     $excludeFileWritten = $null
     $lastDiagnostics = @()
 
+    # generator.onlyChanged (optional) goes to the generator as a file: only procedures that
+    # overlap a changed range are mutated.
+    $onlyChangedFile = $null
+    $onlyChanged = $Config.generator.PSObject.Properties['onlyChanged']
+    if ($null -ne $onlyChanged -and $null -ne $onlyChanged.Value) {
+        $onlyChangedFile = Join-Path $genDir 'only-changed.json'
+        New-Item -ItemType Directory -Force -Path $genDir | Out-Null
+        $json = ConvertTo-Json -InputObject ([pscustomobject]@{ files = $onlyChanged.Value.files }) -Depth 10 -Compress
+        [System.IO.File]::WriteAllText($onlyChangedFile, $json, (New-Object System.Text.UTF8Encoding $false))
+    }
+
     for ($iteration = 1; $iteration -le $script:MaxIterations; $iteration++) {
         $excludeArg = $null
         if ($excludedStableKeys.Count -gt 0) {
             $excludeArg = $excludeFile
         }
 
-        $arguments = New-MutGeneratorArguments -Config $Config -AutDir $autDir -OutDir $genDir -ExcludeFile $excludeArg
+        $arguments = New-MutGeneratorArguments -Config $Config -AutDir $autDir -OutDir $genDir -ExcludeFile $excludeArg -OnlyChangedFile $onlyChangedFile
         Invoke-MutGenerator -Arguments $arguments
 
         # ConvertFrom-Json on a JSON array (even a single- or zero-element one) already returns a

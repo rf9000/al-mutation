@@ -254,6 +254,18 @@ Describe 'Get-MutConfig' {
         { Get-MutConfig -Path $path } | Should -Throw '*generator.maxMutants*'
     }
 
+    It 'accepts generator.onlyChanged with a files object' {
+        $overrides = @{ generator = @{ maxMutants = 0; onlyObjects = @(); seed = 1; operators = @('REL'); includeBreak = $false; onlyChanged = @{ files = @{ 'A.Codeunit.al' = @(, @(1, 2)) } } } }
+        $path = New-MutTestConfigFile -Overrides $overrides
+        { Get-MutConfig -Path $path } | Should -Not -Throw
+    }
+
+    It 'throws when generator.onlyChanged has no files object' {
+        $overrides = @{ generator = @{ maxMutants = 0; onlyObjects = @(); seed = 1; operators = @('REL'); includeBreak = $false; onlyChanged = @{ ranges = @() } } }
+        $path = New-MutTestConfigFile -Overrides $overrides
+        { Get-MutConfig -Path $path } | Should -Throw '*generator.onlyChanged*'
+    }
+
     It 'throws when generator.seed is negative' {
         $overrides = @{ generator = @{ maxMutants = 0; onlyObjects = @(); seed = -1; operators = @('REL'); includeBreak = $false } }
         $path = New-MutTestConfigFile -Overrides $overrides

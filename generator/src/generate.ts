@@ -30,6 +30,23 @@ export interface GenerateOptions {
   operators: OperatorName[];
   includeBreak: boolean;
   excludeStableKeys: string[];
+  /**
+   * Changed line ranges per AUT-relative file (forward slashes), both ends inclusive. When set,
+   * only mutants in a procedure or trigger that overlaps a changed range are kept: a PR's run
+   * tests the procedures the PR touched, not the rest of the object.
+   */
+  onlyChanged?: Record<string, Array<[number, number]>>;
+}
+
+/** True when `line` lies in a procedure span that overlaps one of `changed`. */
+export function inChangedProcedure(
+  line: number,
+  spans: ReadonlyArray<readonly [number, number]>,
+  changed: ReadonlyArray<readonly [number, number]>,
+): boolean {
+  const span = spans.find(([start, end]) => line >= start && line <= end);
+  if (span === undefined) return false;
+  return changed.some(([start, end]) => start <= span[1] && end >= span[0]);
 }
 
 export interface Skip {
@@ -102,22 +119,24 @@ function generateCandidatesForFile(
   relPath: string,
   source: string,
   options: GenerateOptions,
-): { candidates: CandidateWithFile[]; skipped: Skip[] } {
+): { candidates: CandidateWithFile[]; skipped: Skip[]; spans: Array<[number, number]> } {
   const skipped: Skip[] = [];
   const excludedFileReason = isExcludedFile(relPath, source);
   if (excludedFileReason !== null) {
     skipped.push({ file: relPath, line: 0, reason: excludedFileReason });
-    return { candidates: [], skipped };
+    return { candidates: [], skipped, spans: [] };
   }
 
   const tokens = tokenize(source);
   const header = findObjectHeader(tokens);
   if (header === null) {
     skipped.push({ file: relPath, line: 0, reason: 'not-a-codeunit' });
-    return { candidates: [], skipped };
+    return { candidates: [], skipped, spans: [] };
   }
 
   const procedures: ProcedureSpan[] = findProcedures(tokens);
+  // Line range of each procedure, from its header to its closing `end`, for onlyChanged.
+  const spans = procedures.map((p): [number, number] => [tokens[p.headerStart]!.line, tokens[p.endIdx]!.line]);
   const allowedOperators = new Set(options.operators);
   const candidates: CandidateWithFile[] = [];
   // Occurrence counters per procedure name (AL names are case-insensitive), shared by overloads.
@@ -207,7 +226,7 @@ function generateCandidatesForFile(
     }
   }
 
-  return { candidates, skipped };
+  return { candidates, skipped, spans };
 }
 
 function writeJsonFile(filePath: string, data: unknown): void {
@@ -300,13 +319,15 @@ export function generate(options: GenerateOptions, deps: GenerateDeps = defaultD
 
   const allCandidates: CandidateWithFile[] = [];
   const allSkipped: Skip[] = [];
+  const spansByFile = new Map<string, Array<[number, number]>>();
 
   for (const relPath of alFiles) {
     // §6.4.9: one file's tokenizer error (or any other failure in this per-file step) must not
     // abort the whole run -- it is recorded as a skip and the remaining files still generate.
     try {
       const source = stripBom(fs.readFileSync(path.join(options.autDir, relPath), 'utf8'));
-      const { candidates, skipped } = generateCandidatesForFile(relPath, source, options);
+      const { candidates, skipped, spans } = generateCandidatesForFile(relPath, source, options);
+      spansByFile.set(relPath, spans);
       allCandidates.push(...candidates);
       allSkipped.push(...skipped);
     } catch (err) {
@@ -324,6 +345,11 @@ export function generate(options: GenerateOptions, deps: GenerateDeps = defaultD
   if (options.onlyObjects.length > 0) {
     const onlySet = new Set(options.onlyObjects);
     selected = selected.filter((m) => onlySet.has(m.objectId));
+  }
+
+  if (options.onlyChanged !== undefined) {
+    const changed = options.onlyChanged;
+    selected = selected.filter((m) => inChangedProcedure(m.line, spansByFile.get(m.file) ?? [], changed[m.file] ?? []));
   }
 
   selected = sample(selected, options.maxMutants, options.seed);

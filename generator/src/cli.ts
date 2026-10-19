@@ -118,6 +118,28 @@ function runGenerate(args: readonly string[]): number {
     excludeStableKeys = keys as string[];
   }
 
+  let onlyChanged: Record<string, Array<[number, number]>> | undefined;
+  const onlyChangedFile = flags.get('only-changed');
+  if (onlyChangedFile !== undefined) {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(fs.readFileSync(onlyChangedFile, 'utf8').replace(/^﻿/, ''));
+    } catch (err) {
+      return usageError(`failed to read --only-changed file: ${(err as Error).message}`);
+    }
+    const files = (parsed as { files?: unknown }).files;
+    const isRange = (r: unknown) => Array.isArray(r) && r.length === 2 && r.every((n) => Number.isInteger(n));
+    if (
+      typeof files !== 'object' || files === null || Array.isArray(files) ||
+      !Object.values(files).every((ranges) => Array.isArray(ranges) && ranges.every(isRange))
+    ) {
+      return usageError('--only-changed file must contain { "files": { "<path>": [[start, end], ...] } }');
+    }
+    onlyChanged = Object.fromEntries(
+      Object.entries(files as Record<string, Array<[number, number]>>).map(([file, ranges]) => [file.replace(/\\/g, '/'), ranges]),
+    );
+  }
+
   let options: GenerateOptions;
   try {
     options = {
@@ -132,6 +154,7 @@ function runGenerate(args: readonly string[]): number {
       operators: parseOperatorList(flags.get('operators')),
       includeBreak: flags.has('include-break'),
       excludeStableKeys,
+      ...(onlyChanged !== undefined ? { onlyChanged } : {}),
     };
   } catch (err) {
     if (err instanceof UsageError) return usageError(err.message);

@@ -296,6 +296,29 @@ Describe 'Build-MutSchemata: generator flags' {
         $args0[$idx + 1] | Should -Be '111,222'
     }
 
+    It 'omits --only-changed when generator.onlyChanged is absent' {
+        $config = New-MutFakeConfig -WorkDir "$TestDrive/out"
+
+        Build-MutSchemata -Config $config -Env $script:envHandle -RunDir $script:runDir -RunNo 1 | Out-Null
+
+        $script:generatorCalls[0] | Should -Not -Contain '--only-changed'
+    }
+
+    It 'writes generator.onlyChanged to gen/only-changed.json and passes it as --only-changed, keeping a single range nested' {
+        $config = New-MutFakeConfig -WorkDir "$TestDrive/out"
+        $onlyChanged = '{ "files": { "Payment Entry/A.Codeunit.al": [[12, 14]], "B.Codeunit.al": [[1, 1], [30, 31]] } }' | ConvertFrom-Json
+        $config.generator | Add-Member -NotePropertyName onlyChanged -NotePropertyValue $onlyChanged -Force
+
+        Build-MutSchemata -Config $config -Env $script:envHandle -RunDir $script:runDir -RunNo 1 | Out-Null
+
+        $args0 = $script:generatorCalls[0]
+        $idx = [array]::IndexOf($args0, '--only-changed')
+        $idx | Should -BeGreaterThan -1
+        $args0[$idx + 1] | Should -Be (Join-Path (Join-Path $script:runDir 'gen') 'only-changed.json')
+        $written = Get-Content -Raw -LiteralPath $args0[$idx + 1]
+        $written | Should -Be '{"files":{"Payment Entry/A.Codeunit.al":[[12,14]],"B.Codeunit.al":[[1,1],[30,31]]}}'
+    }
+
     It 'does not add --aut-version when publishStrategy is same-version' {
         $config = New-MutFakeConfig -WorkDir "$TestDrive/out" -PublishStrategy 'same-version'
 

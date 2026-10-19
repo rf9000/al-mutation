@@ -318,3 +318,62 @@ test('generate() gives mutants in overloaded procedures distinct stableKeys (run
   const keys = result.mutants.map((m) => m.stableKey);
   assert.equal(new Set(keys).size, keys.length, 'every stableKey must be unique');
 });
+
+// --- onlyChanged: a PR run mutates only the procedures the PR touched. ---
+
+const TWO_PROCS = [
+  'codeunit 50220 "Two Procs"',
+  '{',
+  '    procedure Touched(A: Integer): Boolean',
+  '    begin',
+  '        if A > 1 then',
+  '            exit(true);',
+  '    end;',
+  '',
+  '    procedure Untouched(B: Integer): Boolean',
+  '    begin',
+  '        if B > 2 then',
+  '            exit(true);',
+  '    end;',
+  '}',
+  '',
+].join('\n');
+
+function twoProcsAut(): string {
+  const autDir = tmpDir();
+  fs.writeFileSync(path.join(autDir, 'app.json'), APP_JSON, 'utf8');
+  fs.mkdirSync(path.join(autDir, 'src'));
+  fs.writeFileSync(path.join(autDir, 'src', 'Two.Codeunit.al'), TWO_PROCS, 'utf8');
+  return autDir;
+}
+
+test('generate() with onlyChanged keeps only mutants of procedures that overlap a changed range', () => {
+  const autDir = twoProcsAut();
+  const all = generate(baseOptions(autDir, tmpDir()));
+  assert.ok(all.mutants.some((m) => m.procedureName === 'Untouched'));
+
+  // Line 6 is inside Touched only; ids keep their full-enumeration numbering.
+  const scoped = generate({ ...baseOptions(autDir, tmpDir()), onlyChanged: { 'src/Two.Codeunit.al': [[6, 6]] } });
+  assert.ok(scoped.mutants.length > 0);
+  assert.ok(scoped.mutants.every((m) => m.procedureName === 'Touched'));
+  assert.deepEqual(
+    scoped.mutants.map((m) => m.id),
+    all.mutants.filter((m) => m.procedureName === 'Touched').map((m) => m.id),
+  );
+});
+
+test('generate() with onlyChanged: a change on the procedure header line counts, a change between procedures does not', () => {
+  const autDir = twoProcsAut();
+  const header = generate({ ...baseOptions(autDir, tmpDir()), onlyChanged: { 'src/Two.Codeunit.al': [[9, 9]] } });
+  assert.ok(header.mutants.length > 0);
+  assert.ok(header.mutants.every((m) => m.procedureName === 'Untouched'));
+
+  const between = generate({ ...baseOptions(autDir, tmpDir()), onlyChanged: { 'src/Two.Codeunit.al': [[8, 8]] } });
+  assert.equal(between.mutants.length, 0);
+});
+
+test('generate() with onlyChanged: a file without changed ranges contributes no mutants', () => {
+  const autDir = twoProcsAut();
+  const result = generate({ ...baseOptions(autDir, tmpDir()), onlyChanged: { 'src/Other.Codeunit.al': [[1, 100]] } });
+  assert.equal(result.mutants.length, 0);
+});

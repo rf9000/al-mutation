@@ -554,9 +554,10 @@ Enumerate candidates over files sorted by relative path (ordinal), procedures in
 ```
 node generator/dist/src/cli.js generate --aut <dir> --out <dir> --core-app-id <guid> --core-app-version <ver>
     [--aut-version <ver>] [--max-mutants N] [--seed S] [--only-objects 1,2] [--operators REL,BOOL,...]
-    [--include-break] [--exclude-stable-keys <file>]
+    [--include-break] [--exclude-stable-keys <file>] [--only-changed <file>]
 node generator/dist/src/cli.js lint --schemata <dir>
 ```
+`--only-changed <file>` holds `{ "files": { "<relPath>": [[start, end], ...] } }`, changed line ranges (inclusive) per AUT-relative file. Only mutants inside a procedure or trigger whose lines (header to closing `end`) overlap a range are kept; a file not listed contributes none. Ids are still assigned over the full enumeration. The orchestrator writes it to `<RunDir>/gen/only-changed.json` from the optional config key `generator.onlyChanged` (mutant-fixer sets it from the PR diff, so a PR run mutates only the procedures the PR changed).
 `generate` writes: `<out>/aut-schemata/**` (every file of `--aut` copied byte-for-byte except `.alpackages/`, `*.app`, `.snapshots/`; mutated files rewritten; `app.json` patched: `version` = `--aut-version` if given, `dependencies` += `{ id, name: "Mutation Core", publisher: "Continia Software", version }`), `<out>/mutants.json` (§7.1), `<out>/skipped.json` (`[{file, line, reason}]`), `<out>/linemap.json` (`{ "<relPath>": LineMapEntry[] }`). Exit 0 on success, 2 on usage error, 1 on failure. Output is deterministic: same input and flags → byte-identical files.
 
 **Per-file robustness.** The candidate-generation step (tokenize → find header/procedures/conditions/statements → apply operators) for one `.al` file is wrapped in a per-file try/catch: on any error, the file contributes zero candidates and one `skipped.json` entry `{ file, line: 0, reason: "tokenize-error: <message>" }`, and generation continues with the remaining files — a single unparseable file (e.g. AL constructs the tokenizer does not yet handle) never aborts the whole run. Any error that does escape a per-file step (e.g. while writing `aut-schemata`, a stage that only runs after a file's candidates were already generated successfully) is re-thrown naming the relative file path.

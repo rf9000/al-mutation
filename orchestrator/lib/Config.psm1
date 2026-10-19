@@ -585,6 +585,15 @@ function Assert-MutConfigShape {
     Assert-MutIntegerAtLeast $Config.generator 'seed' 'generator.seed' -Minimum 0
     Assert-MutRequiredKey $Config.generator 'operators' 'generator.operators'
     Assert-MutRequiredKey $Config.generator 'includeBreak' 'generator.includeBreak'
+    # Optional: { files: { "<AUT-relative path>": [[start, end], ...] } }. Only procedures that
+    # overlap a changed range are mutated (mutant-fixer sets it from the PR diff).
+    $onlyChanged = $Config.generator.PSObject.Properties['onlyChanged']
+    if ($null -ne $onlyChanged -and $null -ne $onlyChanged.Value) {
+        $files = $onlyChanged.Value.PSObject.Properties['files']
+        if ($null -eq $files -or $files.Value -isnot [pscustomobject]) {
+            throw "Get-MutConfig: config key 'generator.onlyChanged' must be an object with a 'files' object mapping AUT-relative paths to [[start, end], ...] line ranges."
+        }
+    }
 
     Assert-MutRequiredKey $Config 'schemata' 'schemata'
     Assert-MutNonEmptyString $Config.schemata 'publishStrategy' 'schemata.publishStrategy'

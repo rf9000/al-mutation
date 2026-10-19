@@ -97,3 +97,19 @@ test('cli generate: a negative --max-mutants exits non-zero instead of silently 
   assert.equal(cappedStatus, 0);
   assert.match(cappedStdout, /^generated 1 mutants, /);
 });
+
+test('cli generate: --only-changed with a malformed file exits non-zero', () => {
+  const file = path.join(tmpDir(), 'changed.json');
+  fs.writeFileSync(file, JSON.stringify({ files: { 'a.al': [[1]] } }), 'utf8');
+  const { status, stderr } = runCli(validArgs(tmpDir(), ['--only-changed', file]));
+  assert.notEqual(status, 0);
+  assert.match(stderr, /only-changed/);
+});
+
+test('cli generate: --only-changed with no changed file generates 0 mutants', () => {
+  const file = path.join(tmpDir(), 'changed.json');
+  fs.writeFileSync(file, JSON.stringify({ files: {} }), 'utf8');
+  const { status, stdout } = runCli(validArgs(tmpDir(), ['--only-changed', file]));
+  assert.equal(status, 0);
+  assert.match(stdout, /^generated 0 mutants/);
+});
