@@ -143,6 +143,9 @@ with a version using exactly 10 and asserting `IsLargeOrder` is true.
 libraries, fakes, handler functions, GIVEN/WHEN/THEN comments). The name is unique, descriptive, contains the AUT
 procedure name, and is not already in the codeunit (use the batch prefix when fanning out). Example: nothing covers the
 `else` branch of `PostLine`; add `[Test] procedure PostLine_NegativeAmount_RaisesError()` that asserts the error.
+`alCode` may also carry the new local helpers and handler functions the test needs, as separate procedures after it. The
+apply step places the test after the codeunit's last test and the helpers after its last helper; do not order them
+yourself.
 
 **equivalent.** No test can observe the difference, with a concrete reason (e.g. "`Count() > 0` and `Count() >= 1` are
 identical for integers"). `target`, `change`, `anchor` = null and `alCode` = `""`. Use sparingly; when unsure, prefer

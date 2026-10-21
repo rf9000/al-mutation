@@ -398,6 +398,83 @@ function Save-MutReferenceMap {
     Write-MutTextFile -Path $Path -Text ((($ordered | ConvertTo-Json -Depth 10)) + [System.Environment]::NewLine)
 }
 
+function Get-MutAlProcedureLayout {
+    <#
+        .SYNOPSIS
+        Every procedure of the AL text $Content, in file order: `{ Name; IsTest; StartLine; EndLine }`.
+        IsTest is true when the attribute block (the consecutive non-blank lines starting with `[`
+        directly above the declaration) contains `[Test]`. Handlers and helpers have IsTest false.
+
+        Lines are 1-based in $Content: Remove-MutAlTrivia preserves every newline. StartLine is the
+        first line of the attribute block; EndLine is the last line starting with `end;` before the
+        next procedure's attribute block (or, for the last procedure, before the end of the text).
+    #>
+    param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Content)
+
+    $lines = @((Remove-MutAlTrivia -Content $Content) -split "`r?`n")
+    $originalLines = @($Content -split "`r?`n")
+
+    # Pass 1: every procedure declaration and the first line of its attribute block.
+    $declarations = @()
+    for ($i = 0; $i -lt $lines.Count; $i++) {
+        $match = [regex]::Match($lines[$i], '^\s*(?:(?:local|internal)\s+)?procedure\s+("[^"]+"|\w+)', 'IgnoreCase')
+        if (-not $match.Success) {
+            continue
+        }
+
+        $blockStart = $i
+        $isTest = $false
+        for ($j = $i - 1; $j -ge 0; $j--) {
+            $attributeLine = $lines[$j].Trim()
+            if ($attributeLine -eq '' -and $j -lt $originalLines.Count -and $originalLines[$j].Trim() -ne '') {
+                # Comment-only line: part of the block, never its end.
+                continue
+            }
+            if (-not $attributeLine.StartsWith('[')) {
+                break
+            }
+            if ([regex]::IsMatch($attributeLine, '^\[\s*Test\s*\]', 'IgnoreCase')) {
+                $isTest = $true
+            }
+            $blockStart = $j
+        }
+
+        $declarations += [pscustomobject]@{
+            Name       = $match.Groups[1].Value.Trim('"')
+            BlockStart = $blockStart
+            IsTest     = $isTest
+        }
+    }
+
+    # Pass 2: EndLine for each procedure.
+    $procedures = @()
+    for ($d = 0; $d -lt $declarations.Count; $d++) {
+        $limit = $lines.Count - 1
+        if (($d + 1) -lt $declarations.Count) {
+            $limit = $declarations[$d + 1].BlockStart - 1
+        }
+
+        $endIndex = -1
+        for ($k = $declarations[$d].BlockStart; $k -le $limit; $k++) {
+            if ($lines[$k] -match '^\s*end;') {
+                $endIndex = $k
+            }
+        }
+        if ($endIndex -lt 0) {
+            $endIndex = $limit
+        }
+
+        $procedures += [pscustomobject]@{
+            Name      = $declarations[$d].Name
+            IsTest    = $declarations[$d].IsTest
+            StartLine = $declarations[$d].BlockStart + 1
+            EndLine   = $endIndex + 1
+        }
+    }
+
+    return @($procedures)
+}
+
 function Get-MutTestProcedureIndex {
     <#
         .SYNOPSIS
@@ -442,69 +519,9 @@ function Get-MutTestProcedureIndex {
             continue
         }
 
-        $lines = @((Remove-MutAlTrivia -Content $content) -split "`r?`n")
-        $originalLines = @($content -split "`r?`n")
-
-        # Pass 1: every procedure declaration and the first line of its attribute block.
-        $declarations = @()
-        for ($i = 0; $i -lt $lines.Count; $i++) {
-            $match = [regex]::Match($lines[$i], '^\s*(?:(?:local|internal)\s+)?procedure\s+("[^"]+"|\w+)', 'IgnoreCase')
-            if (-not $match.Success) {
-                continue
-            }
-
-            $blockStart = $i
-            $isTest = $false
-            for ($j = $i - 1; $j -ge 0; $j--) {
-                $attributeLine = $lines[$j].Trim()
-                if ($attributeLine -eq '' -and $j -lt $originalLines.Count -and $originalLines[$j].Trim() -ne '') {
-                    # Comment-only line: part of the block, never its end.
-                    continue
-                }
-                if (-not $attributeLine.StartsWith('[')) {
-                    break
-                }
-                if ([regex]::IsMatch($attributeLine, '^\[\s*Test\s*\]', 'IgnoreCase')) {
-                    $isTest = $true
-                }
-                $blockStart = $j
-            }
-
-            $declarations += [pscustomobject]@{
-                Name       = $match.Groups[1].Value.Trim('"')
-                BlockStart = $blockStart
-                IsTest     = $isTest
-            }
-        }
-
-        # Pass 2: EndLine for each test method.
-        $procedures = @()
-        for ($d = 0; $d -lt $declarations.Count; $d++) {
-            if (-not $declarations[$d].IsTest) {
-                continue
-            }
-
-            $limit = $lines.Count - 1
-            if (($d + 1) -lt $declarations.Count) {
-                $limit = $declarations[$d + 1].BlockStart - 1
-            }
-
-            $endIndex = -1
-            for ($k = $declarations[$d].BlockStart; $k -le $limit; $k++) {
-                if ($lines[$k] -match '^\s*end;') {
-                    $endIndex = $k
-                }
-            }
-            if ($endIndex -lt 0) {
-                $endIndex = $limit
-            }
-
-            $procedures += [pscustomobject]@{
-                Name      = $declarations[$d].Name
-                StartLine = $declarations[$d].BlockStart + 1
-                EndLine   = $endIndex + 1
-            }
-        }
+        $procedures = @(Get-MutAlProcedureLayout -Content $content | Where-Object { $_.IsTest } | ForEach-Object {
+                [pscustomobject]@{ Name = $_.Name; StartLine = $_.StartLine; EndLine = $_.EndLine }
+            })
 
         $relative = $file.FullName.Substring($root.Length).TrimStart('\', '/').Replace('\', '/')
         $entries += [pscustomobject]@{
@@ -518,4 +535,4 @@ function Get-MutTestProcedureIndex {
     return @($entries | Sort-Object -Property CodeunitId)
 }
 
-Export-ModuleMember -Function Get-MutReferenceMap, Save-MutReferenceMap, Get-MutTestProcedureIndex
+Export-ModuleMember -Function Get-MutReferenceMap, Save-MutReferenceMap, Get-MutAlProcedureLayout, Get-MutTestProcedureIndex

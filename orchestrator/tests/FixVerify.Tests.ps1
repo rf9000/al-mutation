@@ -108,7 +108,50 @@ Describe 'Invoke-MutFixApply' {
         $r[0].insertedEndLine | Should -Be 16
     }
 
-    It 'appends new-test procedures before the final brace, one blank line each, in fixId order' {
+    It 'puts new tests after the last test and new helpers after the last helper' {
+        $lines = @(
+            'codeunit 50300 "T One"', '{', '    Subtype = Test;', '',
+            '    [Test]', '    procedure A()', '    begin', '    end;', '',
+            '    local procedure Help1()', '    begin', '    end;', '',
+            '    [ConfirmHandler]', '    procedure Confirm(Q: Text; var Reply: Boolean)', '    begin', '    end;', '',
+            '    [Test]', '    procedure B()', '    begin', '    end;', '',
+            '    local procedure Help2()', '    begin', '    end;', '',
+            '    var', '        Assert: Codeunit Assert;', '}')
+        Write-FvFile -Path (Join-Path $script:Src 'Sub\T.Codeunit.al') -Lines $lines
+        $code = "    [Test]`n    procedure C()`n    begin`n        NewHelp();`n    end;`n`n    local procedure NewHelp()`n    begin`n    end;"
+        $fix = New-FvFix -Id 'F001' -Procedure 'C' -Change 'new-test' -Code $code
+        $r = @(Invoke-MutFixApply -SourcePath $script:Src -DestinationPath $script:Dst -Fixes @($fix))
+        $expected = $lines[0..21] + @('', '    [Test]', '    procedure C()', '    begin', '        NewHelp();', '    end;') +
+            $lines[22..25] + @('', '    local procedure NewHelp()', '    begin', '    end;') + $lines[26..29]
+        (Read-FvLines $script:File) | Should -Be (@($expected) + @(''))
+        $r.Count | Should -Be 2
+        $r[0].fixId | Should -Be 'F001'
+        $r[0].insertedStartLine | Should -Be 24
+        $r[0].insertedEndLine | Should -Be 28
+        $r[1].fixId | Should -Be 'F001'
+        $r[1].insertedStartLine | Should -Be 34
+        $r[1].insertedEndLine | Should -Be 36
+    }
+
+    It 'puts the new helpers below the new tests when the codeunit has no helpers' {
+        $f2 = New-FvFix -Id 'F002' -Procedure 'D' -Change 'new-test' -Code "    [Test]`n    procedure D()`n    begin`n    end;"
+        $f1 = New-FvFix -Id 'F001' -Procedure 'C' -Change 'new-test' -Code "    local procedure H()`n    begin`n    end;`n`n    [Test]`n    procedure C()`n    begin`n    end;"
+        $r = @(Invoke-MutFixApply -SourcePath $script:Src -DestinationPath $script:Dst -Fixes @($f2, $f1))
+        $expected = $script:BaseLines[0..14] +
+            @('', '    [Test]', '    procedure C()', '    begin', '    end;', '', '    [Test]', '    procedure D()', '    begin', '    end;') +
+            @('', '    local procedure H()', '    begin', '    end;', '}')
+        (Read-FvLines $script:File) | Should -Be (@($expected) + @(''))
+        $r.Count | Should -Be 3
+        $r[0].fixId | Should -Be 'F001'
+        $r[0].insertedStartLine | Should -Be 17
+        $r[1].fixId | Should -Be 'F001'
+        $r[1].insertedStartLine | Should -Be 27
+        $r[1].insertedEndLine | Should -Be 29
+        $r[2].fixId | Should -Be 'F002'
+        $r[2].insertedStartLine | Should -Be 22
+    }
+
+    It 'appends new-test procedures after the last test, one blank line each, in fixId order' {
         $f2 = New-FvFix -Id 'F002' -Procedure 'D' -Change 'new-test' -Code "    [Test]`n    procedure D()"
         $f1 = New-FvFix -Id 'F001' -Procedure 'C' -Change 'new-test' -Code "    [Test]`n    procedure C()`n    begin`n    end;"
         $r = @(Invoke-MutFixApply -SourcePath $script:Src -DestinationPath $script:Dst -Fixes @($f2, $f1))

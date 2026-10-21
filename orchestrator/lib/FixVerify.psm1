@@ -41,13 +41,62 @@ function Get-MutFixEol {
     return "`n"
 }
 
+function Split-MutFixNewCode {
+    <#
+        .SYNOPSIS
+        Private. Splits a new-test entry's alCode lines into `{ Tests; Helpers }`: the test
+        methods (attribute block with `[Test]`) and every other procedure (helpers, handlers),
+        each in alCode order, one blank line between procedures. Code with no procedure
+        declaration counts as tests.
+    #>
+    param([Parameter(Mandatory = $true)][AllowEmptyCollection()][AllowEmptyString()][string[]]$Lines)
+
+    $layout = @(Get-MutAlProcedureLayout -Content ($Lines -join "`n"))
+    if ($layout.Count -eq 0) {
+        return [pscustomobject]@{ Tests = @(Get-MutFixTrimmedLines -Lines $Lines); Helpers = @() }
+    }
+
+    $tests = New-Object 'System.Collections.Generic.List[string]'
+    $helpers = New-Object 'System.Collections.Generic.List[string]'
+    for ($d = 0; $d -lt $layout.Count; $d++) {
+        # A procedure owns the lines up to the next one's attribute block; text above the
+        # first procedure belongs to the first.
+        $first = 0
+        if ($d -gt 0) { $first = $layout[$d].StartLine - 1 }
+        $last = $Lines.Count - 1
+        if (($d + 1) -lt $layout.Count) { $last = $layout[$d + 1].StartLine - 2 }
+        $segment = @(Get-MutFixTrimmedLines -Lines @($Lines[$first..$last]))
+        $target = $helpers
+        if ($layout[$d].IsTest) { $target = $tests }
+        if ($target.Count -gt 0) { $target.Add('') }
+        $target.AddRange([string[]]$segment)
+    }
+    return [pscustomobject]@{ Tests = $tests.ToArray(); Helpers = $helpers.ToArray() }
+}
+
+function Get-MutFixTrimmedLines {
+    <#
+        .SYNOPSIS
+        Private. $Lines without leading and trailing blank lines.
+    #>
+    param([Parameter(Mandatory = $true)][AllowEmptyCollection()][AllowEmptyString()][string[]]$Lines)
+
+    $s = 0
+    $e = $Lines.Count - 1
+    while ($s -le $e -and $Lines[$s].Trim() -eq '') { $s++ }
+    while ($e -ge $s -and $Lines[$e].Trim() -eq '') { $e-- }
+    if ($s -gt $e) { return @() }
+    return @($Lines[$s..$e])
+}
+
 function Invoke-MutFixApply {
     <#
         .SYNOPSIS
         §6.8.1. Mirrors $SourcePath to $DestinationPath (deleting what is there), then applies
         the add-assert / modify-test / new-test entries of $Fixes in place. Returns one
-        `{ fixId; file; insertedStartLine; insertedEndLine }` per applied entry, sorted by
-        fixId; lines are 1-based in the PATCHED file. `equivalent` entries are never applied.
+        `{ fixId; file; insertedStartLine; insertedEndLine }` per inserted range, sorted by
+        fixId; lines are 1-based in the PATCHED file. A new-test entry that brings helpers
+        has two ranges: its tests and its helpers. `equivalent` entries are never applied.
     #>
     param(
         [Parameter(Mandatory = $true)][string]$SourcePath,
@@ -94,8 +143,10 @@ function Invoke-MutFixApply {
         $alLines = @(([string]$fix.alCode).Replace("`r", '') -split "`n")
 
         if ($fix.change -eq 'new-test') {
+            $parts = Split-MutFixNewCode -Lines $alLines
             $opsByFile[$fileEntry.File] += [pscustomobject]@{
                 Fix = [string]$fix.fixId; Kind = 'new'; Pos = 0; Rank = 1; Remove = 0; Lines = $alLines
+                Tests = $parts.Tests; Helpers = $parts.Helpers
             }
             continue
         }
@@ -146,7 +197,6 @@ function Invoke-MutFixApply {
         $ops = @($opsByFile[$relFile] | Where-Object { $_.Kind -ne 'new' })
         $newOps = @($opsByFile[$relFile] | Where-Object { $_.Kind -eq 'new' })
 
-        $subs = @()
         if ($newOps.Count -gt 0) {
             $closeIdx = -1
             for ($i = $list.Count - 1; $i -ge 0; $i--) {
@@ -155,14 +205,37 @@ function Invoke-MutFixApply {
             if ($closeIdx -lt 0) {
                 throw "Fix $($newOps[0].Fix): no closing brace found in $relFile"
             }
-            $block = New-Object 'System.Collections.Generic.List[string]'
-            foreach ($n in $newOps) {
-                $block.Add('')
-                $subs += [pscustomobject]@{ Fix = $n.Fix; Offset = $block.Count; Count = @($n.Lines).Count }
-                $block.AddRange([string[]]@($n.Lines))
-            }
-            $ops += [pscustomobject]@{
-                Fix = ''; Kind = 'newblock'; Pos = $closeIdx; Rank = 1; Remove = 0; Lines = $block.ToArray()
+
+            # New test methods go after the last existing test method, new helpers and handlers
+            # after the last existing helper, so the file keeps its order. Positions are 0-based
+            # insert indexes, i.e. the 1-based EndLine of the procedure they follow.
+            $layout = @(Get-MutAlProcedureLayout -Content $info.Text)
+            $lastTest = @($layout | Where-Object { $_.IsTest }) | Select-Object -Last 1
+            $lastHelper = @($layout | Where-Object { -not $_.IsTest }) | Select-Object -Last 1
+            $lastAny = $layout | Select-Object -Last 1
+            $testPos = $closeIdx
+            if ($null -ne $lastTest) { $testPos = $lastTest.EndLine }
+            $helperPos = $closeIdx
+            if ($null -ne $lastHelper) { $helperPos = $lastHelper.EndLine }
+            elseif ($null -ne $lastAny) { $helperPos = $lastAny.EndLine }
+
+            # At the same position, Rank 1 (tests) lands above Rank 2 (helpers).
+            foreach ($b in @(
+                    [pscustomobject]@{ Part = 'Tests'; Pos = $testPos; Rank = 1 },
+                    [pscustomobject]@{ Part = 'Helpers'; Pos = $helperPos; Rank = 2 })) {
+                $block = New-Object 'System.Collections.Generic.List[string]'
+                $subs = @()
+                foreach ($n in $newOps) {
+                    $partLines = @($n.($b.Part))
+                    if ($partLines.Count -eq 0) { continue }
+                    $block.Add('')
+                    $subs += [pscustomobject]@{ Fix = $n.Fix; Offset = $block.Count; Count = $partLines.Count }
+                    $block.AddRange([string[]]$partLines)
+                }
+                if ($block.Count -eq 0) { continue }
+                $ops += [pscustomobject]@{
+                    Fix = ''; Kind = 'newblock'; Pos = $b.Pos; Rank = $b.Rank; Remove = 0; Lines = $block.ToArray(); Subs = $subs
+                }
             }
         }
 
@@ -178,7 +251,7 @@ function Invoke-MutFixApply {
         foreach ($op in @($ops | Sort-Object -Property Pos, Rank, Fix)) {
             $first = $op.Pos + $delta + 1
             if ($op.Kind -eq 'newblock') {
-                foreach ($s in $subs) {
+                foreach ($s in $op.Subs) {
                     $results += [pscustomobject]@{
                         fixId = $s.Fix; file = $relFile
                         insertedStartLine = $first + $s.Offset; insertedEndLine = $first + $s.Offset + $s.Count - 1
@@ -197,7 +270,7 @@ function Invoke-MutFixApply {
         [System.IO.File]::WriteAllText($full, ($list -join $eol), $info.Encoding)
     }
 
-    $results | Sort-Object -Property fixId
+    $results | Sort-Object -Property fixId, insertedStartLine
 }
 
 function New-MutTestPatch {
@@ -707,7 +780,11 @@ function Invoke-MutFixVerify {
             }
 
             $ranges = @{}
-            foreach ($a in $applied) { $ranges[[string]$a.fixId] = $a }
+            foreach ($a in $applied) {
+                # A new-test with helpers has two ranges.
+                if (-not $ranges.ContainsKey([string]$a.fixId)) { $ranges[[string]$a.fixId] = @() }
+                $ranges[[string]$a.fixId] += $a
+            }
             $noRange = @($active | Where-Object { -not $ranges.ContainsKey([string]$_.fixId) })
             if ($noRange.Count -gt 0) {
                 foreach ($e in $noRange) {
@@ -736,8 +813,10 @@ function Invoke-MutFixVerify {
                 $norm = $d.File.Replace('\', '/')
                 $mapped = $false
                 foreach ($e in $active) {
-                    $r = $ranges[[string]$e.fixId]
-                    if ($norm.EndsWith([string]$r.file, (Get-MutPathComparison)) -and $d.Line -ge $r.insertedStartLine -and $d.Line -le $r.insertedEndLine) {
+                    $inRange = @($ranges[[string]$e.fixId] | Where-Object {
+                            $norm.EndsWith([string]$_.file, (Get-MutPathComparison)) -and $d.Line -ge $_.insertedStartLine -and $d.Line -le $_.insertedEndLine
+                        })
+                    if ($inRange.Count -gt 0) {
                         if (-not $hit.ContainsKey([string]$e.fixId)) { $hit[[string]$e.fixId] = @() }
                         $hit[[string]$e.fixId] += $d.Text
                         $mapped = $true

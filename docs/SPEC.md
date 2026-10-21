@@ -914,7 +914,8 @@ Rules, in addition to §4:
 
 #### 6.8.1 Apply (`orchestrator/lib/FixVerify.psm1`, pure, no environment)
 `Invoke-MutFixApply -SourcePath <string> -DestinationPath <string> -Fixes <object[]>` → `[pscustomobject[]]`, one per
-applied entry: `{ fixId; file; insertedStartLine; insertedEndLine }` (lines in the **patched** file).
+inserted range: `{ fixId; file; insertedStartLine; insertedEndLine }` (lines in the **patched** file). A `new-test` entry
+that brings helpers has two ranges, one for its tests and one for its helpers.
 
 1. Mirror `-SourcePath` to `-DestinationPath`, deleting anything already there, then apply in place.
 2. Group entries by `target.file`. Locate procedures by **name** with `Get-MutTestProcedureIndex` on the unpatched copy.
@@ -923,8 +924,14 @@ applied entry: `{ fixId; file; insertedStartLine; insertedEndLine }` (lines in t
    - `add-assert` inserts the `alCode` lines after `anchor.afterLine`.
    - `modify-test` replaces lines `StartLine..EndLine` of the target procedure.
 
-   Then append each `new-test` procedure before the codeunit's final closing `}`, preceded by one blank line, in fixId
-   order.
+   Then insert the `new-test` entries so the file keeps its order. Split each entry's `alCode` into procedures
+   (`Get-MutAlProcedureLayout`):
+   - Test methods (attribute block with `[Test]`) go after the last existing test method.
+   - Every other procedure (local helpers, handlers) goes after the last existing helper. With no helper in the file,
+     it goes after the last procedure, below the new test methods.
+   - With no procedure in the file, both go before the codeunit's final closing `}`.
+
+   Each entry's part is preceded by one blank line, in fixId order.
 4. Two `add-assert` entries with the same anchor go in fixId order. A `modify-test` and any other edit in the same
    procedure throws `Fix <a> and <b> both change procedure '<name>'`. The caller resolves the clash, see §6.8.3.
 5. Keep each file's line ending (LF or CRLF, decided by its first line break) and its BOM presence. `alCode` is split
