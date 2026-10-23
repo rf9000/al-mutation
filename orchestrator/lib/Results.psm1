@@ -174,6 +174,7 @@ function Get-MutMergedMutantRows {
     #>
     param(
         [Parameter(Mandatory = $true)]
+        [AllowEmptyCollection()]
         [object[]]$Mutants,
         [Parameter(Mandatory = $true)]
         [AllowEmptyCollection()]
@@ -269,6 +270,7 @@ function Get-MutTotals {
     #>
     param(
         [Parameter(Mandatory = $true)]
+        [AllowEmptyCollection()]
         [object[]]$MergedRows
     )
 
@@ -337,6 +339,7 @@ function Get-MutSummaryMarkdown {
         [AllowNull()]
         $Score,
         [Parameter(Mandatory = $true)]
+        [AllowEmptyCollection()]
         [object[]]$MergedRows,
         # §6.11.3: shown next to Score when passed ($null, like Score, means not computed).
         [AllowNull()]
@@ -563,6 +566,7 @@ function Export-MutResults {
         [Parameter(Mandatory = $true)]
         $Env,
         [Parameter(Mandatory = $true)]
+        [AllowEmptyCollection()]
         [object[]]$Mutants,
         [Parameter(Mandatory = $true)]
         [AllowEmptyCollection()]

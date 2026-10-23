@@ -1196,6 +1196,7 @@ function Export-MutResultsStep {
         [Parameter(Mandatory = $true)]
         [int]$RunNo,
         [Parameter(Mandatory = $true)]
+        [AllowEmptyCollection()]
         [object[]]$Mutants,
         [Parameter(Mandatory = $true)]
         [AllowEmptyCollection()]
@@ -1317,6 +1318,19 @@ function Invoke-MutRunPipeline {
 
     $schemata = Build-MutSchemataStep -Config $Config -Env $env -RunDir $runDir -RunNo $runNo
 
+    # Compile-error mutants never appear in $schemata.Mutants (see $allMutantsForExport below).
+    $allMutantsForExport = @($schemata.Mutants) + @($schemata.ExcludedMutants)
+
+    # No mutant to run (e.g. generator.onlyChanged hit only a changed literal or enum value): a
+    # completed run with nothing to test, not a failure. Export it at once; the schemata publish,
+    # manifest, covering tests and loop have nothing to do, and there are no fix briefs.
+    if (@($schemata.Mutants).Count -eq 0) {
+        Write-Host "Invoke-MutRunPipeline: the generator made no mutants to run ($(@($schemata.ExcludedMutants).Count) excluded for a compile error); nothing to test."
+        return Export-MutResultsStep -Config $Config -Env $env -RunNo $runNo -Mutants $allMutantsForExport `
+            -Results @() -CompileErrorIds $schemata.CompileErrorIds -StartedUtc $startedUtc `
+            -FinishedUtc ([datetime]::UtcNow) -RunDir $runDir -FlakyTests $flakyTests
+    }
+
     Publish-MutSchemata -Config $Config -Env $env -Schemata $schemata -RunDir $runDir -RunNo $runNo
 
     Push-MutManifest -Env $env -Mutants $schemata.Mutants -RunNo $runNo -RunDir $runDir
@@ -1329,9 +1343,9 @@ function Invoke-MutRunPipeline {
     # first hit them (§6.5.4 step 4) -- so the final export's mutant list is the union of the
     # ones that were actually manifested/looped and the ones excluded for a compile error, or a
     # BREAK/compile-error mutant would have no row at all in results/<RunNo>.json to be marked
-    # CompileError in (T27, live run, 2026-09-09; docs/issues.md). Computed before the loop step
-    # (not after, as originally) so it is also available to the FIX (F3b IMPORTANT 3) catch below.
-    $allMutantsForExport = @($schemata.Mutants) + @($schemata.ExcludedMutants)
+    # CompileError in (T27, live run, 2026-09-09; docs/issues.md). $allMutantsForExport is
+    # computed right after the schemata step (not after the loop, as originally) so it is also
+    # available to the no-mutant export above and the FIX (F3b IMPORTANT 3) catch below.
 
     # FIX (F3b IMPORTANT 3): before this fix, an environment-recovery-cap abort
     # (MutantLoop.psm1's Invoke-MutMutantLoop throwing a LimitsExceeded-categorized error rather

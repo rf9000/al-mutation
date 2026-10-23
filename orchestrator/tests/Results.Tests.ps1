@@ -213,6 +213,18 @@ Describe 'Export-MutResults' {
         $json.aborted | Should -Be $true
     }
 
+    It 'with no mutants, writes total 0, a null score and an empty mutants array' {
+        $paths = Export-MutResults -RunNo 4 -Config $script:Config -Env $script:EnvHandle -Mutants @() -Results @() `
+            -OutDir $script:OutDir -StartedUtc (Get-Date) -FinishedUtc (Get-Date) -CompileErrorIds @()
+
+        $raw = Get-Content -Path $paths.ResultsPath -Raw
+        $json = $raw | ConvertFrom-Json
+        $json.totals.total | Should -Be 0
+        $json.score | Should -BeNullOrEmpty
+        $raw | Should -Match '"mutants":\s*\[\s*\]'
+        Test-Path $paths.SummaryPath | Should -Be $true
+    }
+
     It 'summary.md contains a Survivors table with the survivor listed' {
         $mutants = @(
             New-MutTestMutant -Id 1 -Procedure 'IsLargeOrder'

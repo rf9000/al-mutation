@@ -173,6 +173,34 @@ Describe 'Invoke-MutRunPipeline (fully mocked backend/lib boundary)' {
         Should -Invoke -ModuleName Run Invoke-MutMutantLoop -Times 1 -Exactly -ParameterFilter { @($FlakyTests).Count -eq 0 }
     }
 
+    It 'with no mutants, exports an empty result and skips the schemata publish, manifest, covering tests and loop' {
+        Mock -ModuleName Run Build-MutSchemata {
+            $script:CallLog.Add('Build-MutSchemata')
+            [pscustomobject]@{
+                SchemataPath    = "$script:WorkDir/gen/aut-schemata"
+                AppFile         = "$script:WorkDir/gen/aut-schemata/Fake.app"
+                Mutants         = @()
+                CompileErrorIds = @()
+                ExcludedMutants = @()
+                Iterations      = 1
+                ExcludeFile     = $null
+                RunNo           = 1
+            }
+        }
+
+        $result = Invoke-MutRunPipeline -Config $script:Config -RunNo 1
+
+        $result.ResultsPath | Should -Be "$script:WorkDir/results/1.json"
+        Should -Invoke -ModuleName Run Export-MutResults -Times 1 -Exactly -ParameterFilter { @($Mutants).Count -eq 0 -and @($Results).Count -eq 0 }
+        Should -Invoke -ModuleName Run Invoke-MutMutantLoop -Times 0 -Exactly
+        Should -Invoke -ModuleName Run Export-MutFixBriefs -Times 0 -Exactly
+        $runDir = Join-Path $script:WorkDir 'runs/1'
+        Join-Path $runDir 'publish-schemata.done' | Should -Not -Exist
+        Join-Path $runDir 'manifest.done' | Should -Not -Exist
+        Join-Path $runDir 'covering.done' | Should -Not -Exist
+        Join-Path $runDir 'export.done' | Should -Exist
+    }
+
     It '-SkipBaseline reads repeats and flakyTests from baseline.json and hands them on' {
         $runDir = Join-Path $script:WorkDir 'runs/1'
         New-Item -ItemType Directory -Path $runDir -Force | Out-Null
