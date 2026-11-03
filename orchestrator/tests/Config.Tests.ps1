@@ -658,6 +658,47 @@ Describe 'Get-MutConfig: extraApps (optional apps the tests need at runtime)' {
     }
 }
 
+Describe 'Get-MutConfig: dependencyApps (apps published from source before the AUT)' {
+    It 'defaults dependencyApps to an empty array when absent' {
+        $cfg = Get-MutConfig -Path (New-MutTestConfigFile)
+        @($cfg.dependencyApps).Count | Should -Be 0
+    }
+
+    It 'resolves each dependencyApps sourcePath to an absolute path' {
+        $path = New-MutTestConfigFile -Overrides @{ dependencyApps = @(@{ name = 'base'; sourcePath = './somewhere/base' }) }
+        $cfg = Get-MutConfig -Path $path
+        @($cfg.dependencyApps).Count | Should -Be 1
+        $cfg.dependencyApps[0].name | Should -Be 'base'
+        $cfg.dependencyApps[0].sourcePath | Should -Be (Join-Path $script:RepoRoot 'somewhere/base')
+    }
+
+    It 'throws when dependencyApps is not an array' {
+        $path = New-MutTestConfigFile -Overrides @{ dependencyApps = @{ name = 'base'; sourcePath = './base' } }
+        { Get-MutConfig -Path $path } | Should -Throw -ExpectedMessage "*'dependencyApps' must be an array*"
+    }
+
+    It 'throws naming the key when an entry has no sourcePath' {
+        $path = New-MutTestConfigFile -Overrides @{ dependencyApps = @(@{ name = 'base' }) }
+        { Get-MutConfig -Path $path } | Should -Throw -ExpectedMessage "*dependencyApps``[0``].sourcePath*"
+    }
+
+    It 'throws when a name is not a plain folder name' {
+        $path = New-MutTestConfigFile -Overrides @{ dependencyApps = @(@{ name = '../base'; sourcePath = './base' }) }
+        { Get-MutConfig -Path $path } | Should -Throw -ExpectedMessage "*may contain only letters, digits, '.', '_' and '-'*"
+    }
+
+    It 'throws when two entries share a name' {
+        $path = New-MutTestConfigFile -Overrides @{ dependencyApps = @(@{ name = 'base'; sourcePath = './a' }, @{ name = 'Base'; sourcePath = './b' }) }
+        { Get-MutConfig -Path $path } | Should -Throw -ExpectedMessage "*is used twice*"
+    }
+
+    It 'throws when workDir is nested inside a dependencyApps sourcePath' {
+        $src = "$TestDrive/base-src-$([guid]::NewGuid().ToString('N'))"
+        $path = New-MutTestConfigFile -Overrides @{ dependencyApps = @(@{ name = 'base'; sourcePath = $src }); workDir = "$src/out" }
+        { Get-MutConfig -Path $path } | Should -Throw -ExpectedMessage "*workDir*dependencyApps``[0``].sourcePath*"
+    }
+}
+
 Describe 'Get-MutConfig: environment-variable expansion in paths' {
     AfterEach {
         Remove-Item Env:\MUT_TEST_AUT_ROOT -ErrorAction SilentlyContinue

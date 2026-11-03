@@ -186,15 +186,17 @@ function Sync-MutAutCopy {
         (`$Config.testApp.sourcePath`) and, if configured, the rulesets folder
         (`$Config.rulesets.sourcePath`) into working copies under `$Config.workDir`
         (§6.5.2/§6.5.4 step 2): `<workDir>/aut-original`, `<workDir>/test-app`,
-        `<workDir>/rulesets`, and each `$Config.extraApps` entry into
+        `<workDir>/rulesets`, each `$Config.dependencyApps` entry into
+        `<workDir>/dependency-apps/<name>` and each `$Config.extraApps` entry into
         `<workDir>/extra-apps/<name>`. This is the ONLY function in the orchestrator that reads the
         real source trees, and it never writes to them -- every robocopy call
         mirrors FROM the configured source path INTO a path under workDir, never the reverse.
         Config paths are assumed already resolved to absolute paths (Get-MutConfig, §6.5.1).
 
         .OUTPUTS
-        [pscustomobject]@{ AutPath; TestAppPath; RulesetsPath; ExtraAppPaths } -- RulesetsPath is
-        $null when $Config.rulesets is absent or $null; ExtraAppPaths is empty without extraApps.
+        [pscustomobject]@{ AutPath; TestAppPath; RulesetsPath; DependencyAppPaths; ExtraAppPaths } --
+        RulesetsPath is $null when $Config.rulesets is absent or $null; DependencyAppPaths and
+        ExtraAppPaths are empty without dependencyApps and extraApps.
     #>
     param(
         [Parameter(Mandatory = $true)]
@@ -218,6 +220,15 @@ function Sync-MutAutCopy {
         Invoke-MutRobocopyMirror -Source $Config.rulesets.sourcePath -Destination $rulesetsPath | Out-Null
     }
 
+    $dependencyAppPaths = @()
+    if ((Test-MutHasProperty $Config 'dependencyApps') -and ($null -ne $Config.dependencyApps)) {
+        foreach ($dependencyApp in @($Config.dependencyApps)) {
+            $dependencyAppPath = Join-Path (Join-Path $workDir 'dependency-apps') $dependencyApp.name
+            Invoke-MutRobocopyMirror -Source $dependencyApp.sourcePath -Destination $dependencyAppPath | Out-Null
+            $dependencyAppPaths += $dependencyAppPath
+        }
+    }
+
     $extraAppPaths = @()
     if ((Test-MutHasProperty $Config 'extraApps') -and ($null -ne $Config.extraApps)) {
         foreach ($extraApp in @($Config.extraApps)) {
@@ -228,10 +239,11 @@ function Sync-MutAutCopy {
     }
 
     return [pscustomobject]@{
-        AutPath       = $autPath
-        TestAppPath   = $testAppPath
-        RulesetsPath  = $rulesetsPath
-        ExtraAppPaths = $extraAppPaths
+        AutPath            = $autPath
+        TestAppPath        = $testAppPath
+        RulesetsPath       = $rulesetsPath
+        DependencyAppPaths = $dependencyAppPaths
+        ExtraAppPaths      = $extraAppPaths
     }
 }
 

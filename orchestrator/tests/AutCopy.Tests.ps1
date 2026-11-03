@@ -164,6 +164,27 @@ Describe 'Sync-MutAutCopy' {
         Test-Path (Join-Path $expected 'MyApp.app') | Should -Be $false
     }
 
+    It 'mirrors each dependency app into dependency-apps/<name>; DependencyAppPaths is empty without dependencyApps' {
+        $baseSource = "$TestDrive/src/base"
+        $baseTestSource = "$TestDrive/src/base-test"
+        New-MutFixtureSourceTree -Root $baseSource
+        New-MutFixtureSourceTree -Root $baseTestSource
+        $config = New-MutTestConfig -WorkDir $script:workDir -AutSource $script:autSource -TestAppSource $script:testAppSource
+
+        @((Sync-MutAutCopy -Config $config).DependencyAppPaths).Count | Should -Be 0
+
+        $config | Add-Member -NotePropertyName 'dependencyApps' -NotePropertyValue @(
+            [pscustomobject]@{ name = 'base'; sourcePath = $baseSource }
+            [pscustomobject]@{ name = 'base-test'; sourcePath = $baseTestSource }
+        )
+        $result = Sync-MutAutCopy -Config $config
+
+        $root = Join-Path $script:workDir 'dependency-apps'
+        @($result.DependencyAppPaths) | Should -Be @((Join-Path $root 'base'), (Join-Path $root 'base-test'))
+        Test-Path (Join-Path $root 'base/Foo.Codeunit.al') | Should -Be $true
+        Test-Path (Join-Path $root 'base-test/Foo.Codeunit.al') | Should -Be $true
+    }
+
     It 'throws when robocopy reports a failure exit code (>= 8), e.g. a missing source directory' {
         $config = New-MutTestConfig -WorkDir $script:workDir -AutSource "$TestDrive/does-not-exist" -TestAppSource $script:testAppSource
 

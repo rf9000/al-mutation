@@ -32,6 +32,11 @@ later as a confusing "path not found".
 the object ids, because a score means nothing without the scope it was computed over. Set it to `[]` to run
 the whole AUT.
 
+`dependencyApps` (`[ { name, sourcePath } ]`, default `[]`) lists apps the AUT depends on that must come from
+source, such as the PR's own base app and its test app for an app pair. They are published after Mutation Core
+and before the AUT, and the AUT's dependencies are installed after them (SPEC §6.5.1, §6.5.4 step 3).
+`extraApps` has the same shape, but its apps are published after the AUT.
+
 `demoPortal.settleProbe` targets Mutation Core's own test app (codeunit 50400 / `HookErrorIsEmpty`), published
 by `coreAppTest` in pipeline step 3 immediately after Mutation Core and before the AUT. That target depends
 only on Mutation Core, so it survives the AUT test app being unpublished and republished around the schemata

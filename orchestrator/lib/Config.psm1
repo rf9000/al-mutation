@@ -433,6 +433,13 @@ function Assert-MutWorkDirOutsideSources {
     if ((Test-MutHasProperty $Config 'rulesets') -and ($null -ne $Config.rulesets)) {
         $sources += [pscustomobject]@{ KeyPath = 'rulesets.sourcePath'; Path = $Config.rulesets.sourcePath }
     }
+    if ((Test-MutHasProperty $Config 'dependencyApps') -and ($null -ne $Config.dependencyApps)) {
+        $index = 0
+        foreach ($dependencyApp in @($Config.dependencyApps)) {
+            $sources += [pscustomobject]@{ KeyPath = "dependencyApps[$index].sourcePath"; Path = $dependencyApp.sourcePath }
+            $index++
+        }
+    }
     if ((Test-MutHasProperty $Config 'extraApps') -and ($null -ne $Config.extraApps)) {
         $index = 0
         foreach ($extraApp in @($Config.extraApps)) {
@@ -546,6 +553,28 @@ function Assert-MutConfigShape {
     if ((Test-MutHasProperty $Config 'coreAppTest') -and ($null -ne $Config.coreAppTest)) {
         Assert-MutNonEmptyString $Config.coreAppTest 'path' 'coreAppTest.path'
         Assert-MutNonEmptyString $Config.coreAppTest 'appId' 'coreAppTest.appId'
+    }
+
+    # dependencyApps is OPTIONAL: apps the AUT depends on (an app pair's base app and its test app),
+    # published from source before the AUT. Each name becomes the folder <workDir>/dependency-apps/<name>.
+    if ((Test-MutHasProperty $Config 'dependencyApps') -and ($null -ne $Config.dependencyApps)) {
+        if ($Config.dependencyApps -isnot [array]) {
+            throw "Get-MutConfig: config key 'dependencyApps' must be an array (for example [ { ""name"": ""base"", ""sourcePath"": ""../base-application"" } ])."
+        }
+        $names = @{}
+        $index = 0
+        foreach ($dependencyApp in $Config.dependencyApps) {
+            Assert-MutNonEmptyString $dependencyApp 'name' "dependencyApps[$index].name"
+            Assert-MutNonEmptyString $dependencyApp 'sourcePath' "dependencyApps[$index].sourcePath"
+            if ($dependencyApp.name -notmatch '^[A-Za-z0-9._-]+$') {
+                throw "Get-MutConfig: config key 'dependencyApps[$index].name' ('$($dependencyApp.name)') may contain only letters, digits, '.', '_' and '-'."
+            }
+            if ($names.ContainsKey($dependencyApp.name.ToLowerInvariant())) {
+                throw "Get-MutConfig: config key 'dependencyApps[$index].name' ('$($dependencyApp.name)') is used twice."
+            }
+            $names[$dependencyApp.name.ToLowerInvariant()] = $true
+            $index++
+        }
     }
 
     # extraApps is OPTIONAL: apps the tests need at runtime only (no app.json dependency pulls them
@@ -671,7 +700,7 @@ function Get-MutConfig {
         .SYNOPSIS
         Loads, validates and returns the run configuration (§6.5.1). Relative paths
         (coreApp.path, workDir, aut.sourcePath, testApp.sourcePath, rulesets.sourcePath,
-        extraApps[].sourcePath, demoPortal.cliPath) are resolved to absolute paths against the repo root; already
+        dependencyApps[].sourcePath, extraApps[].sourcePath, demoPortal.cliPath) are resolved to absolute paths against the repo root; already
         absolute paths are left unchanged.
         .OUTPUTS
         PSCustomObject: the parsed config with resolved paths.
@@ -722,6 +751,13 @@ function Get-MutConfig {
 
     if ((Test-MutHasProperty $config 'rulesets') -and ($null -ne $config.rulesets)) {
         $config.rulesets.sourcePath = Resolve-MutConfigPath -RepoRoot $repoRoot -Path $config.rulesets.sourcePath
+    }
+
+    if ((-not (Test-MutHasProperty $config 'dependencyApps')) -or ($null -eq $config.dependencyApps)) {
+        $config | Add-Member -NotePropertyName 'dependencyApps' -NotePropertyValue @() -Force
+    }
+    foreach ($dependencyApp in @($config.dependencyApps)) {
+        $dependencyApp.sourcePath = Resolve-MutConfigPath -RepoRoot $repoRoot -Path $dependencyApp.sourcePath
     }
 
     if ((-not (Test-MutHasProperty $config 'extraApps')) -or ($null -eq $config.extraApps)) {

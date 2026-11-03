@@ -938,6 +938,76 @@ Describe 'Publish-MutBaseline: extra apps (mutant-fixer run 1031)' {
     }
 }
 
+Describe 'Publish-MutBaseline: dependency apps (mutant-fixer app pairs)' {
+    <#
+        .SYNOPSIS
+        An app pair's AUT depends on the PR's own base app. dependencyApps are published from
+        <workDir>/dependency-apps/<name> after Mutation Core and before the AUT, and the AUT's
+        dependencies are installed only after them: `deps install` before that would pull the
+        catalogue's build of the base app (run 1022).
+    #>
+    BeforeEach {
+        $script:WorkDir = "$TestDrive/work-$([guid]::NewGuid().ToString('N'))"
+        $script:RunDir = Join-Path $script:WorkDir 'runs/1'
+        New-Item -ItemType Directory -Path $script:RunDir -Force | Out-Null
+        $script:Config = New-MutRunTestConfig -WorkDir $script:WorkDir
+        $script:Calls = New-Object System.Collections.ArrayList
+        $script:FailPublishOf = $null
+
+        Mock -ModuleName Run Install-MutDependencies { $null = $script:Calls.Add("deps:$AppPath") }
+        Mock -ModuleName Run Grant-MutPermissionSet { }
+        Mock -ModuleName Run Publish-MutApp {
+            $null = $script:Calls.Add("publish:$Path")
+            $failed = $script:FailPublishOf -and ($Path -like $script:FailPublishOf)
+            [pscustomobject]@{ Success = (-not $failed); Code = $(if ($failed) { 'publish-failed' } else { $null }); Diagnostics = @(); DurationSec = 0.1; ErrorMessage = $(if ($failed) { 'boom' } else { $null }) }
+        }
+        Mock -ModuleName Run Invoke-MutTests { throw 'stop-after-publishes' }
+    }
+
+    It 'publishes the dependency apps after Mutation Core and before the AUT, and installs the AUT dependencies after them' {
+        $script:Config | Add-Member -NotePropertyName 'dependencyApps' -NotePropertyValue @(
+            [pscustomobject]@{ name = 'base'; sourcePath = "$script:WorkDir/src-base" }
+            [pscustomobject]@{ name = 'basetest'; sourcePath = "$script:WorkDir/src-basetest" }
+        )
+        $script:Config | Add-Member -NotePropertyName 'extraApps' -NotePropertyValue @(
+            [pscustomobject]@{ name = 'import'; sourcePath = "$script:WorkDir/src-import" }
+        )
+
+        { Publish-MutBaseline -Config $script:Config -Env $script:EnvHandle -RunDir $script:RunDir } |
+            Should -Throw '*stop-after-publishes*'
+
+        # Reduce each call to its kind and the last folder of its path.
+        $calls = @($script:Calls | ForEach-Object { ($_ -replace '\\', '/') -replace '^(deps|publish):.*/', '$1:' })
+        $calls | Should -Be @(
+            'deps:core-app', 'publish:core-app',
+            'deps:base', 'publish:base',
+            'deps:basetest', 'publish:basetest',
+            'deps:aut-original', 'publish:aut-original',
+            'deps:import', 'publish:import',
+            'deps:test-app', 'publish:test-app'
+        )
+    }
+
+    It 'keeps the order without dependencyApps: the AUT dependencies come first' {
+        { Publish-MutBaseline -Config $script:Config -Env $script:EnvHandle -RunDir $script:RunDir } |
+            Should -Throw '*stop-after-publishes*'
+
+        @($script:Calls)[0] | Should -BeLike 'deps:*aut-original'
+    }
+
+    It 'throws naming the dependency app when its publish fails, before the AUT is published' {
+        $script:Config | Add-Member -NotePropertyName 'dependencyApps' -NotePropertyValue @(
+            [pscustomobject]@{ name = 'base'; sourcePath = "$script:WorkDir/src-base" }
+        )
+        $script:FailPublishOf = '*dependency-apps*base'
+
+        { Publish-MutBaseline -Config $script:Config -Env $script:EnvHandle -RunDir $script:RunDir } |
+            Should -Throw "*publishing dependency app 'base' failed*boom*"
+
+        @([string[]]@($script:Calls) | Where-Object { $_ -like 'publish:*aut-original' }).Count | Should -Be 0
+    }
+}
+
 Describe 'Publish-MutBaseline: stale installed test suite (runs 5, 7 and 14)' {
     <#
         .SYNOPSIS
