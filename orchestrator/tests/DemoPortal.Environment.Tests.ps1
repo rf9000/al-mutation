@@ -898,6 +898,62 @@ Describe 'env start retry (run 11, 2026-10-01)' {
     }
 }
 
+Describe 'activation app install retry (mutant-fixer PR 61538, run 1090)' {
+    <#
+        .SYNOPSIS
+        On 2026-11-12 the `deps install-by-id` of the activation app hit the CLI's 120 s request
+        timeout on a slow DemoPortal, and the run ended before the baseline. The install had gone
+        through on the server. Start-MutEnvironment now gives the request 300 s and runs the call
+        again after a failure; the CLI skips an app that is already installed.
+    #>
+    BeforeEach {
+        Mock -ModuleName DemoPortal Start-Sleep {}
+        $script:ActivationEnv = [pscustomobject]@{ Id = 'E1'; Name = 'mut-spike-01'; Url = 'https://x/E1'; Backend = 'DemoPortal'; Shared = $false }
+        $script:InstallCalls = 0
+        # How many install calls fail before one succeeds.
+        $script:InstallFailures = 0
+        Mock -ModuleName DemoPortal Invoke-Continia -ParameterFilter { $Arguments[1] -eq 'get' } {
+            [pscustomobject]@{ id = 'E1'; status = 'Running'; description = 'mut-spike-01'; url = 'https://x/E1'; shared = $false }
+        }
+        Mock -ModuleName DemoPortal Invoke-Continia -ParameterFilter { $Arguments[1] -eq 'apps' } { @([pscustomobject]@{ id = 'app1' }) }
+        Mock -ModuleName DemoPortal Invoke-Continia -ParameterFilter { $Arguments[1] -eq 'use' } { $null }
+        Mock -ModuleName DemoPortal Invoke-Continia -ParameterFilter { $Arguments[1] -eq 'install-by-id' } {
+            $script:InstallCalls++
+            if ($script:InstallCalls -le $script:InstallFailures) {
+                throw 'continia returned no JSON: deps install-by-id E1 x --json; stderr: Request to https://demoportaldev.continiaonline.com/environments/E1/apps.json timed out after 120000ms'
+            }
+            [pscustomobject]@{ installed = $true; alreadyPresent = ($script:InstallCalls -gt 1) }
+        }
+    }
+
+    It 'runs the install again after a failed call and goes on when it succeeds' {
+        $script:InstallFailures = 1
+
+        $h = Start-MutEnvironment -Env $script:ActivationEnv -Config $script:cfg -WarningAction SilentlyContinue
+
+        $h.Status | Should -Be 'Running'
+        $script:InstallCalls | Should -Be 2
+        Should -Invoke -ModuleName DemoPortal Invoke-Continia -ParameterFilter { $Arguments[1] -eq 'use' } -Times 1 -Exactly
+    }
+
+    It 'throws the last error when every install call fails' {
+        $script:InstallFailures = 99
+
+        { Start-MutEnvironment -Env $script:ActivationEnv -Config $script:cfg -WarningAction SilentlyContinue } | Should -Throw -ExpectedMessage '*timed out after 120000ms*'
+        $script:InstallCalls | Should -Be 3
+        Should -Invoke -ModuleName DemoPortal Invoke-Continia -ParameterFilter { $Arguments[1] -eq 'use' } -Times 0 -Exactly
+    }
+
+    It 'installs once when the first call succeeds, with a 300 s request timeout' {
+        Start-MutEnvironment -Env $script:ActivationEnv -Config $script:cfg | Out-Null
+
+        $script:InstallCalls | Should -Be 1
+        Should -Invoke -ModuleName DemoPortal Invoke-Continia -ParameterFilter {
+            $Arguments[1] -eq 'install-by-id' -and ($Arguments -join ' ') -like '*--request-timeout 300000'
+        } -Times 1 -Exactly
+    }
+}
+
 Describe 'Resolve-MutProfileId: DemoPortal profile from app.json (Linux port)' {
     BeforeAll {
         function script:New-ProfileConfig {

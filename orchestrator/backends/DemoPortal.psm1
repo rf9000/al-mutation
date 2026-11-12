@@ -45,6 +45,12 @@ $script:MutLastConfig = $null
 # each of these waits (mutant-fixer PR 58631, run 1043: a 500 on the first job of a fresh, Running
 # environment; the same call succeeded by hand 20 minutes later).
 $script:MutTestStartRetryDelaysSec = @(30, 60)
+# The activation app install is run again after each of these waits (mutant-fixer PR 61538, run
+# 1090: the CLI's 120 s request timeout on a slow DemoPortal, while the install went through on
+# the server). `deps install-by-id` skips an app that is already installed, so a repeat is safe.
+# The install takes 70-75 s on a fresh environment; the request gets this long instead of 120 s.
+$script:MutActivationInstallRetryDelaysSec = @(30, 60)
+$script:MutActivationInstallRequestTimeoutMs = 300000
 
 function Resolve-MutCliPath {
     param($Config)
@@ -602,7 +608,23 @@ function Start-MutEnvironment {
     $probeConfirmed = $settled.ProbeConfirmed
 
     $activationStart = Get-Date
-    Invoke-Continia -Arguments @('deps', 'install-by-id', $Env.Id, $Config.demoPortal.activationAppId, '--json') | Out-Null
+    $installArguments = @('deps', 'install-by-id', $Env.Id, $Config.demoPortal.activationAppId, '--json', '--request-timeout', "$script:MutActivationInstallRequestTimeoutMs")
+    $attempt = 0
+    while ($true) {
+        try {
+            Invoke-Continia -Arguments $installArguments | Out-Null
+            break
+        }
+        catch {
+            if ($attempt -ge $script:MutActivationInstallRetryDelaysSec.Count) {
+                throw
+            }
+            $delaySec = $script:MutActivationInstallRetryDelaysSec[$attempt]
+            $attempt++
+            Write-Warning "Start-MutEnvironment: installing the activation app on environment '$($Env.Id)' failed; trying again in $delaySec s (retry $attempt of $($script:MutActivationInstallRetryDelaysSec.Count)). $($_.Exception.Message)"
+            Start-Sleep -Seconds $delaySec
+        }
+    }
     $activationInstallDurationSec = ((Get-Date) - $activationStart).TotalSeconds
 
     Invoke-Continia -Arguments @('env', 'use', $Env.Id) -ExpectJson:$false | Out-Null
