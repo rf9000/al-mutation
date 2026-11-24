@@ -6,6 +6,7 @@ import { findSimpleStatements } from '../src/statements.js';
 import { DEL } from '../src/operators/del.js';
 import { INSFLAG } from '../src/operators/insflag.js';
 import { BREAK } from '../src/operators/break.js';
+import { RET } from '../src/operators/ret.js';
 import type { MutantCandidate, OperatorContext } from '../src/operators/types.js';
 import type { ObjectHeader, ProcedureSpan, SimpleStatement, Token } from '../src/types.js';
 
@@ -55,6 +56,10 @@ const DEL_MATCHES = [
   'Rec.DeleteAll()',
   'Commit()',
   'Message(Txt)',
+  'Rec.TestField(Amount)',
+  'TestField("Posting Date")',
+  'SalesLine.TestField(Quantity, 0)',
+  'Rec.FieldError(Amount)',
 ];
 
 for (const text of DEL_MATCHES) {
@@ -197,3 +202,40 @@ test('BREAK: also applies to statements DEL would delete', () => {
   assert.equal(candidates.length, 1);
   assert.equal(candidates[0]!.mutated, 'MutBreak_ThisDoesNotCompile()');
 });
+
+// --- RET ---
+
+const RET_CASES: Array<[string, string]> = [
+  ['exit(true)', 'exit(false)'],
+  ['exit(false)', 'exit(true)'],
+  ['EXIT(TRUE)', 'EXIT(false)'],
+  ['exit(5)', 'exit(0)'],
+  ['exit(0)', 'exit(1)'],
+  ['exit(1.5)', 'exit(0)'],
+  ['exit(-1)', 'exit(0)'],
+  ["exit('Done')", "exit('')"],
+  ["exit('')", "exit('MUT')"],
+];
+
+for (const [text, mutated] of RET_CASES) {
+  test(`RET: '${text}' yields '${mutated}'`, () => {
+    const { ctx, stmt } = procedureFixture(text);
+    const candidates = RET.apply(ctx, stmt);
+
+    assert.equal(candidates.length, 1);
+    const c = candidates[0]!;
+    assert.equal(c.operator, 'RET');
+    assert.equal(c.original, text);
+    assert.equal(c.mutated, mutated);
+    assertCommonFields(c, ctx, stmt);
+  });
+}
+
+const RET_NON_MATCHES = ['exit', 'exit()', 'exit(Result)', 'exit(A + 1)', 'exit(Rec.Get(No))', 'Foo(true)', 'Rec.Insert(true)'];
+
+for (const text of RET_NON_MATCHES) {
+  test(`RET: no candidate for '${text}'`, () => {
+    const { ctx, stmt } = procedureFixture(text);
+    assert.equal(RET.apply(ctx, stmt).length, 0);
+  });
+}

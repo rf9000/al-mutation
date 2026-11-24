@@ -15,6 +15,13 @@ const FIXTURES_ROOT = path.resolve(
 const CORE_APP_ID = '6f1d2c3a-8b4e-4d5f-9a6b-7c8d9e0f1a2b';
 const CORE_APP_VERSION = '1.0.0.0';
 
+/**
+ * Cases 01-07 pin the v1 catalog (RET and BLOCK came later), so their expected ids and
+ * stableKeys stay put. Case 08 covers the later operators.
+ */
+const LATER_OPERATORS: readonly string[] = ['RET', 'BLOCK'];
+const V1_OPERATORS = OPERATOR_ORDER.filter((name) => !LATER_OPERATORS.includes(name));
+
 const CASES = [
   '01-if-rel-bool-not-cond',
   '02-until-and-next-exclusion',
@@ -34,7 +41,7 @@ function baseOptions(autDir: string, outDir: string): GenerateOptions {
     maxMutants: 0,
     seed: 1,
     onlyObjects: [],
-    operators: [...OPERATOR_ORDER],
+    operators: [...V1_OPERATORS],
     includeBreak: false,
     excludeStableKeys: [],
   };
@@ -227,7 +234,7 @@ test('includeBreak: false still produces zero BREAK mutants regardless of the --
 
   const result = generate({
     ...baseOptions(autDir, tmpDir()),
-    operators: [...OPERATOR_ORDER],
+    operators: [...V1_OPERATORS],
     includeBreak: false,
   });
 

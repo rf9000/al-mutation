@@ -1,7 +1,7 @@
-import type { Condition, ObjectHeader, ProcedureSpan, SimpleStatement, Token } from '../types.js';
+import type { Block, Condition, ObjectHeader, ProcedureSpan, SimpleStatement, Token } from '../types.js';
 
 /** §6.4.4: the full catalog. */
-export type OperatorName = 'REL' | 'BOOL' | 'NOT' | 'COND' | 'DEL' | 'INSFLAG' | 'BREAK';
+export type OperatorName = 'REL' | 'BOOL' | 'NOT' | 'COND' | 'DEL' | 'INSFLAG' | 'RET' | 'BLOCK' | 'BREAK';
 
 /** §6.4.4, verbatim. */
 export interface MutantCandidate {
@@ -12,7 +12,10 @@ export interface MutantCandidate {
   objectName: string;
   procedureName: string;
   line: number; // 1-based line of the first token of the original span
-  target: { kind: 'condition'; cond: Condition } | { kind: 'statement'; stmt: SimpleStatement };
+  target:
+    | { kind: 'condition'; cond: Condition }
+    | { kind: 'statement'; stmt: SimpleStatement }
+    | { kind: 'block'; block: Block };
   original: string; // original condition or statement text (tokens joined with original spacing)
   mutated: string; // replacement text; '' for DEL
   occurrence: number; // 0-based index among candidates with the same (procedure, operator, original, mutated)
@@ -33,8 +36,8 @@ export interface OperatorContext {
 /** §6.4.4, verbatim (apply's ctx type is OperatorContext, see above). */
 export interface Operator {
   name: OperatorName;
-  kind: 'condition' | 'statement';
-  apply(ctx: OperatorContext, target: Condition | SimpleStatement): MutantCandidate[];
+  kind: 'condition' | 'statement' | 'block';
+  apply(ctx: OperatorContext, target: Condition | SimpleStatement | Block): MutantCandidate[];
 }
 
 /** The original source slice of a condition, preserving its original spacing. */

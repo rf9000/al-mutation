@@ -6,7 +6,7 @@ import { statementCandidateBase, statementText } from './types.js';
 const IDENT = '(?:[A-Za-z_][A-Za-z0-9_]*|"[^"]+")';
 
 /** §6.4.5 DEL: the deletable call/exit names, matched case-insensitively. */
-const METHODS = 'Insert|Modify|Delete|DeleteAll|ModifyAll|Validate|Error|Commit|Message|exit';
+const METHODS = 'Insert|Modify|Delete|DeleteAll|ModifyAll|Validate|TestField|FieldError|Error|Commit|Message|exit';
 
 /**
  * §6.4.5 DEL, verbatim: an optional dotted receiver (bare or quoted

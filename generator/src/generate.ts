@@ -2,8 +2,9 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { tokenize } from './tokenizer.js';
 import { findObjectHeader, findProcedures } from './procedures.js';
-import { findConditions, findSimpleStatements } from './statements.js';
+import { findBlocks, findConditions, findSimpleStatements } from './statements.js';
 import {
+  isExcludedBlock,
   isExcludedCondition,
   isExcludedFile,
   isExcludedRegion,
@@ -101,9 +102,10 @@ function stripBom(text: string): string {
 
 interface Target {
   start: number;
-  kind: 'condition' | 'statement';
+  kind: 'condition' | 'statement' | 'block';
   condIdx?: number;
   stmtIdx?: number;
+  blockIdx?: number;
 }
 
 /** Candidate produced by one operator application, tagged with its source file. */
@@ -145,6 +147,7 @@ function generateCandidatesForFile(
   for (const span of procedures) {
     const conditions = findConditions(tokens, span);
     const statements = findSimpleStatements(tokens, span);
+    const blocks = findBlocks(tokens, span);
 
     const targets: Target[] = [
       ...conditions.map((cond, condIdx) => ({
@@ -157,6 +160,11 @@ function generateCandidatesForFile(
         kind: 'statement' as const,
         stmtIdx,
       })),
+      ...blocks.map((block, blockIdx) => ({
+        start: tokens[block.beginIdx]!.start,
+        kind: 'block' as const,
+        blockIdx,
+      })),
     ].sort((a, b) => a.start - b.start);
 
     const procCandidates: MutantCandidate[] = [];
@@ -164,7 +172,21 @@ function generateCandidatesForFile(
     for (const target of targets) {
       const ctx = { tokens, span, header, source };
 
-      if (target.kind === 'condition') {
+      if (target.kind === 'block') {
+        const block = blocks[target.blockIdx!]!;
+        const blockReason =
+          isExcludedRegion(tokens, block.beginIdx, block.endIdx) ?? isExcludedBlock(tokens, block);
+        if (blockReason !== null) {
+          skipped.push({ file: relPath, line: tokens[block.beginIdx]!.line, reason: blockReason });
+          continue;
+        }
+        for (const name of OPERATOR_ORDER) {
+          const operator = OPERATORS[name];
+          if (operator.kind !== 'block') continue;
+          if (!allowedOperators.has(name)) continue;
+          procCandidates.push(...operator.apply(ctx, block));
+        }
+      } else if (target.kind === 'condition') {
         const cond = conditions[target.condIdx!]!;
         const regionReason = isExcludedRegion(tokens, cond.startIdx, cond.endIdx);
         if (regionReason !== null) {

@@ -39,6 +39,7 @@ interface ProcGroup {
   proc: ProcedureSpan;
   conditions: Map<string, ConditionGroup>;
   statements: Map<string, StatementGroup>;
+  blocks: MutantCandidate[];
 }
 
 function isSignificant(token: Token): boolean {
@@ -126,20 +127,25 @@ export function rewriteFile(
   const procGroups = new Map<ProcedureSpan, ProcGroup>();
 
   for (const candidate of candidates) {
+    const target = candidate.target;
     const tokenIdx =
-      candidate.target.kind === 'condition'
-        ? candidate.target.cond.startIdx
-        : candidate.target.stmt.startIdx;
+      target.kind === 'condition'
+        ? target.cond.startIdx
+        : target.kind === 'statement'
+          ? target.stmt.startIdx
+          : target.block.beginIdx;
     const proc = findEnclosingProcedure(tokenIdx);
 
     let group = procGroups.get(proc);
     if (!group) {
-      group = { proc, conditions: new Map(), statements: new Map() };
+      group = { proc, conditions: new Map(), statements: new Map(), blocks: [] };
       procGroups.set(proc, group);
     }
 
-    if (candidate.target.kind === 'condition') {
-      const cond = candidate.target.cond;
+    if (target.kind === 'block') {
+      group.blocks.push(candidate);
+    } else if (target.kind === 'condition') {
+      const cond = target.cond;
       const key = `${cond.startIdx}:${cond.endIdx}`;
       let condGroup = group.conditions.get(key);
       if (!condGroup) {
@@ -148,7 +154,7 @@ export function rewriteFile(
       }
       condGroup.candidates.push(candidate);
     } else {
-      const stmt = candidate.target.stmt;
+      const stmt = target.stmt;
       const key = `${stmt.startIdx}:${stmt.endIdx}`;
       let stmtGroup = group.statements.get(key);
       if (!stmtGroup) {
@@ -267,6 +273,27 @@ export function rewriteFile(
         end: endTok.end,
         text: coreText,
         block: { mutantIds: sorted.map((c) => c.id!), coreNewlines: countNewlines(coreText) },
+      });
+    }
+  }
+
+  // --- Block guards (BLOCK, §6.4.7): two one-line insertions, so the statements inside keep
+  // their own guards. The original `begin`/`end` stay outermost, so an `else` after the block
+  // still binds to the same `if`.
+  for (const group of procGroups.values()) {
+    for (const candidate of group.blocks) {
+      if (candidate.target.kind !== 'block') continue;
+      const block = candidate.target.block;
+      edits.push({
+        start: tokens[block.beginIdx]!.end,
+        end: tokens[block.beginIdx]!.end,
+        text: ` if not MutationCore.Active(${candidate.id!}) then begin`,
+        block: { mutantIds: [candidate.id!], coreNewlines: 0 },
+      });
+      edits.push({
+        start: tokens[block.endIdx]!.start,
+        end: tokens[block.endIdx]!.start,
+        text: 'end ',
       });
     }
   }

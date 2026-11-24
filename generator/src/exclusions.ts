@@ -1,5 +1,5 @@
 import { tokenize } from './tokenizer.js';
-import type { Condition, SimpleStatement, Token } from './types.js';
+import type { Block, Condition, SimpleStatement, Token } from './types.js';
 
 function isSignificant(token: Token): boolean {
   return token.kind !== 'comment' && token.kind !== 'preprocessor';
@@ -152,6 +152,39 @@ export function isExcludedStatement(tokens: readonly Token[], stmt: SimpleStatem
     if (tok !== undefined && tok.kind === 'identifier' && lowerText(tok) === 'evaluate') {
       return 'evaluate';
     }
+  }
+  return null;
+}
+
+/**
+ * §6.4.6 block exclusions: `preprocessor-region` when a preprocessor directive sits inside
+ * the block (the guard would straddle it); `while-loop-body` when the block is the body of a
+ * `while … do` (emptied, the loop never ends, like `until-next-loop`). Never throws.
+ */
+export function isExcludedBlock(tokens: readonly Token[], block: Block): string | null {
+  for (let i = block.beginIdx; i <= block.endIdx; i++) {
+    if (tokens[i]!.kind === 'preprocessor') return 'preprocessor-region';
+  }
+
+  let i = block.beginIdx - 1;
+  while (i >= 0 && !isSignificant(tokens[i]!)) i--;
+  if (i < 0 || tokens[i]!.kind !== 'keyword' || lowerText(tokens[i]!) !== 'do') return null;
+
+  // Walk back from `do` to the loop keyword at paren-depth 0.
+  let depth = 0;
+  for (let j = i - 1; j >= 0; j--) {
+    const tok = tokens[j]!;
+    if (!isSignificant(tok)) continue;
+    if (tok.kind === 'punct' && (tok.text === ')' || tok.text === ']')) depth++;
+    else if (tok.kind === 'punct' && (tok.text === '(' || tok.text === '[')) depth--;
+    else if (depth === 0 && tok.kind === 'keyword') {
+      const lower = lowerText(tok);
+      if (lower === 'while') return 'while-loop-body';
+      if (lower === 'for' || lower === 'foreach') return null;
+      // Reached the start of the statement without a loop keyword (e.g. `with … do`).
+      if (['begin', 'then', 'else', 'do', 'repeat', 'end'].includes(lower)) return null;
+    }
+    if (depth === 0 && tok.kind === 'punct' && tok.text === ';') return null;
   }
   return null;
 }

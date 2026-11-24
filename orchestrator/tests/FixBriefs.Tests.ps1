@@ -41,6 +41,8 @@ Describe 'Get-MutOperatorHint' {
         @{ Op = 'COND'; Text = 'The condition was forced to a constant. Add a test where the condition evaluates to the other value, and assert the effect of the branch it guards.' }
         @{ Op = 'DEL'; Text = 'A statement was deleted. Assert the effect of that statement: the field value it set, the record it inserted, modified or deleted, the error it raised, or the value it returned.' }
         @{ Op = 'INSFLAG'; Text = 'A flag argument was inverted (e.g. Insert(true) to Insert(false)). Assert the side effect the flag controls, such as trigger logic run by the call.' }
+        @{ Op = 'RET'; Text = 'A returned value was changed (e.g. exit(true) to exit(false)). Assert the return value of the procedure for an input that reaches this exit.' }
+        @{ Op = 'BLOCK'; Text = 'A begin..end block was emptied. Assert the effect of the block for an input that enters it: the fields it set, the records it wrote, the errors it raised.' }
         @{ Op = 'BREAK'; Text = 'A break was inserted. Assert the result of loop iterations after the first one.' }
     ) {
         Get-MutOperatorHint -Operator $Op | Should -BeExactly $Text

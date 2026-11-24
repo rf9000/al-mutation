@@ -52,6 +52,13 @@ export interface Condition {
   position: 'statementList' | 'other';
 }
 
+/** A nested `begin … end` block with at least one statement, as token indices. */
+export interface Block {
+  beginIdx: number;
+  endIdx: number; // the block's own `end`
+  firstIdx: number; // first significant token inside the block
+}
+
 export const KEYWORDS: ReadonlySet<string> = new Set([
   'procedure',
   'trigger',

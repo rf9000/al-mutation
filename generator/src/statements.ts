@@ -1,4 +1,4 @@
-import type { Condition, ProcedureSpan, SimpleStatement, Token } from './types.js';
+import type { Block, Condition, ProcedureSpan, SimpleStatement, Token } from './types.js';
 
 function isSignificant(token: Token): boolean {
   return token.kind !== 'comment' && token.kind !== 'preprocessor';
@@ -350,4 +350,29 @@ export function findConditions(tokens: readonly Token[], span: ProcedureSpan): C
   }
 
   return conditions;
+}
+
+/**
+ * §6.4.3: every `begin … end` block nested in the procedure body (not the body itself), in
+ * source order by `begin`. `case … end` is tracked so its `end` does not close a block. A
+ * block without a significant token inside is left out: there is nothing to empty.
+ */
+export function findBlocks(tokens: readonly Token[], span: ProcedureSpan): Block[] {
+  const blocks: Block[] = [];
+  const stack: Array<{ kind: 'begin' | 'case'; idx: number }> = [];
+
+  for (let i = span.beginIdx + 1; i < span.endIdx; i++) {
+    const lower = lowerKeyword(tokens[i]!);
+    if (lower === 'begin' || lower === 'case') {
+      stack.push({ kind: lower, idx: i });
+    } else if (lower === 'end') {
+      const open = stack.pop();
+      if (open === undefined || open.kind !== 'begin') continue;
+      const firstIdx = nextSignificantIdx(tokens, open.idx + 1, i);
+      if (firstIdx >= i) continue;
+      blocks.push({ beginIdx: open.idx, endIdx: i, firstIdx });
+    }
+  }
+
+  return blocks.sort((a, b) => a.beginIdx - b.beginIdx);
 }

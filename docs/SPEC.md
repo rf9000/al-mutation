@@ -472,26 +472,28 @@ Statement-start positions inside a body: the token after `begin`, `;`, `repeat`,
 
 A **condition** is: for `if`, the tokens between `if` and its matching `then` (paren-depth 0); for `until`, the tokens between `until` and the first `;`/`end`/`else`/`until` at depth 0. `position` is `statementList` when the token before `if` is `begin`, `;`, or `repeat` (for `until` always `statementList`). Only `statementList` conditions are mutated (§1.2).
 
+A **block** (`interface Block { beginIdx: number; endIdx: number; firstIdx: number; }`, `findBlocks`) is a `begin … end` nested in the procedure body, never the body itself. `endIdx` is the block's own `end` (`case … end` is tracked, so its `end` does not close a block) and `firstIdx` the first significant token inside. A block without a significant token inside (empty, or comments only) is not a block: there is nothing to empty. Blocks come in source order by `begin`.
+
 #### 6.4.4 Operator interface and candidates
 ```ts
-type OperatorName = 'REL' | 'BOOL' | 'NOT' | 'COND' | 'DEL' | 'INSFLAG' | 'BREAK';
+type OperatorName = 'REL' | 'BOOL' | 'NOT' | 'COND' | 'DEL' | 'INSFLAG' | 'RET' | 'BLOCK' | 'BREAK';
 interface MutantCandidate {
   id?: number;                         // assigned by manifest.assignIds (§6.4.8); required by schemata.rewriteFile
   operator: OperatorName; objectType: string; objectId: number; objectName: string; procedureName: string;
   line: number;                        // 1-based line of the first token of the original span
-  target: { kind: 'condition'; cond: Condition } | { kind: 'statement'; stmt: SimpleStatement };
+  target: { kind: 'condition'; cond: Condition } | { kind: 'statement'; stmt: SimpleStatement } | { kind: 'block'; block: Block };
   original: string;                    // original condition or statement text (tokens joined with original spacing)
   mutated: string;                     // replacement text; '' for DEL
   occurrence: number;                  // 0-based index among candidates with the same (procedure name, operator, original, mutated); overloads share the count
 }
-interface Operator { name: OperatorName; kind: 'condition' | 'statement'; apply(ctx: { tokens: Token[]; span: ProcedureSpan; header: ObjectHeader; source: string }, target: Condition | SimpleStatement): MutantCandidate[]; }
+interface Operator { name: OperatorName; kind: 'condition' | 'statement' | 'block'; apply(ctx: { tokens: Token[]; span: ProcedureSpan; header: ObjectHeader; source: string }, target: Condition | SimpleStatement | Block): MutantCandidate[]; }
 // `source` is the original file text; `original`/`mutated` are built from source slices by token offsets so spacing is preserved.
 // Operators emit occurrence = 0; the pipeline calls assignOccurrences(candidatesOfOneProcedure) (src/operators/types.ts),
 // which fills `occurrence` per (operator|original|mutated) group in order. Overloads (same procedure name in one
 // object) pass one shared counter, because the stableKey has no parameter list: restarting at 0 gave two
 // overloads the same stableKey (mutant-fixer run 1027, Internal_EntityWithSameKeyExists on MUT Mutant).
 ```
-`OPERATOR_ORDER = ['REL','BOOL','NOT','COND','DEL','INSFLAG','BREAK']`.
+`OPERATOR_ORDER = ['REL','BOOL','NOT','COND','DEL','INSFLAG','RET','BLOCK','BREAK']`. RET and BLOCK came after v1: a config gets them only when its `generator.operators` lists them.
 
 #### 6.4.5 Operator catalog (v1)
 
@@ -501,8 +503,10 @@ interface Operator { name: OperatorName; kind: 'condition' | 'statement'; apply(
 | BOOL | condition | For each `and`/`or` keyword in the condition: swap. |
 | NOT | condition | For each `not` keyword: remove it (and one following space). |
 | COND | condition | Two candidates: whole condition → `true` and → `false`. Skip when the condition is a single `true`/`false` token. |
-| DEL | statement | Only when the statement matches `^(<ident>(\.<ident>)*\.)?(Insert\|Modify\|Delete\|DeleteAll\|ModifyAll\|Validate\|Error\|Commit\|Message\|exit)\s*(\(.*\))?$` case-insensitively on its text (i.e. a call to one of those, or bare `exit`). Mutated text `''`. |
+| DEL | statement | Only when the statement matches `^(<ident>(\.<ident>)*\.)?(Insert\|Modify\|Delete\|DeleteAll\|ModifyAll\|Validate\|TestField\|FieldError\|Error\|Commit\|Message\|exit)\s*(\(.*\))?$` case-insensitively on its text (i.e. a call to one of those, or bare `exit`). Mutated text `''`. |
 | INSFLAG | statement | Statement text matches `\.(Insert\|Modify\|Delete)\((true\|false)\)$`: flip the literal. |
+| RET | statement | The statement is `exit(<literal>)` and the literal is the whole argument: `true`↔`false`; a number → `0` (`0` → `1`; a leading `-` goes with the number); a text → `''` (`''` → `'MUT'`). An expression or a variable is left alone: the generator has no types, so it cannot pick a value of the right type. |
+| BLOCK | block | One candidate per block (§6.4.3): the block is emptied. `mutated` is `begin end`. `line` is the line of the block's first statement, not of its `begin` (coverage reports code lines only, and a `begin` line has none). `original` is that line from the statement's first token to the end of the line, without trailing blanks: reports and fix briefs (§6.7.2) need a single line that is found on `line`. |
 | BREAK | statement | Only with `--include-break`. Every simple statement → `MutBreak_ThisDoesNotCompile();`. Used to test compile-error handling. |
 
 #### 6.4.6 Exclusions (record every skip in `skipped.json` with a reason string)
@@ -510,6 +514,7 @@ interface Operator { name: OperatorName; kind: 'condition' | 'statement'; apply(
 - Region: any candidate whose span lies between a `#if`/`#ifdef`/`#ifndef` preprocessor token and its `#endif` → `preprocessor-region`; any candidate whose first token's line contains a comment token with text containing `mutation:ignore` → `ignore-comment`.
 - Condition: an `until` condition containing an identifier `Next` followed by `(` → `until-next-loop` (would only produce infinite loops); a condition whose `position` is `other` → `condition-position`.
 - Statement: a statement whose tokens include `Evaluate` → `evaluate`; inside a `SetRange`/`SetFilter` argument list (the statement itself is a SetRange/SetFilter call) → not a DEL target anyway.
+- Block: a preprocessor token anywhere between the block's `begin` and `end` → `preprocessor-region` (the guard would straddle the directive); the block is the body of a `while … do` → `while-loop-body` (emptied, the loop never ends; same reason as `until-next-loop`). `for`/`foreach` bodies are kept. The region rules above apply to the block's `begin`. The skip's `line` is the `begin` line.
 
 #### 6.4.7 The single guard template
 
@@ -539,6 +544,16 @@ case true of
 end
 ```
 A DEL branch is `begin end;`. The original terminator (`;` or none) stays after `end`. The replacement occupies exactly the original statement's span, so it is valid in every statement position, including `then`/`else` branches and case branches, without introducing a dangling `else` (`case … end` is one statement). The replacement's edit begins at the statement `S`'s own offset — never earlier — so when `S` is not the first token on its physical line (e.g. `if C then S;`, or `S` in an `else`/`do`/case-branch position sharing its line with that keyword), whatever precedes `S` on that line stays put and is emitted exactly once; every subsequent line of the block (each `MutationCore.Active(...)`/branch/`else`/`end` line) is indented by that physical line's own leading whitespace plus the usual per-level step, never by the preceding source text (M8: a statement-guard block naively indented from "everything before `S` on its line" duplicated an un-blocked `if … then` prefix onto every line of the replacement).
+
+**Block guard** (BLOCK). For a block with candidate `m`, two insertions and nothing replaced: `` if not MutationCore.Active(<id_m>) then begin`` directly after the block's `begin`, and ``end `` directly before its `end`:
+```al
+if C then begin if not MutationCore.Active(<id_m>) then begin
+    S1;
+    S2;
+end end else
+    T;
+```
+The original `begin`/`end` stay outermost, so an `else` after the block still binds to the same `if`. Both insertions are zero-width, so the statements and conditions inside the block keep their own guards and no edit overlaps. The guard has no `and`/`or` next to `Active(` (F1). Its `lineMap` entry is the `begin` line only (`startLine = endLine`), so a compile error inside the block is not attributed to the BLOCK mutant.
 
 **Declarations.** For every procedure with at least one candidate, add to its `var` section (create `    var` before `begin` if absent):
 `        MutationCore: Codeunit "MUT Mut";` and one `        MutCond_<n>: Boolean;` per condition block. Never add unused declarations (some rulesets treat an unused local as an error). `MutationCore` intentionally does not follow the type-suffix naming convention, and being appended after a procedure's existing locals means it isn't always in var-ordering position either; the schemata compile exempts every style analyzer entirely (not just these two shapes) instead of changing this template or downgrading rules one at a time (§6.5.1, §6.5.4 step 4).
@@ -791,6 +806,8 @@ Exports exactly: `Get-MutOperatorHint`, `New-MutFixBriefs`, `Export-MutFixBriefs
 | COND | `The condition was forced to a constant. Add a test where the condition evaluates to the other value, and assert the effect of the branch it guards.` |
 | DEL | `A statement was deleted. Assert the effect of that statement: the field value it set, the record it inserted, modified or deleted, the error it raised, or the value it returned.` |
 | INSFLAG | `A flag argument was inverted (e.g. Insert(true) to Insert(false)). Assert the side effect the flag controls, such as trigger logic run by the call.` |
+| RET | `A returned value was changed (e.g. exit(true) to exit(false)). Assert the return value of the procedure for an input that reaches this exit.` |
+| BLOCK | `A begin..end block was emptied. Assert the effect of the block for an input that enters it: the fields it set, the records it wrote, the errors it raised.` |
 | BREAK | `A break was inserted. Assert the result of loop iterations after the first one.` |
 
 Any other operator throws `Unknown operator '<op>'`.
