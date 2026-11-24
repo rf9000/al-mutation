@@ -622,3 +622,68 @@ Describe 'strictScore, unreliableKills and the summary sections (§6.11.3)' {
         $md | Should -BeLike '*| 1 | 50200 | IsLargeOrder | 4 | REL | C:Flaky | timing off \| by one |*'
     }
 }
+
+Describe 'crash kills (§6.11.5)' {
+    BeforeEach {
+        $script:OutDir = "$TestDrive/results-$([guid]::NewGuid().ToString('N'))"
+        New-Item -ItemType Directory -Path $script:OutDir -Force | Out-Null
+        $script:Mutants = @(1..6 | ForEach-Object { New-MutTestMutant -Id $_ })
+        $script:Clr = 'Unexpected CLR exception thrown.: System.NotSupportedException: Specified method is not supported.'
+    }
+
+    It 'exports crashKill per row and totals.crashKills (not a bucket); the scores do not change' {
+        $results = @(
+            [pscustomobject]@{ Id = 1; Status = 'Killed'; KillingTest = 'C:T'; DurationMs = 5; CoveringTests = @(1); KillingError = $script:Clr }
+            [pscustomobject]@{ Id = 2; Status = 'Killed'; KillingTest = 'C:T'; DurationMs = 5; CoveringTests = @(1); KillingError = 'Unhandled UI: ModalPage 1802' }
+            [pscustomobject]@{ Id = 3; Status = 'Killed'; KillingTest = 'C:U'; DurationMs = 5; CoveringTests = @(1); KillingError = 'Assert.AreEqual failed. Expected:<1>. Actual:<2>.' }
+            [pscustomobject]@{ Id = 4; Status = 'Killed'; KillingTest = 'C:U'; DurationMs = 5; CoveringTests = @(1) }
+            [pscustomobject]@{ Id = 5; Status = 'Error'; KillingTest = $null; DurationMs = $null; CoveringTests = @(1); Error = $script:Clr }
+            [pscustomobject]@{ Id = 6; Status = 'Survived'; KillingTest = $null; DurationMs = 5; CoveringTests = @(1) }
+        )
+        $paths = Export-MutResults -RunNo 11 -Config $script:Config -Env $script:EnvHandle -Mutants $script:Mutants -Results $results `
+            -OutDir $script:OutDir -StartedUtc (Get-Date) -FinishedUtc (Get-Date) -CompileErrorIds @()
+        $json = Get-Content -Path $paths.ResultsPath -Raw | ConvertFrom-Json
+
+        $json.totals.killed | Should -Be 4
+        $json.totals.crashKills | Should -Be 2
+        ($json.mutants | Where-Object { $_.id -eq 1 }).crashKill | Should -BeTrue
+        ($json.mutants | Where-Object { $_.id -eq 2 }).crashKill | Should -BeTrue
+        ($json.mutants | Where-Object { $_.id -eq 3 }).crashKill | Should -BeFalse
+        # A kill without a recorded reason is not called a crash.
+        ($json.mutants | Where-Object { $_.id -eq 4 }).crashKill | Should -BeFalse
+        # Only a Killed row can be a crash kill.
+        ($json.mutants | Where-Object { $_.id -eq 5 }).crashKill | Should -BeFalse
+        ($json.mutants | Where-Object { $_.id -eq 6 }).crashKill | Should -BeFalse
+        # A crash kill is a kill in both scores: 4 killed of 5 scored.
+        $json.score | Should -Be 0.8
+        $json.strictScore | Should -Be 0.8
+        $buckets = $json.totals.killed + $json.totals.survived + $json.totals.timeout + $json.totals.compileError + $json.totals.uncovered + $json.totals.equivalent + $json.totals.error + $json.totals.pending
+        $buckets | Should -Be $json.totals.total
+    }
+
+    It 'the summary shows the crash-kill count and the Crash kills table when there is one' {
+        $results = @(
+            [pscustomobject]@{ Id = 1; Status = 'Killed'; KillingTest = 'C:NoWizard'; DurationMs = 5; CoveringTests = @(1); KillingError = $script:Clr }
+            [pscustomobject]@{ Id = 2; Status = 'Killed'; KillingTest = 'C:U'; DurationMs = 5; CoveringTests = @(1); KillingError = 'Assert.IsTrue failed.' }
+        )
+        $paths = Export-MutResults -RunNo 12 -Config $script:Config -Env $script:EnvHandle -Mutants $script:Mutants[0..1] -Results $results `
+            -OutDir $script:OutDir -StartedUtc (Get-Date) -FinishedUtc (Get-Date) -CompileErrorIds @()
+        $md = Get-Content -Path $paths.SummaryPath -Raw
+        $md | Should -BeLike '*Crash kills (the test crashed; no assertion failed): **1** of 2 kills*'
+        $md | Should -BeLike '*## Crash kills*'
+        $md | Should -BeLike "*| 1 | 50200 | IsLargeOrder | 4 | REL | C:NoWizard | $($script:Clr) |*"
+        $md | Should -Not -BeLike '*| 2 | 50200 | IsLargeOrder | 4 | REL | C:U |*'
+    }
+
+    It 'the summary has no crash-kill line and no table when no kill is a crash' {
+        $results = @(
+            [pscustomobject]@{ Id = 1; Status = 'Killed'; KillingTest = 'C:U'; DurationMs = 5; CoveringTests = @(1); KillingError = 'Assert.IsTrue failed.' }
+        )
+        $paths = Export-MutResults -RunNo 13 -Config $script:Config -Env $script:EnvHandle -Mutants $script:Mutants[0..0] -Results $results `
+            -OutDir $script:OutDir -StartedUtc (Get-Date) -FinishedUtc (Get-Date) -CompileErrorIds @()
+        $json = Get-Content -Path $paths.ResultsPath -Raw | ConvertFrom-Json
+        $json.totals.crashKills | Should -Be 0
+        $md = Get-Content -Path $paths.SummaryPath -Raw
+        $md | Should -Not -BeLike '*Crash kills*'
+    }
+}

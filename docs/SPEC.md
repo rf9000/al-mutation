@@ -1364,6 +1364,23 @@ This section adds two things: the failure message of each kill, and a repeated b
 3. Live, on `mut-spike-02` only, with the owner's go-ahead: a short targeted run where every `Killed` row has a
    non-null `reason` on both the hook-written and the runner-written path, and `baseline.json` carries `repeats` 3.
 
+#### 6.11.5 Crash kills
+A kill proves that a test went red. It does not prove that an assertion failed: a mutant that opens a page the
+test has no handler for makes the test crash. In AL a test without a handler is also the usual way to say "no UI
+here", so such a kill is real. It is weaker evidence than a failed assertion, and the results say which kills
+are of this kind.
+- **Flag.** A `Killed` row is `crashKill: true` when its `reason` (§6.11.1) starts, after leading blanks, with
+  `Unexpected CLR exception thrown` or `Unhandled UI:`. A `Killed` row without a reason, and every other row, is
+  `crashKill: false`. The flag is computed at export from `reason`; the loop, `results.jsonl` and the API do not
+  store it.
+- **Totals and score (§7.3).** `totals` gains `crashKills`, a subset of `killed` like `unreliableKills`. `score`
+  and `strictScore` do not change: a crash kill is a kill.
+- **Summary (§7.5).** When there is a crash kill, the score section gains the line
+  `Crash kills (the test crashed; no assertion failed): **<n>** of <killed> kills`, and a **"Crash kills"** table
+  lists id, object, procedure, line, operator, killing test and reason. Both are omitted when there is none.
+- **Acceptance.** Pester: the flag for both reason prefixes, an assertion reason, a missing reason and a
+  non-`Killed` row; `crashKills` and unchanged scores; the summary line and table present and omitted.
+
 ---
 
 ## 7. Data schemas
@@ -1385,15 +1402,15 @@ This section adds two things: the failure message of each kill, and a repeated b
 { "runNo": 1, "backend": "DemoPortal", "environmentName": "mut-spike-01", "startedUtc": "…", "finishedUtc": "…",
   "autAppId": "…", "autVersion": "…", "coreAppVersion": "1.0.0.0",
   "generator": { "seed": 1, "maxMutants": 0, "onlyObjects": [], "operators": [] },
-  "totals": { "total": 26, "killed": 17, "survived": 6, "timeout": 3, "compileError": 0, "uncovered": 0, "equivalent": 0, "error": 0, "pending": 0, "unreliableKills": 0 },
+  "totals": { "total": 26, "killed": 17, "survived": 6, "timeout": 3, "compileError": 0, "uncovered": 0, "equivalent": 0, "error": 0, "pending": 0, "unreliableKills": 0, "crashKills": 0 },
   "score": 0.7692,
   "strictScore": 0.7692,
   "aborted": false,
   "mutants": [{ "id": 1, "stableKey": "…", "objectId": 50200, "procedure": "IsLargeOrder", "line": 4, "operator": "REL",
                 "original": "…", "mutated": "…", "status": "Survived", "killingTest": null, "durationMs": 4200,
-                "coveringTests": [50300], "reason": null, "unreliable": false }] }
+                "coveringTests": [50300], "reason": null, "unreliable": false, "crashKill": false }] }
 ```
-`reason` is the error text of an `Error` row and the kill reason of a `Killed` row (§6.11.1), else `null`. `unreliable` is `true` only on a `Killed` row whose every known failing test is flaky (§6.11.3). `strictScore` and `totals.unreliableKills` are defined in §6.11.3; `unreliableKills` is a subset of `killed` and is not one of the nine buckets that sum to `total`.
+`reason` is the error text of an `Error` row and the kill reason of a `Killed` row (§6.11.1), else `null`. `unreliable` is `true` only on a `Killed` row whose every known failing test is flaky (§6.11.3). `strictScore` and `totals.unreliableKills` are defined in §6.11.3; `unreliableKills` is a subset of `killed` and is not one of the nine buckets that sum to `total`. `crashKill` and `totals.crashKills` (§6.11.5) mark the kills where the test crashed instead of failing an assertion; `crashKills` is a subset of `killed` in the same way.
 `score = (killed + timeout) / (total − equivalent − compileError − error − pending)`, rounded to 4 decimals. `Uncovered` counts as survived in the denominator — the suite genuinely did not reach it. When the denominator is **zero or negative** (e.g. every mutant errored), `score` is **`null`**, not `0` — `0` is indistinguishable in JSON from “the suite killed nothing”, which is the opposite of what a collapsed run means. `Error` and `Pending` are **excluded** from the denominator: an infrastructure failure (a failed job, a zero-test result, an unhandled exception) is not evidence about the test suite, and leaving it in silently scored every such mutant as a survivor. The totals buckets MUST sum to `total`, and `<RunNo>-summary.md` (§7.5) MUST render an Errors section alongside Survivors/Timeouts/Compile errors/Uncovered. `aborted` (F3c) is `true` only for the partial export §6.5.4 step 9 writes when the mutant loop stopped on its environment-recovery cap rather than completing every mutant (§6.5.6) — `false` on every normal, complete run. It exists so a consumer never has to infer partial-ness from `totals.pending -gt 0`, an implicit artifact of how an unrun mutant happens to render rather than a deliberate marker.
 
 ### 7.4 `fixtures/expected-results.json`
@@ -1403,7 +1420,7 @@ This section adds two things: the failure message of each kill, and a repeated b
 One entry per row of §6.3.3 (26 entries). Matching key: `(procedure, operator, mutated)`; for DEL, `mutated` is `""` and `original` is added to the key.
 
 ### 7.5 `results/<RunNo>-summary.md`
-Sections: header table (run no, backend, environment, AUT version, started/finished, wall-clock), totals table, score, "Survivors" table (id, object, procedure, line, operator, original → mutated, covering tests), "Timeouts" table, "Compile errors" table, **"Errors" table** (mutants whose run failed for infrastructure reasons — a failed job, a zero-test result, an unhandled exception — with the reason), "Uncovered" count, and a **Pending** count when any mutant was never reached. The totals table carries all nine buckets of §7.3 and they MUST sum to `total`. When non-empty, a **"Flaky baseline tests"** table and an **"Unreliable kills"** table follow, and the score section shows `strictScore` next to `score` (§6.11.3).
+Sections: header table (run no, backend, environment, AUT version, started/finished, wall-clock), totals table, score, "Survivors" table (id, object, procedure, line, operator, original → mutated, covering tests), "Timeouts" table, "Compile errors" table, **"Errors" table** (mutants whose run failed for infrastructure reasons — a failed job, a zero-test result, an unhandled exception — with the reason), "Uncovered" count, and a **Pending** count when any mutant was never reached. The totals table carries all nine buckets of §7.3 and they MUST sum to `total`. When non-empty, a **"Flaky baseline tests"** table and an **"Unreliable kills"** table follow, and the score section shows `strictScore` next to `score` (§6.11.3). With a crash kill, the score section also carries the crash-kill line and a **"Crash kills"** table follows (§6.11.5).
 
 ### 7.6 `docs/spike-baseline.md` template
 Sections in this order, each a table with columns `Metric | Value | Backend | Date | Source task`: Environment (create s, start s, activation-app install s, deps install s, AUT deploy s, test app deploy s); U1/U3; U4; U5; U6; U7 (single-method job s, 95155 s, 95913 s, per-test median s); U8 (API base URL pattern); U9 (job id field name, CSV header line); Tier B baseline (pass/fail per codeunit); Hand mutants (20 rows + kill count); Recommendation (`go` / `no-go`, `--max-mutants` default, `timeouts.jobOverheadSeconds`, `schemata.publishStrategy`).

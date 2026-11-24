@@ -161,6 +161,26 @@ function Get-MutScore {
     return [math]::Round($numerator / $denominator, 4)
 }
 
+function Test-MutCrashKillReason {
+    <#
+        .SYNOPSIS
+        Private. §6.11.5: true when a kill reason says the killing test crashed instead of
+        failing an assertion: BC found no handler for UI the mutant opened, or a runtime
+        exception reached the test runner. Judged on the start of the reason, because the
+        reason is cut to 250 characters (§6.11.1).
+    #>
+    param(
+        [AllowNull()]
+        [AllowEmptyString()]
+        [string]$Reason
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Reason)) {
+        return $false
+    }
+    return $Reason -match '^\s*(Unexpected CLR exception thrown|Unhandled UI:)'
+}
+
 function Get-MutMergedMutantRows {
     <#
         .SYNOPSIS
@@ -252,6 +272,8 @@ function Get-MutMergedMutantRows {
             coveringTests = $coveringTests
             reason        = $reason
             unreliable    = $unreliable
+            # §6.11.5: only a Killed row can be a crash kill.
+            crashKill     = ($status -eq 'Killed') -and (Test-MutCrashKillReason -Reason ([string]$reason))
         }
     }
 
@@ -286,6 +308,8 @@ function Get-MutTotals {
         pending      = @($MergedRows | Where-Object { $_.status -eq 'Pending' }).Count
         # §6.11.3: a subset of killed, not a tenth bucket (the nine above still sum to total).
         unreliableKills = @($MergedRows | Where-Object { $_.status -eq 'Killed' -and $_.unreliable }).Count
+        # §6.11.5: a subset of killed too. It changes no score.
+        crashKills = @($MergedRows | Where-Object { $_.status -eq 'Killed' -and $_.crashKill }).Count
     }
 }
 
@@ -402,6 +426,12 @@ function Get-MutSummaryMarkdown {
             $lines += "Strict score (unreliable kills counted as survived): **$StrictScore**"
         }
     }
+    # §6.11.5: a crash kill counts as a kill in both scores; the line says how many there are.
+    $crashRows = @($MergedRows | Where-Object { $_.status -eq 'Killed' -and $_.crashKill })
+    if ($crashRows.Count -gt 0) {
+        $killedCount = @($MergedRows | Where-Object { $_.status -eq 'Killed' }).Count
+        $lines += "Crash kills (the test crashed; no assertion failed): **$($crashRows.Count)** of $killedCount kills"
+    }
     $lines += ''
 
     $lines += '## Survivors'
@@ -505,6 +535,20 @@ function Get-MutSummaryMarkdown {
         $lines += Format-MutMarkdownTableRow @('Id', 'Object', 'Procedure', 'Line', 'Operator', 'Killing test', 'Reason')
         $lines += Format-MutMarkdownTableRow @('---', '---', '---', '---', '---', '---', '---')
         foreach ($row in $unreliableRows) {
+            $lines += Format-MutMarkdownTableRow @(
+                "$($row.id)", "$($row.objectId)", $row.procedure, "$($row.line)", $row.operator,
+                [string]$row.killingTest, [string]$row.reason
+            )
+        }
+        $lines += ''
+    }
+
+    if ($crashRows.Count -gt 0) {
+        $lines += '## Crash kills'
+        $lines += ''
+        $lines += Format-MutMarkdownTableRow @('Id', 'Object', 'Procedure', 'Line', 'Operator', 'Killing test', 'Reason')
+        $lines += Format-MutMarkdownTableRow @('---', '---', '---', '---', '---', '---', '---')
+        foreach ($row in $crashRows) {
             $lines += Format-MutMarkdownTableRow @(
                 "$($row.id)", "$($row.objectId)", $row.procedure, "$($row.line)", $row.operator,
                 [string]$row.killingTest, [string]$row.reason
