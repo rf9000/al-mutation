@@ -1008,6 +1008,105 @@ Describe 'Publish-MutBaseline: dependency apps (mutant-fixer app pairs)' {
     }
 }
 
+Describe 'Publish-MutBaseline: external dependencies first (mutant-fixer runs 1097-1105)' {
+    <#
+        .SYNOPSIS
+        A catalogue install can replace a PR app that is already on the environment (run 1105:
+        the AUT's `deps install` upgraded Continia Core, and the PR's Permission Sets build became
+        the catalogue's). With dependencyApps, every PR app's dependencies on apps outside the PR
+        are installed before the first PR app is published.
+    #>
+    BeforeEach {
+        $script:WorkDir = "$TestDrive/work-$([guid]::NewGuid().ToString('N'))"
+        $script:RunDir = Join-Path $script:WorkDir 'runs/1'
+        New-Item -ItemType Directory -Path $script:RunDir -Force | Out-Null
+        $script:Config = New-MutRunTestConfig -WorkDir $script:WorkDir
+        $script:Calls = New-Object System.Collections.ArrayList
+        $script:PrepassDeps = @{}
+
+        $script:WriteAppJson = {
+            param([string]$Folder, [string]$Id, [string[]]$DependencyIds)
+            New-Item -ItemType Directory -Path $Folder -Force | Out-Null
+            $app = [ordered]@{
+                id = $Id; name = "App $Id"; publisher = 'P'; version = '1.0.0.0'
+                dependencies = @($DependencyIds | ForEach-Object { [ordered]@{ id = $_; name = "Dep $_"; publisher = 'P'; version = '1.0.0.0' } })
+            }
+            Set-Content -Path (Join-Path $Folder 'app.json') -Value ($app | ConvertTo-Json -Depth 5) -Encoding utf8
+        }
+
+        Mock -ModuleName Run Install-MutDependencies {
+            $normal = $AppPath -replace '\\', '/'
+            $null = $script:Calls.Add("deps:$normal")
+            if ($normal -like '*/external-deps/*') {
+                $json = Get-Content -Path (Join-Path $AppPath 'app.json') -Raw | ConvertFrom-Json
+                $script:PrepassDeps[(Split-Path -Leaf $AppPath)] = @($json.dependencies | ForEach-Object { $_.id })
+            }
+        }
+        Mock -ModuleName Run Grant-MutPermissionSet { }
+        Mock -ModuleName Run Publish-MutApp {
+            $null = $script:Calls.Add("publish:$($Path -replace '\\', '/')")
+            [pscustomobject]@{ Success = $true; Code = $null; Diagnostics = @(); DurationSec = 0.1; ErrorMessage = $null }
+        }
+        Mock -ModuleName Run Invoke-MutTests { throw 'stop-after-publishes' }
+    }
+
+    It 'installs the dependencies on apps outside the PR for every PR app before the first dependency app is published' {
+        $script:Config | Add-Member -NotePropertyName 'dependencyApps' -NotePropertyValue @(
+            [pscustomobject]@{ name = 'perm'; sourcePath = "$script:WorkDir/src-perm" }
+        )
+        $script:Config | Add-Member -NotePropertyName 'extraApps' -NotePropertyValue @(
+            [pscustomobject]@{ name = 'export'; sourcePath = "$script:WorkDir/src-export" }
+        )
+        # perm -> core; AUT -> core, connector, perm; export -> AUT, perm (PR apps only); test app -> AUT, assert.
+        & $script:WriteAppJson "$script:WorkDir/dependency-apps/perm" 'id-perm' @('id-core')
+        & $script:WriteAppJson "$script:WorkDir/aut-original" 'id-aut' @('id-core', 'id-connector', 'ID-PERM')
+        & $script:WriteAppJson "$script:WorkDir/extra-apps/export" 'id-export' @('id-aut', 'id-perm')
+        & $script:WriteAppJson "$script:WorkDir/test-app" 'id-test' @('id-aut', 'id-assert')
+
+        { Publish-MutBaseline -Config $script:Config -Env $script:EnvHandle -RunDir $script:RunDir } |
+            Should -Throw '*stop-after-publishes*'
+
+        $calls = [string[]]@($script:Calls)
+        $find = { param($pattern) [array]::FindIndex($calls, [Predicate[string]] { param($c) $c -like $pattern }) }
+        $firstPrPublish = & $find 'publish:*/dependency-apps/perm'
+        $firstPrPublish | Should -BeGreaterThan -1
+
+        foreach ($name in @('dependency-perm', 'aut', 'test-app')) {
+            $index = & $find "deps:*/external-deps/$name"
+            $index | Should -BeGreaterThan -1 -Because "$name has a dependency outside the PR"
+            $index | Should -BeLessThan $firstPrPublish
+        }
+        # The PR's own apps are left out, whatever the letter case of the id.
+        $script:PrepassDeps['dependency-perm'] | Should -Be @('id-core')
+        $script:PrepassDeps['aut'] | Should -Be @('id-core', 'id-connector')
+        $script:PrepassDeps['test-app'] | Should -Be @('id-assert')
+        # Export depends on PR apps only: nothing to install for it up front.
+        (& $find 'deps:*/external-deps/extra-export') | Should -Be -1
+        # The copies are gone before the first publish: `deploy` must not find an app id twice.
+        Test-Path -LiteralPath "$script:WorkDir/external-deps" | Should -BeFalse
+        # The per-app installs stay where they were.
+        (& $find 'deps:*/dependency-apps/perm') | Should -BeGreaterThan -1
+        (& $find 'deps:*/aut-original') | Should -BeGreaterThan $firstPrPublish
+    }
+
+    It 'skips an app without an app.json and does nothing without dependencyApps' {
+        & $script:WriteAppJson "$script:WorkDir/aut-original" 'id-aut' @('id-core')
+
+        { Publish-MutBaseline -Config $script:Config -Env $script:EnvHandle -RunDir $script:RunDir } |
+            Should -Throw '*stop-after-publishes*'
+        @([string[]]@($script:Calls) | Where-Object { $_ -like '*external-deps*' }).Count | Should -Be 0
+
+        $script:Calls.Clear()
+        $script:Config | Add-Member -NotePropertyName 'dependencyApps' -NotePropertyValue @(
+            [pscustomobject]@{ name = 'perm'; sourcePath = "$script:WorkDir/src-perm" }
+        )
+        { Publish-MutBaseline -Config $script:Config -Env $script:EnvHandle -RunDir $script:RunDir } |
+            Should -Throw '*stop-after-publishes*'
+        # perm and the test app have no app.json here; the AUT has.
+        @([string[]]@($script:Calls) | Where-Object { $_ -like '*external-deps*' }) | Should -BeLike 'deps:*/external-deps/aut'
+    }
+}
+
 Describe 'Publish-MutBaseline: stale installed test suite (runs 5, 7 and 14)' {
     <#
         .SYNOPSIS

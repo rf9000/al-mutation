@@ -403,6 +403,82 @@ function Ensure-MutEnvironment {
     return $env
 }
 
+function Install-MutExternalDependencies {
+    <#
+        .SYNOPSIS
+        Private. §6.5.4 step 3, with dependencyApps: installs every PR app's dependencies on
+        apps outside the PR before the first PR app is published.
+
+        A catalogue install can replace a PR app that is already on the environment. Run 1105
+        (mutant-fixer): the PR's Permission Sets build was published, the AUT's `deps install`
+        then upgraded an app both depend on, and the environment ended with the catalogue's Permission
+        Sets build instead, without the permission set the PR added. With the outside
+        dependencies in place first, the later per-app `deps install` calls find them installed
+        and change nothing.
+
+        `deps install` cannot leave an app out, so each PR app gets a copy of its app.json
+        without the dependencies on the PR's own apps, in <workDir>/external-deps/<label>/, and
+        `deps install` runs on that folder. An app without an app.json, or with no dependency
+        outside the PR, is skipped. The folder is removed again before the first publish.
+
+        .PARAMETER Apps
+        The PR apps in publish order: [pscustomobject]@{ Label; Path }.
+    #>
+    param(
+        [Parameter(Mandatory = $true)]
+        $Config,
+        [Parameter(Mandatory = $true)]
+        $Env,
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyCollection()]
+        [object[]]$Apps
+    )
+
+    $manifests = @()
+    foreach ($app in $Apps) {
+        $appJsonPath = Join-Path $app.Path 'app.json'
+        if (-not (Test-Path -LiteralPath $appJsonPath)) {
+            continue
+        }
+        $manifests += [pscustomobject]@{ Label = $app.Label; Json = (Get-Content -LiteralPath $appJsonPath -Raw | ConvertFrom-Json) }
+    }
+
+    $ownIds = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+    foreach ($manifest in $manifests) {
+        if ((Test-MutHasProperty $manifest.Json 'id') -and $manifest.Json.id) {
+            [void]$ownIds.Add([string]$manifest.Json.id)
+        }
+    }
+
+    $externalRoot = Join-Path $Config.workDir 'external-deps'
+    if (Test-Path -LiteralPath $externalRoot) {
+        Remove-Item -LiteralPath $externalRoot -Recurse -Force
+    }
+
+    foreach ($manifest in $manifests) {
+        $dependencies = @()
+        if ((Test-MutHasProperty $manifest.Json 'dependencies') -and ($null -ne $manifest.Json.dependencies)) {
+            $dependencies = @($manifest.Json.dependencies)
+        }
+        $external = @($dependencies | Where-Object { -not $ownIds.Contains([string]$_.id) })
+        if ($external.Count -eq 0) {
+            continue
+        }
+
+        $manifest.Json.dependencies = $external
+        $folder = Join-Path $externalRoot $manifest.Label
+        New-Item -ItemType Directory -Path $folder -Force | Out-Null
+        Set-Content -LiteralPath (Join-Path $folder 'app.json') -Value ($manifest.Json | ConvertTo-Json -Depth 20) -Encoding utf8
+        Install-MutDependencies -Env $Env -AppPath $folder | Out-Null
+    }
+
+    # The copies carry the ids of the PR apps. Left in the work folder, `deploy` would find two
+    # apps with one id when it discovers the workspace (its --workspace-root is the work folder).
+    if (Test-Path -LiteralPath $externalRoot) {
+        Remove-Item -LiteralPath $externalRoot -Recurse -Force
+    }
+}
+
 function Publish-MutBaseline {
     <#
         .SYNOPSIS
@@ -506,6 +582,22 @@ function Publish-MutBaseline {
         if (-not $coreTestResult.Success) {
             throw "Publish-MutBaseline: publishing Mutation Core Test (coreAppTest.path) failed. Code: $($coreTestResult.Code); Message: $($coreTestResult.ErrorMessage); Diagnostics: $(($coreTestResult.Diagnostics | ConvertTo-Json -Depth 10 -Compress))"
         }
+    }
+
+    # External dependencies first (run 1105): see Install-MutExternalDependencies.
+    if ($dependencyApps.Count -gt 0) {
+        $prApps = @()
+        foreach ($dependencyApp in $dependencyApps) {
+            $prApps += [pscustomobject]@{ Label = "dependency-$($dependencyApp.name)"; Path = (Join-Path (Join-Path $Config.workDir 'dependency-apps') $dependencyApp.name) }
+        }
+        $prApps += [pscustomobject]@{ Label = 'aut'; Path = $autPath }
+        if (Test-MutHasProperty $Config 'extraApps') {
+            foreach ($prExtraApp in @($Config.extraApps | Where-Object { $null -ne $_ })) {
+                $prApps += [pscustomobject]@{ Label = "extra-$($prExtraApp.name)"; Path = (Join-Path (Join-Path $Config.workDir 'extra-apps') $prExtraApp.name) }
+            }
+        }
+        $prApps += [pscustomobject]@{ Label = 'test-app'; Path = $testAppPath }
+        Install-MutExternalDependencies -Config $Config -Env $Env -Apps $prApps
     }
 
     # Dependency apps: the PR's own apps the AUT depends on (an app pair's base app and its test
