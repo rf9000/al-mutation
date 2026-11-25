@@ -403,6 +403,49 @@ function Ensure-MutEnvironment {
     return $env
 }
 
+function Get-MutNewerInstalledVersion {
+    <#
+        .SYNOPSIS
+        Private. The installed version BC names when it refuses a publish with "... because a
+        newer version <a.b.c.d> was already installed", else $null.
+    #>
+    param(
+        [AllowNull()]
+        [AllowEmptyString()]
+        [string]$ErrorMessage
+    )
+
+    if ($ErrorMessage -match 'because a newer version\s+(\d+\.\d+\.\d+\.\d+)\s+was already installed') {
+        return $Matches[1]
+    }
+    return $null
+}
+
+function Set-MutAppVersionAbove {
+    <#
+        .SYNOPSIS
+        Private. Sets `version` in <AppPath>/app.json to InstalledVersion with its last number
+        plus one, and returns that version. The file is the work folder's copy; the next run's
+        mirror of the source restores it.
+    #>
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$AppPath,
+        [Parameter(Mandatory = $true)]
+        [string]$InstalledVersion
+    )
+
+    $parts = $InstalledVersion.Split('.')
+    $parts[3] = [string]([int]$parts[3] + 1)
+    $version = $parts -join '.'
+
+    $appJsonPath = Join-Path $AppPath 'app.json'
+    $appJson = Get-Content -LiteralPath $appJsonPath -Raw | ConvertFrom-Json
+    $appJson.version = $version
+    Set-Content -LiteralPath $appJsonPath -Value ($appJson | ConvertTo-Json -Depth 20) -Encoding utf8
+    return $version
+}
+
 function Install-MutExternalDependencies {
     <#
         .SYNOPSIS
@@ -410,11 +453,12 @@ function Install-MutExternalDependencies {
         apps outside the PR before the first PR app is published.
 
         A catalogue install can replace a PR app that is already on the environment. Run 1105
-        (mutant-fixer): the PR's Permission Sets build was published, the AUT's `deps install`
-        then upgraded an app both depend on, and the environment ended with the catalogue's Permission
-        Sets build instead, without the permission set the PR added. With the outside
-        dependencies in place first, the later per-app `deps install` calls find them installed
-        and change nothing.
+        (mutant-fixer): the PR's Permission Sets build (29.0.0.0) was published, the AUT's
+        `deps install` then brought Approval 29.1.1.0, which needs Permission Sets 29.1.1.0, and
+        the environment ended with the catalogue's Permission Sets build, without the permission
+        set the PR added and without an error. With the outside dependencies in place first, the
+        later per-app `deps install` calls change nothing, and a version conflict shows as a
+        refused publish of the PR app, which Publish-MutBaseline answers with a version bump.
 
         `deps install` cannot leave an app out, so each PR app gets a copy of its app.json
         without the dependencies on the PR's own apps, in <workDir>/external-deps/<label>/, and
@@ -609,6 +653,21 @@ function Publish-MutBaseline {
         $dependencyAppPublishParams = @{ Env = $Env; Path = $dependencyAppPath; AllowDowngrade = $true }
         if ($rulesetFile) { $dependencyAppPublishParams['Ruleset'] = $rulesetFile }
         $dependencyAppResult = Publish-MutApp @dependencyAppPublishParams
+
+        # Run 1113: an app from the catalogue needs a newer version of this app than the PR's
+        # source has (Approval 29.1.1.0 needs Permission Sets 29.1.1.0; the source says 29.0.0.0),
+        # and BC refuses the lower version while that dependent is installed. Publish the PR's
+        # source once more as the installed version plus one build: an upgrade, which BC accepts.
+        $newerVersion = Get-MutNewerInstalledVersion -ErrorMessage ([string]$dependencyAppResult.ErrorMessage)
+        if ((-not $dependencyAppResult.Success) -and $newerVersion) {
+            $firstFailure = $dependencyAppResult.ErrorMessage
+            $bumpedVersion = Set-MutAppVersionAbove -AppPath $dependencyAppPath -InstalledVersion $newerVersion
+            Write-Warning "Publish-MutBaseline: the environment has version $newerVersion of dependency app '$($dependencyApp.name)', newer than its source. Publishing the source again as version $bumpedVersion."
+            $dependencyAppResult = Publish-MutApp @dependencyAppPublishParams
+            if (-not $dependencyAppResult.Success) {
+                throw "Publish-MutBaseline: publishing dependency app '$($dependencyApp.name)' failed, and failed again as version $bumpedVersion. First failure: $firstFailure. Retry -- Code: $($dependencyAppResult.Code); Message: $($dependencyAppResult.ErrorMessage); Diagnostics: $(($dependencyAppResult.Diagnostics | ConvertTo-Json -Depth 10 -Compress))"
+            }
+        }
         if (-not $dependencyAppResult.Success) {
             throw "Publish-MutBaseline: publishing dependency app '$($dependencyApp.name)' failed. Code: $($dependencyAppResult.Code); Message: $($dependencyAppResult.ErrorMessage); Diagnostics: $(($dependencyAppResult.Diagnostics | ConvertTo-Json -Depth 10 -Compress))"
         }

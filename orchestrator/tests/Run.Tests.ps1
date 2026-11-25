@@ -1107,6 +1107,74 @@ Describe 'Publish-MutBaseline: external dependencies first (mutant-fixer runs 10
     }
 }
 
+Describe 'Publish-MutBaseline: a dependency app with a newer version on the environment (mutant-fixer run 1113)' {
+    <#
+        .SYNOPSIS
+        The catalogue's Approval 29.1.1.0 needs Permission Sets 29.1.1.0, and the PR's source says
+        29.0.0.0. BC refuses the lower version while a dependent is installed. The dependency
+        app is published once more, as the installed version plus one build.
+    #>
+    BeforeEach {
+        $script:WorkDir = "$TestDrive/work-$([guid]::NewGuid().ToString('N'))"
+        $script:RunDir = Join-Path $script:WorkDir 'runs/1'
+        New-Item -ItemType Directory -Path $script:RunDir -Force | Out-Null
+        $script:Config = New-MutRunTestConfig -WorkDir $script:WorkDir
+        $script:Config | Add-Member -NotePropertyName 'dependencyApps' -NotePropertyValue @(
+            [pscustomobject]@{ name = 'perm'; sourcePath = "$script:WorkDir/src-perm" }
+        )
+        $script:PermDir = "$script:WorkDir/dependency-apps/perm"
+        New-Item -ItemType Directory -Path $script:PermDir -Force | Out-Null
+        $app = [ordered]@{
+            id = 'id-perm'; name = 'Perm'; publisher = 'P'; version = '29.0.0.0'
+            dependencies = @([ordered]@{ id = 'id-core'; name = 'Core'; publisher = 'P'; version = '29.0.0.0' })
+        }
+        Set-Content -Path "$script:PermDir/app.json" -Value ($app | ConvertTo-Json -Depth 5) -Encoding utf8
+
+        $script:Newer = 'Cannot install the extension Perm by P 29.0.0.0 because a newer version 29.1.1.0 was already installed.'
+        $script:PermPublishVersions = New-Object System.Collections.ArrayList
+        $script:PermFailures = 1
+        $script:Published = New-Object System.Collections.ArrayList
+
+        Mock -ModuleName Run Install-MutDependencies { }
+        Mock -ModuleName Run Grant-MutPermissionSet { }
+        Mock -ModuleName Run Publish-MutApp {
+            $normal = $Path -replace '\\', '/'
+            if ($normal -like '*/dependency-apps/perm') {
+                $version = (Get-Content -Path (Join-Path $Path 'app.json') -Raw | ConvertFrom-Json).version
+                $null = $script:PermPublishVersions.Add($version)
+                if ($script:PermPublishVersions.Count -le $script:PermFailures) {
+                    return [pscustomobject]@{ Success = $false; Code = 'publish-failed'; Diagnostics = @(); DurationSec = 0.1; ErrorMessage = $script:Newer }
+                }
+            }
+            $null = $script:Published.Add($normal)
+            [pscustomobject]@{ Success = $true; Code = $null; Diagnostics = @(); DurationSec = 0.1; ErrorMessage = $null }
+        }
+        Mock -ModuleName Run Invoke-MutTests { throw 'stop-after-publishes' }
+    }
+
+    It 'publishes the dependency app again as the installed version plus one build, and goes on' {
+        { Publish-MutBaseline -Config $script:Config -Env $script:EnvHandle -RunDir $script:RunDir -WarningAction SilentlyContinue } |
+            Should -Throw '*stop-after-publishes*'
+
+        @($script:PermPublishVersions) | Should -Be @('29.0.0.0', '29.1.1.1')
+        # The dependencies in app.json are kept.
+        $after = Get-Content -Path "$script:PermDir/app.json" -Raw | ConvertFrom-Json
+        @($after.dependencies).Count | Should -Be 1
+        $after.dependencies[0].id | Should -Be 'id-core'
+        @($script:Published | Where-Object { $_ -like '*/aut-original' }).Count | Should -Be 1
+    }
+
+    It 'throws with both failures when the second publish fails too' {
+        $script:PermFailures = 2
+
+        { Publish-MutBaseline -Config $script:Config -Env $script:EnvHandle -RunDir $script:RunDir -WarningAction SilentlyContinue } |
+            Should -Throw "*publishing dependency app 'perm' failed*as version 29.1.1.1*29.1.1.0 was already installed*"
+
+        @($script:PermPublishVersions).Count | Should -Be 2
+        @($script:Published | Where-Object { $_ -like '*/aut-original' }).Count | Should -Be 0
+    }
+}
+
 Describe 'Publish-MutBaseline: stale installed test suite (runs 5, 7 and 14)' {
     <#
         .SYNOPSIS
