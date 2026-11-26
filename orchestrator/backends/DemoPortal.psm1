@@ -2553,6 +2553,62 @@ function Test-MutHealthyRunTests {
     return ([int]$parsed.failed -eq 0) -and ([int]$parsed.passed -gt 0)
 }
 
+function Invoke-MutRunnerTests {
+    <#
+        .SYNOPSIS
+        `RunTests` for the given test codeunits, with no mutant active (§6.11.6): the same runner
+        and session type the mutant batches use.
+        .OUTPUTS
+        @{ Ok; Reason; Passed; Failed; Tests = @( @{ CodeunitId; Function; Result; Error } ) }.
+        Result is 'Pass' or 'Fail'. A test is failed when its result is `Failure` or it carries an
+        error text: the result is a caption, which follows the session language. Ok is false, with
+        Reason, when the call faults, times out, drops or returns no value. An outage (HTTP 503,
+        no connection) throws, as from every SOAP call.
+    #>
+    param(
+        [Parameter(Mandatory = $true)]
+        $Env,
+        [Parameter(Mandatory = $true)]
+        [int[]]$CodeunitIds,
+        [int]$TimeoutSec = 120
+    )
+
+    Assert-MutEnvironmentAllowed $Env
+
+    $result = [pscustomobject]@{ Ok = $false; Reason = $null; Passed = 0; Failed = 0; Tests = @() }
+    $call = Invoke-MutSoap -Env $Env -Operation 'RunTests' -Arguments ([ordered]@{ codeunitIds = (@($CodeunitIds) -join '|') }) -TimeoutSec $TimeoutSec
+    if (-not $call.Ok -or [string]::IsNullOrWhiteSpace($call.Value)) {
+        $result.Reason = 'no value returned'
+        if ($call.Fault) { $result.Reason = [string]$call.Fault }
+        elseif ($call.TimedOut) { $result.Reason = "timed out after $TimeoutSec s" }
+        elseif ($call.Dropped) { $result.Reason = 'connection dropped' }
+        return $result
+    }
+
+    $parsed = $null
+    try { $parsed = $call.Value | ConvertFrom-Json } catch { $result.Reason = "the answer is not JSON: $($_.Exception.Message)"; return $result }
+
+    $tests = @()
+    if ((Test-MutHasProperty $parsed 'tests') -and ($null -ne $parsed.tests)) {
+        foreach ($test in @($parsed.tests | ForEach-Object { $_ })) {
+            $errorText = $null
+            if ((Test-MutHasProperty $test 'error') -and -not [string]::IsNullOrWhiteSpace([string]$test.error)) { $errorText = [string]$test.error }
+            $failed = ([string]$test.result -eq 'Failure') -or ($null -ne $errorText)
+            $tests += [pscustomobject]@{
+                CodeunitId = [int]$test.codeunit
+                Function   = [string]$test.name
+                Result     = $(if ($failed) { 'Fail' } else { 'Pass' })
+                Error      = $errorText
+            }
+        }
+    }
+    $result.Ok = $true
+    if (Test-MutHasProperty $parsed 'passed') { $result.Passed = [int]$parsed.passed }
+    if (Test-MutHasProperty $parsed 'failed') { $result.Failed = [int]$parsed.failed }
+    $result.Tests = $tests
+    return $result
+}
+
 function Get-MutRunnerBatchKey {
     <#
         .SYNOPSIS
@@ -3169,4 +3225,4 @@ function Invoke-MutMutantBatch {
     }
 }
 
-Export-ModuleMember -Function Get-MutEnvironment, New-MutEnvironment, Start-MutEnvironment, Request-MutEnvironmentStart, Remove-MutEnvironment, Remove-MutRunEnvironment, Remove-MutOrphanEnvironments, Reset-MutEnvironment, Assert-MutEnvironmentAllowed, Get-MutApiBase, Get-MutCompanyId, Get-MutCompanyName, Get-MutRunnerState, Stop-MutRunnerBatch, Remove-MutRunnerState, Invoke-MutMutantBatch, Test-MutSoapRunner, Grant-MutPermissionSet, Invoke-MutApi, Install-MutDependencies, Compile-MutApp, Publish-MutApp, Publish-MutAppFile, Unpublish-MutApp, Invoke-MutTests, Get-MutCoverageRaw, Get-MutCoverage, Stop-MutBackendChildProcesses
+Export-ModuleMember -Function Get-MutEnvironment, New-MutEnvironment, Start-MutEnvironment, Request-MutEnvironmentStart, Remove-MutEnvironment, Remove-MutRunEnvironment, Remove-MutOrphanEnvironments, Reset-MutEnvironment, Assert-MutEnvironmentAllowed, Get-MutApiBase, Get-MutCompanyId, Get-MutCompanyName, Get-MutRunnerState, Stop-MutRunnerBatch, Remove-MutRunnerState, Invoke-MutMutantBatch, Test-MutSoapRunner, Invoke-MutRunnerTests, Grant-MutPermissionSet, Invoke-MutApi, Install-MutDependencies, Compile-MutApp, Publish-MutApp, Publish-MutAppFile, Unpublish-MutApp, Invoke-MutTests, Get-MutCoverageRaw, Get-MutCoverage, Stop-MutBackendChildProcesses

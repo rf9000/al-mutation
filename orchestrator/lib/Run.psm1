@@ -169,7 +169,15 @@ function ConvertTo-MutBaselineFlakyInfo {
         $flakyTests = @($Raw.flakyTests | Where-Object { $null -ne $_ })
     }
 
-    return [pscustomobject]@{ Repeats = $repeats; FlakyTests = $flakyTests }
+    # §6.11.6: the test codeunit names by id (a file written before the runner baseline has none).
+    $codeunitNames = @{}
+    if ((Test-MutHasProperty $Raw 'codeunitNames') -and ($null -ne $Raw.codeunitNames)) {
+        foreach ($property in $Raw.codeunitNames.PSObject.Properties) {
+            $codeunitNames[$property.Name] = [string]$property.Value
+        }
+    }
+
+    return [pscustomobject]@{ Repeats = $repeats; FlakyTests = $flakyTests; CodeunitNames = $codeunitNames }
 }
 
 function ConvertTo-MutCoverageObject {
@@ -248,7 +256,7 @@ function Get-MutSkippedBaselineResult {
         $references = ConvertTo-MutReferencesHashtable -Raw (Get-MutJsonContent -Path $referencesPath)
     }
 
-    return [pscustomobject]@{ Baseline = $baseline; Coverage = $coverage; References = $references; Repeats = $flakyInfo.Repeats; FlakyTests = $flakyInfo.FlakyTests }
+    return [pscustomobject]@{ Baseline = $baseline; Coverage = $coverage; References = $references; Repeats = $flakyInfo.Repeats; FlakyTests = $flakyInfo.FlakyTests; CodeunitNames = $flakyInfo.CodeunitNames }
 }
 
 function Initialize-MutRun {
@@ -581,6 +589,7 @@ function Publish-MutBaseline {
             References = ConvertTo-MutReferencesHashtable -Raw (Get-MutJsonContent -Path $referencesPath)
             Repeats    = $savedFlakyInfo.Repeats
             FlakyTests = $savedFlakyInfo.FlakyTests
+            CodeunitNames = $savedFlakyInfo.CodeunitNames
         }
     }
 
@@ -916,7 +925,7 @@ function Publish-MutBaseline {
         throw "Publish-MutBaseline: the baseline test run had $($failingTests.Count) failing test(s); aborting (§6.5.4 step 3 must pass before the schemata can be built). Failures:`n$($failingTests -join "`n")$flakyNote"
     }
 
-    $baselineDoc = [pscustomobject]@{ tests = $allTests; durationsByCodeunit = $durationsByCodeunit; repeats = $repeats; flakyTests = @($flakyTests) }
+    $baselineDoc = [pscustomobject]@{ tests = $allTests; durationsByCodeunit = $durationsByCodeunit; repeats = $repeats; flakyTests = @($flakyTests); codeunitNames = $nameByCodeunit }
     Write-MutTextFile -Path $baselinePath -Text ((($baselineDoc | ConvertTo-Json -Depth 10)) + [System.Environment]::NewLine)
 
     $anyJobIds = $false
@@ -946,7 +955,96 @@ function Publish-MutBaseline {
         References = $references
         Repeats    = $repeats
         FlakyTests = @($flakyTests)
+        CodeunitNames = $nameByCodeunit
     }
+}
+
+function Get-MutRunnerBaselineStep {
+    <#
+        .SYNOPSIS
+        §6.11.6: runs every baseline test codeunit once through the runner service with no mutant
+        active. A test that fails there fails for every mutant too (the runner's session cannot
+        open a test page, for one), so a kill by such a test alone says nothing about the mutant.
+        The loop treats these tests as it treats flaky ones (§6.11.3).
+
+        Writes `<RunDir>/runner-baseline.json` ({ tests: [ {test; error} ]; skippedCodeunits })
+        and reads it back on a later call for the same run. A call that fails or throws is a
+        warning: its codeunit is left out, and the run goes on.
+
+        .OUTPUTS
+        [ {test; error} ], sorted by test. `test` is "<codeunit name cut to 30>:<function>".
+    #>
+    param(
+        [Parameter(Mandatory = $true)]
+        $Env,
+        [Parameter(Mandatory = $true)]
+        [string]$RunDir,
+        [Parameter(Mandatory = $true)]
+        $BaselineResult
+    )
+
+    $path = Join-Path $RunDir 'runner-baseline.json'
+    if (Test-Path -Path $path) {
+        $saved = Get-MutJsonContent -Path $path
+        if ((Test-MutHasProperty $saved 'tests') -and ($null -ne $saved.tests)) {
+            return @($saved.tests | Where-Object { $null -ne $_ })
+        }
+        return @()
+    }
+
+    $durations = $BaselineResult.Baseline.DurationsByCodeunit
+    $names = @{}
+    if ((Test-MutHasProperty $BaselineResult 'CodeunitNames') -and ($null -ne $BaselineResult.CodeunitNames)) {
+        $names = $BaselineResult.CodeunitNames
+    }
+
+    $failing = @()
+    $skipped = @()
+    foreach ($codeunitId in @($durations.Keys | ForEach-Object { [int]$_ } | Sort-Object)) {
+        # Three times the baseline duration plus a minute, and never under two minutes.
+        $timeoutSec = [Math]::Max(120, [int][Math]::Ceiling(3 * [double]$durations["$codeunitId"] / 1000) + 60)
+        $reason = $null
+        $result = $null
+        try {
+            $result = Invoke-MutRunnerTests -Env $Env -CodeunitIds @($codeunitId) -TimeoutSec $timeoutSec
+            if (-not $result.Ok) { $reason = [string]$result.Reason }
+        }
+        catch {
+            $reason = $_.Exception.Message
+        }
+        if ($null -ne $reason) {
+            Write-Warning "Get-MutRunnerBaselineStep: the runner baseline for codeunit $codeunitId failed ($reason). Its tests are not checked; a kill by a test that cannot run through the runner is then not marked unreliable."
+            $skipped += $codeunitId
+            continue
+        }
+
+        $codeunitName = "$codeunitId"
+        if ($names.ContainsKey("$codeunitId")) {
+            $codeunitName = [string]$names["$codeunitId"]
+        }
+        foreach ($test in @($result.Tests | Where-Object { $_.Result -eq 'Fail' })) {
+            if (-not $names.ContainsKey("$codeunitId")) {
+                Write-Warning "Get-MutRunnerBaselineStep: no codeunit name is known for codeunit $codeunitId; the key $codeunitId`:$($test.Function) cannot match the loop's keys."
+            }
+            $failing += [pscustomobject]@{
+                test  = Get-MutTestKey -Codeunit $codeunitName -Function ([string]$test.Function)
+                error = Format-MutKillReason -Text $test.Error
+            }
+        }
+    }
+
+    $keys = [string[]]@($failing | ForEach-Object { $_.test })
+    $items = [object[]]@($failing)
+    [System.Array]::Sort($keys, $items, [System.StringComparer]::Ordinal)
+    $failing = @($items)
+    foreach ($entry in $failing) {
+        Write-Warning "Get-MutRunnerBaselineStep: test $($entry.test) passes in the baseline but fails through the runner with no mutant active: $($entry.error). A kill by this test alone is reported as unreliable (§6.11.6)."
+    }
+
+    $doc = [pscustomobject]@{ tests = @($failing); skippedCodeunits = @($skipped) }
+    Write-MutTextFile -Path $path -Text ((($doc | ConvertTo-Json -Depth 10)) + [System.Environment]::NewLine)
+
+    return @($failing)
 }
 
 function Build-MutSchemataStep {
@@ -1390,7 +1488,10 @@ function Export-MutResultsStep {
         [switch]$AllowPartial,
         # §6.11.2: the baseline's flaky tests, for the summary's Flaky baseline tests table.
         [AllowNull()]
-        [object[]]$FlakyTests = @()
+        [object[]]$FlakyTests = @(),
+        # §6.11.6: the tests that fail through the runner with no mutant active.
+        [AllowNull()]
+        [object[]]$RunnerFailingTests = @()
     )
 
     $markerPath = Join-Path $RunDir 'export.done'
@@ -1405,7 +1506,7 @@ function Export-MutResultsStep {
     }
 
     $paths = Export-MutResults -RunNo $RunNo -Config $Config -Env $Env -Mutants $Mutants -Results $Results `
-        -OutDir $outDir -StartedUtc $StartedUtc -FinishedUtc $FinishedUtc -CompileErrorIds $CompileErrorIds -Partial:$AllowPartial -FlakyTests $FlakyTests
+        -OutDir $outDir -StartedUtc $StartedUtc -FinishedUtc $FinishedUtc -CompileErrorIds $CompileErrorIds -Partial:$AllowPartial -FlakyTests $FlakyTests -RunnerFailingTests $RunnerFailingTests
 
     if ($AllowPartial) {
         return $paths
@@ -1485,13 +1586,18 @@ function Invoke-MutRunPipeline {
         $flakyTests = @($baselineResult.FlakyTests)
     }
 
+    $runnerFailingTests = @()
     # §6.10.4: with the soap test transport the MUTRunner service (Mutation Core 1.1.1.0+) must
     # answer right after the baseline, before any further work.
     if ((Test-MutHasProperty $Config 'testTransport') -and ([string]$Config.testTransport -eq 'soap')) {
         if (-not (Test-MutSoapRunner -Env $env)) {
             throw "Invoke-MutRunPipeline: testTransport is soap but the MUTRunner service does not answer (Mutation Core older than 1.1.1.0, or the service is missing)."
         }
+        # §6.11.6: the tests that fail through the runner with no mutant active.
+        $runnerFailingTests = @(Get-MutRunnerBaselineStep -Env $env -RunDir $runDir -BaselineResult $baselineResult)
     }
+    # The loop judges a kill against both lists (§6.11.3); the export keeps them apart.
+    $loopFlakyTests = @($flakyTests) + @($runnerFailingTests)
 
     $schemata = Build-MutSchemataStep -Config $Config -Env $env -RunDir $runDir -RunNo $runNo
 
@@ -1505,7 +1611,7 @@ function Invoke-MutRunPipeline {
         Write-Host "Invoke-MutRunPipeline: the generator made no mutants to run ($(@($schemata.ExcludedMutants).Count) excluded for a compile error); nothing to test."
         return Export-MutResultsStep -Config $Config -Env $env -RunNo $runNo -Mutants $allMutantsForExport `
             -Results @() -CompileErrorIds $schemata.CompileErrorIds -StartedUtc $startedUtc `
-            -FinishedUtc ([datetime]::UtcNow) -RunDir $runDir -FlakyTests $flakyTests
+            -FinishedUtc ([datetime]::UtcNow) -RunDir $runDir -FlakyTests $flakyTests -RunnerFailingTests $runnerFailingTests
     }
 
     Publish-MutSchemata -Config $Config -Env $env -Schemata $schemata -RunDir $runDir -RunNo $runNo
@@ -1534,7 +1640,7 @@ function Invoke-MutRunPipeline {
     try {
         $loopResults = Invoke-MutMutantLoopStep -Config $Config -Env $env -Mutants $schemata.Mutants `
             -Baseline $baselineResult.Baseline -Coverage $baselineResult.Coverage -References $baselineResult.References `
-            -RunNo $runNo -RunDir $runDir -BackendModulePath $backendModulePath -FlakyTests $flakyTests
+            -RunNo $runNo -RunDir $runDir -BackendModulePath $backendModulePath -FlakyTests $loopFlakyTests
     }
     catch {
         if ($_.CategoryInfo.Category -ne [System.Management.Automation.ErrorCategory]::LimitsExceeded) {
@@ -1566,7 +1672,7 @@ function Invoke-MutRunPipeline {
 
         $exportResult = Export-MutResultsStep -Config $Config -Env $env -RunNo $runNo -Mutants $allMutantsForExport `
             -Results $partialResults -CompileErrorIds $schemata.CompileErrorIds -StartedUtc $startedUtc `
-            -FinishedUtc $finishedUtc -RunDir $runDir -AllowPartial -FlakyTests $flakyTests
+            -FinishedUtc $finishedUtc -RunDir $runDir -AllowPartial -FlakyTests $flakyTests -RunnerFailingTests $runnerFailingTests
 
         Write-Warning "Invoke-MutRunPipeline: partial results: $($exportResult.ResultsPath); partial summary: $($exportResult.SummaryPath)"
 
@@ -1577,7 +1683,7 @@ function Invoke-MutRunPipeline {
 
     $exportResult = Export-MutResultsStep -Config $Config -Env $env -RunNo $runNo -Mutants $allMutantsForExport `
         -Results @($loopResults) -CompileErrorIds $schemata.CompileErrorIds -StartedUtc $startedUtc `
-        -FinishedUtc $finishedUtc -RunDir $runDir -FlakyTests $flakyTests
+        -FinishedUtc $finishedUtc -RunDir $runDir -FlakyTests $flakyTests -RunnerFailingTests $runnerFailingTests
 
     # §6.7.2 pipeline hook: the fix briefs are cheap and re-generated every time (no .done
     # marker). Only a complete export gets here -- the partial-export path above re-throws

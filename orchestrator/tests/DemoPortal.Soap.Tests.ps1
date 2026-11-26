@@ -430,6 +430,57 @@ Describe 'Test-MutSoapRunner' {
     }
 }
 
+Describe 'Invoke-MutRunnerTests (§6.11.6)' {
+    It 'runs RunTests for the codeunits with the given timeout and returns each test with Pass or Fail' {
+        $value = '{"passed":1,"failed":1,"durationMs":40,"tests":[' +
+            '{"codeunit":95155,"name":"Works","result":"Success","durationMs":10,"error":""},' +
+            '{"codeunit":95155,"name":"OpensPage","result":"Failure","durationMs":30,"error":"Unexpected CLR exception thrown.: System.NotSupportedException\r\nat X"}]}'
+        $result = New-SoapResult -Value $value
+        Mock -ModuleName DemoPortal Invoke-MutSoap ({ $result }.GetNewClosure())
+
+        $r = Invoke-MutRunnerTests -Env $envHandle -CodeunitIds @(95155, 95110) -TimeoutSec 77
+
+        Should -Invoke -ModuleName DemoPortal Invoke-MutSoap -Times 1 -Exactly -ParameterFilter {
+            $Operation -eq 'RunTests' -and $Arguments['codeunitIds'] -eq '95155|95110' -and $TimeoutSec -eq 77
+        }
+        $r.Ok | Should -BeTrue
+        $r.Passed | Should -Be 1
+        $r.Failed | Should -Be 1
+        @($r.Tests).Count | Should -Be 2
+        $r.Tests[0].CodeunitId | Should -Be 95155
+        $r.Tests[0].Function | Should -Be 'Works'
+        $r.Tests[0].Result | Should -Be 'Pass'
+        $r.Tests[1].Function | Should -Be 'OpensPage'
+        $r.Tests[1].Result | Should -Be 'Fail'
+        $r.Tests[1].Error | Should -BeLike 'Unexpected CLR exception thrown.*'
+    }
+
+    It 'reads a test with an error text as failed, whatever the language of the result caption' {
+        $value = '{"passed":0,"failed":1,"durationMs":40,"tests":[{"codeunit":95155,"name":"OpensPage","result":"Fejl","durationMs":30,"error":"boom"}]}'
+        $result = New-SoapResult -Value $value
+        Mock -ModuleName DemoPortal Invoke-MutSoap ({ $result }.GetNewClosure())
+
+        $r = Invoke-MutRunnerTests -Env $envHandle -CodeunitIds @(95155) -TimeoutSec 60
+
+        $r.Tests[0].Result | Should -Be 'Fail'
+    }
+
+    It 'is not Ok, with the reason, when the call faults, times out or returns nothing' {
+        $fault = New-SoapResult -Fault 'The runner broke'
+        Mock -ModuleName DemoPortal Invoke-MutSoap ({ $fault }.GetNewClosure())
+        $r = Invoke-MutRunnerTests -Env $envHandle -CodeunitIds @(95155) -TimeoutSec 60
+        $r.Ok | Should -BeFalse
+        $r.Reason | Should -BeLike '*The runner broke*'
+        @($r.Tests).Count | Should -Be 0
+
+        $timedOut = New-SoapResult -TimedOut
+        Mock -ModuleName DemoPortal Invoke-MutSoap ({ $timedOut }.GetNewClosure())
+        $r = Invoke-MutRunnerTests -Env $envHandle -CodeunitIds @(95155) -TimeoutSec 60
+        $r.Ok | Should -BeFalse
+        $r.Reason | Should -BeLike '*timed out*'
+    }
+}
+
 Describe 'Stop-MutRunnerBatch' {
     BeforeEach {
         $script:soapCalls = [System.Collections.Generic.List[object]]::new()

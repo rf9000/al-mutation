@@ -687,3 +687,40 @@ Describe 'crash kills (§6.11.5)' {
         $md | Should -Not -BeLike '*Crash kills*'
     }
 }
+
+Describe 'tests that fail through the runner (§6.11.6)' {
+    BeforeEach {
+        $script:OutDir = "$TestDrive/results-$([guid]::NewGuid().ToString('N'))"
+        New-Item -ItemType Directory -Path $script:OutDir -Force | Out-Null
+        $script:Mutants = @(1..2 | ForEach-Object { New-MutTestMutant -Id $_ })
+        $script:Rows = @(
+            [pscustomobject]@{ Id = 1; Status = 'Killed'; KillingTest = 'C:OpensPage'; DurationMs = 5; CoveringTests = @(1); KillingError = 'Unexpected CLR exception thrown.: X'; Unreliable = $true }
+            [pscustomobject]@{ Id = 2; Status = 'Killed'; KillingTest = 'C:U'; DurationMs = 5; CoveringTests = @(1); KillingError = 'Assert.IsTrue failed.' }
+        )
+    }
+
+    It 'exports runnerFailingTests and the summary lists them' {
+        $failing = @([pscustomobject]@{ test = 'C:OpensPage'; error = 'Unexpected CLR exception thrown.: X' })
+        $paths = Export-MutResults -RunNo 21 -Config $script:Config -Env $script:EnvHandle -Mutants $script:Mutants -Results $script:Rows `
+            -OutDir $script:OutDir -StartedUtc (Get-Date) -FinishedUtc (Get-Date) -CompileErrorIds @() -RunnerFailingTests $failing
+        $json = Get-Content -Path $paths.ResultsPath -Raw | ConvertFrom-Json
+
+        @($json.runnerFailingTests).Count | Should -Be 1
+        $json.runnerFailingTests[0].test | Should -Be 'C:OpensPage'
+        $json.totals.unreliableKills | Should -Be 1
+        $json.score | Should -Be 1
+        $json.strictScore | Should -Be 0.5
+        $md = Get-Content -Path $paths.SummaryPath -Raw
+        $md | Should -BeLike '*## Tests that fail through the runner*'
+        $md | Should -BeLike '*| C:OpensPage | Unexpected CLR exception thrown.: X |*'
+    }
+
+    It 'exports an empty list and no summary section when there is none' {
+        $paths = Export-MutResults -RunNo 22 -Config $script:Config -Env $script:EnvHandle -Mutants $script:Mutants -Results $script:Rows `
+            -OutDir $script:OutDir -StartedUtc (Get-Date) -FinishedUtc (Get-Date) -CompileErrorIds @()
+        $json = Get-Content -Path $paths.ResultsPath -Raw | ConvertFrom-Json
+        @($json.runnerFailingTests).Count | Should -Be 0
+        $json.PSObject.Properties['runnerFailingTests'] | Should -Not -BeNullOrEmpty
+        (Get-Content -Path $paths.SummaryPath -Raw) | Should -Not -BeLike '*fail through the runner*'
+    }
+}

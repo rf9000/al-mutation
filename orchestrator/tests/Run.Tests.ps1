@@ -147,6 +147,11 @@ Describe 'Invoke-MutRunPipeline (fully mocked backend/lib boundary)' {
         }
         # §6.7.2 hook: mocked so no test writes into the real repo's results/ directory.
         Mock -ModuleName Run Export-MutFixBriefs { "$script:WorkDir/results/1-fix-briefs.json" }
+        # §6.11.6: the runner baseline; every test passes through the runner unless a test says otherwise.
+        Mock -ModuleName Run Invoke-MutRunnerTests {
+            $script:CallLog.Add('Invoke-MutRunnerTests')
+            [pscustomobject]@{ Ok = $true; Reason = $null; Passed = 1; Failed = 0; Tests = @([pscustomobject]@{ CodeunitId = 50300; Function = 'F'; Result = 'Pass'; Error = $null }) }
+        }
     }
 
     It 'hands the baseline flaky tests to the mutant loop and to the export (§6.11.2)' {
@@ -244,6 +249,106 @@ Describe 'Invoke-MutRunPipeline (fully mocked backend/lib boundary)' {
         Invoke-MutRunPipeline -Config $script:Config -RunNo 2 | Out-Null
 
         Should -Invoke -ModuleName Run Test-MutSoapRunner -Times 0 -Exactly
+    }
+
+    It 'with testTransport soap, runs every test codeunit through the runner with no mutant active; a test failing there makes its kills unreliable (§6.11.6)' {
+        $script:Config | Add-Member -NotePropertyName testTransport -NotePropertyValue 'soap'
+        Mock -ModuleName Run Test-MutSoapRunner { $script:CallLog.Add('Test-MutSoapRunner'); return $true }
+        Mock -ModuleName Run Invoke-MutRunnerTests {
+            $script:CallLog.Add('Invoke-MutRunnerTests')
+            [pscustomobject]@{ Ok = $true; Reason = $null; Passed = 1; Failed = 1; Tests = @(
+                    [pscustomobject]@{ CodeunitId = 50300; Function = 'F'; Result = 'Pass'; Error = $null }
+                    [pscustomobject]@{ CodeunitId = 50300; Function = 'OpensPage'; Result = 'Fail'; Error = "Unexpected CLR exception thrown.: System.NotSupportedException`r`n   at X" }
+                ) }
+        }
+        Mock -ModuleName Run Write-Warning {}
+
+        Invoke-MutRunPipeline -Config $script:Config -RunNo 1 | Out-Null
+
+        Should -Invoke -ModuleName Run Invoke-MutRunnerTests -Times 1 -Exactly -ParameterFilter { @($CodeunitIds).Count -eq 1 -and $CodeunitIds[0] -eq 50300 -and $TimeoutSec -ge 120 }
+        $log = @($script:CallLog)
+        $log.IndexOf('Invoke-MutRunnerTests') | Should -BeGreaterThan $log.IndexOf('Test-MutSoapRunner')
+        $log.IndexOf('Invoke-MutRunnerTests') | Should -BeLessThan $log.IndexOf('Build-MutSchemata')
+        # The loop judges kills against flaky and runner-failing tests alike.
+        Should -Invoke -ModuleName Run Invoke-MutMutantLoop -Times 1 -Exactly -ParameterFilter { @($FlakyTests).Count -eq 1 -and $FlakyTests[0].test -eq 'C:OpensPage' }
+        # The export keeps them apart: no flaky test, one runner-failing test.
+        Should -Invoke -ModuleName Run Export-MutResults -Times 1 -Exactly -ParameterFilter {
+            @($FlakyTests).Count -eq 0 -and @($RunnerFailingTests).Count -eq 1 -and $RunnerFailingTests[0].test -eq 'C:OpensPage' -and
+            $RunnerFailingTests[0].error -eq 'Unexpected CLR exception thrown.: System.NotSupportedException'
+        }
+        Should -Invoke -ModuleName Run Write-Warning -ParameterFilter { $Message -like '*C:OpensPage*fails through the runner*' }
+        $saved = Get-Content -Path (Join-Path $script:WorkDir 'runs/1/runner-baseline.json') -Raw | ConvertFrom-Json
+        @($saved.tests).Count | Should -Be 1
+        $saved.tests[0].test | Should -Be 'C:OpensPage'
+    }
+
+    It 'with testTransport soap and every test passing through the runner, nothing is unreliable' {
+        $script:Config | Add-Member -NotePropertyName testTransport -NotePropertyValue 'soap'
+        Mock -ModuleName Run Test-MutSoapRunner { return $true }
+
+        Invoke-MutRunPipeline -Config $script:Config -RunNo 1 | Out-Null
+
+        Should -Invoke -ModuleName Run Invoke-MutMutantLoop -Times 1 -Exactly -ParameterFilter { @($FlakyTests).Count -eq 0 }
+        Should -Invoke -ModuleName Run Export-MutResults -Times 1 -Exactly -ParameterFilter { @($RunnerFailingTests).Count -eq 0 }
+        Join-Path $script:WorkDir 'runs/1/runner-baseline.json' | Should -Exist
+    }
+
+    It 'with testTransport cli (or none), there is no runner baseline' {
+        Invoke-MutRunPipeline -Config $script:Config -RunNo 1 | Out-Null
+
+        Should -Invoke -ModuleName Run Invoke-MutRunnerTests -Times 0 -Exactly
+        Join-Path $script:WorkDir 'runs/1/runner-baseline.json' | Should -Not -Exist
+    }
+
+    It 'a saved runner-baseline.json is read again on a resume; the runner is not called' {
+        $script:Config | Add-Member -NotePropertyName testTransport -NotePropertyValue 'soap'
+        Mock -ModuleName Run Test-MutSoapRunner { return $true }
+        $runDir = Join-Path $script:WorkDir 'runs/1'
+        New-Item -ItemType Directory -Path $runDir -Force | Out-Null
+        '{ "tests": [ { "test": "C:Saved", "error": "x" } ], "skippedCodeunits": [] }' | Set-Content -Path (Join-Path $runDir 'runner-baseline.json') -Encoding UTF8
+
+        Invoke-MutRunPipeline -Config $script:Config -RunNo 1 | Out-Null
+
+        Should -Invoke -ModuleName Run Invoke-MutRunnerTests -Times 0 -Exactly
+        Should -Invoke -ModuleName Run Invoke-MutMutantLoop -Times 1 -Exactly -ParameterFilter { @($FlakyTests).Count -eq 1 -and $FlakyTests[0].test -eq 'C:Saved' }
+    }
+
+    It 'a runner baseline call that fails or throws is a warning: the codeunit is left out and the run goes on' {
+        $script:Config | Add-Member -NotePropertyName testTransport -NotePropertyValue 'soap'
+        $script:Config.testApp.testCodeunits = @(50300, 50301)
+        Mock -ModuleName Run Test-MutSoapRunner { return $true }
+        Mock -ModuleName Run Invoke-MutRunnerTests {
+            if ($CodeunitIds[0] -eq 50300) { throw 'HTTP 503' }
+            [pscustomobject]@{ Ok = $false; Reason = 'timed out'; Passed = 0; Failed = 0; Tests = @() }
+        }
+        Mock -ModuleName Run Write-Warning {}
+
+        Invoke-MutRunPipeline -Config $script:Config -RunNo 1 | Out-Null
+
+        Should -Invoke -ModuleName Run Invoke-MutMutantLoop -Times 1 -Exactly -ParameterFilter { @($FlakyTests).Count -eq 0 }
+        Should -Invoke -ModuleName Run Write-Warning -ParameterFilter { $Message -like '*runner baseline*50300*HTTP 503*' }
+        Should -Invoke -ModuleName Run Write-Warning -ParameterFilter { $Message -like '*runner baseline*50301*timed out*' }
+        $saved = Get-Content -Path (Join-Path $script:WorkDir 'runs/1/runner-baseline.json') -Raw | ConvertFrom-Json
+        @($saved.skippedCodeunits) | Should -Be @(50300, 50301)
+    }
+
+    It '-SkipBaseline takes the codeunit names for the runner baseline from baseline.json' {
+        $script:Config | Add-Member -NotePropertyName testTransport -NotePropertyValue 'soap'
+        Mock -ModuleName Run Test-MutSoapRunner { return $true }
+        Mock -ModuleName Run Invoke-MutRunnerTests {
+            [pscustomobject]@{ Ok = $true; Reason = $null; Passed = 0; Failed = 1; Tests = @([pscustomobject]@{ CodeunitId = 50300; Function = 'OpensPage'; Result = 'Fail'; Error = 'boom' }) }
+        }
+        Mock -ModuleName Run Write-Warning {}
+        $runDir = Join-Path $script:WorkDir 'runs/1'
+        New-Item -ItemType Directory -Path $runDir -Force | Out-Null
+        $baselineDoc = [pscustomobject]@{ tests = @(); durationsByCodeunit = @{ '50300' = 1000 }; repeats = 3; flakyTests = @(); codeunitNames = @{ '50300' = 'A Codeunit Name Longer Than Thirty Chars' } }
+        ($baselineDoc | ConvertTo-Json -Depth 10) | Set-Content -Path (Join-Path $runDir 'baseline.json') -Encoding UTF8
+        '{}' | Set-Content -Path (Join-Path $runDir 'coverage.json') -Encoding UTF8
+        '{}' | Set-Content -Path (Join-Path $runDir 'references.json') -Encoding UTF8
+
+        Invoke-MutRunPipeline -Config $script:Config -RunNo 1 -SkipBaseline | Out-Null
+
+        Should -Invoke -ModuleName Run Invoke-MutMutantLoop -Times 1 -Exactly -ParameterFilter { @($FlakyTests).Count -eq 1 -and $FlakyTests[0].test -eq 'A Codeunit Name Longer Than Th:OpensPage' }
     }
 
     It 'writes the fix briefs after a complete export' {

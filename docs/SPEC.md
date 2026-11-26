@@ -1193,6 +1193,7 @@ read the same text whichever of the two wrote the row.
 | `Remove-MutRunnerState -Env -BatchId` | string | `DeleteRunnerState` for that batch (`deleted` or `not found`); throws when no value is returned. |
 | `Invoke-MutMutantBatch -Env -CodeunitIds -MutantIds -RunNo -MutantBudgetSec` | `@{ Results; HungMutantId; FaultMutantId; Fault; Stopped }` | Generates a `BatchId` and starts `RunMutants` on a background runspace (the §6.5.6 runspace pattern), with client timeout `MutantIds.Count × MutantBudgetSec + 60`. It polls `Get-MutRunnerState` every 5 s; the poll interval is injectable for tests. Two rules declare a **hang**: (1) the row for this `BatchId` has a non-zero `Mutant Id` for more than `MutantBudgetSec` on the server clock (`ServerNowUtc − MutantStartedAt`); (2) no row appears within 60 s, or the batch exceeds its client timeout. On a hang it calls `Stop-MutRunnerBatch`; an unconfirmed stop throws `RunnerStopFailed`. **The batch has ended only when its row shows `Finished = true` or its stop was confirmed.** A `TimedOut` or `Dropped` call is not an outage: polling continues until one of those holds. A `Fault` with the row still unfinished and its `Mutant Id` not advancing for 10 s is treated like a hang, but reported as `FaultMutantId`. `Results` come from the return value when the call finished, otherwise from GET `mutantResults` for the batch's mutant ids (rows committed before the hang, S6). **`HungMutantId`/`FaultMutantId` are never included in `Results`**; whether a row already exists for them is reported in `Results` only through the loop's own GET (§6.10.4). A batch whose row was seen `Finished` and whose return value arrived deletes its row (`DeleteRunnerState`, best effort). |
 | `Test-MutSoapRunner -Env` | `$true`/`$false` | `GetRunnerState` answers without a fault. False when Mutation Core is older than 1.1.0.0 or the service is missing (it cannot tell 1.1.0.0 from the required 1.1.1.0). Uses the 30 s state-call timeout. |
+| `Invoke-MutRunnerTests -Env -CodeunitIds -TimeoutSec` | `@{ Ok; Reason; Passed; Failed; Tests }` | `RunTests` for the codeunits, with no mutant active (§6.11.6). `Ok` is false, with `Reason`, on a fault, a timeout, a drop or an empty answer. |
 
 `GetRunnerState`, `StopRunner` and `DeleteRunnerState` use a 30 s client timeout (`RunMutants` uses the batch's client
 timeout, `RunTests` the health timeout).
@@ -1381,6 +1382,45 @@ are of this kind.
 - **Acceptance.** Pester: the flag for both reason prefixes, an assertion reason, a missing reason and a
   non-`Killed` row; `crashKills` and unchanged scores; the summary line and table present and omitted.
 
+#### 6.11.6 Runner baseline (mutant-fixer run 1115)
+The baseline (§6.5.4 step 3) runs through the backend's test jobs. With `testTransport = "soap"` the mutants run
+through the `MUTRunner` web service, in a web-service session. Some tests pass in a test job and fail in that
+session whatever the code does: a web-service session cannot open a `TestPage`
+(`NavSession.CreateNavTestService()` throws `NotSupportedException`). Such a test fails for every mutant it
+covers, and each of those mutants is scored `Killed`. In run 1115 all 20 kills came from three such tests.
+- **Backend (§6.10.3).** `Invoke-MutRunnerTests -Env -CodeunitIds -TimeoutSec` calls `RunTests` (§6.10.2), which
+  runs with no mutant active, and returns `@{ Ok; Reason; Passed; Failed; Tests = @( @{ CodeunitId; Function;
+  Result; Error } ) }`. `Result` is `Pass` or `Fail`. A test is failed when its result is `Failure` or it has an
+  error text, because the result is a caption in the session language. `Ok` is false, with `Reason`, on a fault,
+  a timeout, a drop or an empty answer.
+- **Step.** Only with `testTransport = "soap"`, right after the `Test-MutSoapRunner` check that follows the
+  baseline: `Get-MutRunnerBaselineStep` calls `Invoke-MutRunnerTests` once per baseline test codeunit. The client
+  timeout is three times the codeunit's baseline duration plus 60 s, and at least 120 s. Every failed test is a
+  **runner-failing test**: `{ test, error }`, where `test` is the §6.11.2 key and `error` uses the §6.11.1 reason
+  format. A baseline test that fails in every pass has already aborted the run, so a test listed here passed in
+  the baseline. A warning names each one.
+- **Codeunit names.** `RunTests` reports the codeunit id. `baseline.json` gains `codeunitNames`
+  (`{ "<id>": "<name>" }`, from baseline passes 2..N, §6.11.2), and the key is built from it. Without a name
+  (`baseline.repeats = 1`) the key uses the id, cannot match a kill, and a warning says so.
+- **Failure of the step.** A call that is not `Ok`, or that throws, is a warning. Its codeunit is left out and the
+  run goes on: the step never fails a run.
+- **Output.** `<RunDir>/runner-baseline.json`: `{ tests: [ { test, error } ], skippedCodeunits: [ <id> ] }`,
+  `tests` sorted by `test`. A later call for the same run reads the file and does not call the runner.
+- **Effect on kills.** The mutant loop gets the flaky tests and the runner-failing tests as one list, so §6.11.3
+  applies unchanged: the killing test is the first failing test that is in neither list, and a kill whose known
+  failing tests are all in the lists is `unreliable`. `strictScore` counts it as survived.
+- **Results (§7.3, §7.5).** `results/<N>.json` gains `runnerFailingTests` (`[ { test, error } ]`, always present,
+  empty on the `cli` transport). When it is not empty the summary has a **"Tests that fail through the runner"**
+  table.
+- **Limits.** A mutant that only a runner-failing test covers is `Killed` and `unreliable`, never `Survived`: the
+  runner cannot tell whether the test would have caught it. `Stop-MutRunnerBatch` (§6.10.3) confirms a stop with a
+  `RunTests` call that must report no failure, so a health codeunit with a runner-failing test is never confirmed.
+- **Acceptance.** Pester: `Invoke-MutRunnerTests` (arguments, pass and fail, a result caption in another
+  language, not `Ok`); the step's order, timeout, saved file, resume, warning on a failed or throwing call, and no
+  call on the `cli` transport; the loop receives both lists and the export receives them apart; names from
+  `baseline.json` with `-SkipBaseline`; `runnerFailingTests` in the results and the summary table present and
+  omitted.
+
 ---
 
 ## 7. Data schemas
@@ -1406,11 +1446,12 @@ are of this kind.
   "score": 0.7692,
   "strictScore": 0.7692,
   "aborted": false,
+  "runnerFailingTests": [],
   "mutants": [{ "id": 1, "stableKey": "…", "objectId": 50200, "procedure": "IsLargeOrder", "line": 4, "operator": "REL",
                 "original": "…", "mutated": "…", "status": "Survived", "killingTest": null, "durationMs": 4200,
                 "coveringTests": [50300], "reason": null, "unreliable": false, "crashKill": false }] }
 ```
-`reason` is the error text of an `Error` row and the kill reason of a `Killed` row (§6.11.1), else `null`. `unreliable` is `true` only on a `Killed` row whose every known failing test is flaky (§6.11.3). `strictScore` and `totals.unreliableKills` are defined in §6.11.3; `unreliableKills` is a subset of `killed` and is not one of the nine buckets that sum to `total`. `crashKill` and `totals.crashKills` (§6.11.5) mark the kills where the test crashed instead of failing an assertion; `crashKills` is a subset of `killed` in the same way.
+`reason` is the error text of an `Error` row and the kill reason of a `Killed` row (§6.11.1), else `null`. `unreliable` is `true` only on a `Killed` row whose every known failing test is flaky (§6.11.3). `strictScore` and `totals.unreliableKills` are defined in §6.11.3; `unreliableKills` is a subset of `killed` and is not one of the nine buckets that sum to `total`. `crashKill` and `totals.crashKills` (§6.11.5) mark the kills where the test crashed instead of failing an assertion; `crashKills` is a subset of `killed` in the same way. `runnerFailingTests` (§6.11.6) lists the tests that fail through the runner with no mutant active, as `{ test, error }`; a kill by such tests alone is `unreliable`.
 `score = (killed + timeout) / (total − equivalent − compileError − error − pending)`, rounded to 4 decimals. `Uncovered` counts as survived in the denominator — the suite genuinely did not reach it. When the denominator is **zero or negative** (e.g. every mutant errored), `score` is **`null`**, not `0` — `0` is indistinguishable in JSON from “the suite killed nothing”, which is the opposite of what a collapsed run means. `Error` and `Pending` are **excluded** from the denominator: an infrastructure failure (a failed job, a zero-test result, an unhandled exception) is not evidence about the test suite, and leaving it in silently scored every such mutant as a survivor. The totals buckets MUST sum to `total`, and `<RunNo>-summary.md` (§7.5) MUST render an Errors section alongside Survivors/Timeouts/Compile errors/Uncovered. `aborted` (F3c) is `true` only for the partial export §6.5.4 step 9 writes when the mutant loop stopped on its environment-recovery cap rather than completing every mutant (§6.5.6) — `false` on every normal, complete run. It exists so a consumer never has to infer partial-ness from `totals.pending -gt 0`, an implicit artifact of how an unrun mutant happens to render rather than a deliberate marker.
 
 ### 7.4 `fixtures/expected-results.json`
@@ -1420,7 +1461,7 @@ are of this kind.
 One entry per row of §6.3.3 (26 entries). Matching key: `(procedure, operator, mutated)`; for DEL, `mutated` is `""` and `original` is added to the key.
 
 ### 7.5 `results/<RunNo>-summary.md`
-Sections: header table (run no, backend, environment, AUT version, started/finished, wall-clock), totals table, score, "Survivors" table (id, object, procedure, line, operator, original → mutated, covering tests), "Timeouts" table, "Compile errors" table, **"Errors" table** (mutants whose run failed for infrastructure reasons — a failed job, a zero-test result, an unhandled exception — with the reason), "Uncovered" count, and a **Pending** count when any mutant was never reached. The totals table carries all nine buckets of §7.3 and they MUST sum to `total`. When non-empty, a **"Flaky baseline tests"** table and an **"Unreliable kills"** table follow, and the score section shows `strictScore` next to `score` (§6.11.3). With a crash kill, the score section also carries the crash-kill line and a **"Crash kills"** table follows (§6.11.5).
+Sections: header table (run no, backend, environment, AUT version, started/finished, wall-clock), totals table, score, "Survivors" table (id, object, procedure, line, operator, original → mutated, covering tests), "Timeouts" table, "Compile errors" table, **"Errors" table** (mutants whose run failed for infrastructure reasons — a failed job, a zero-test result, an unhandled exception — with the reason), "Uncovered" count, and a **Pending** count when any mutant was never reached. The totals table carries all nine buckets of §7.3 and they MUST sum to `total`. When non-empty, a **"Flaky baseline tests"** table and an **"Unreliable kills"** table follow, and the score section shows `strictScore` next to `score` (§6.11.3). With a crash kill, the score section also carries the crash-kill line and a **"Crash kills"** table follows (§6.11.5). When `runnerFailingTests` is not empty, a **"Tests that fail through the runner"** table (test, error) comes before the "Unreliable kills" table (§6.11.6).
 
 ### 7.6 `docs/spike-baseline.md` template
 Sections in this order, each a table with columns `Metric | Value | Backend | Date | Source task`: Environment (create s, start s, activation-app install s, deps install s, AUT deploy s, test app deploy s); U1/U3; U4; U5; U6; U7 (single-method job s, 95155 s, 95913 s, per-test median s); U8 (API base URL pattern); U9 (job id field name, CSV header line); Tier B baseline (pass/fail per codeunit); Hand mutants (20 rows + kill count); Recommendation (`go` / `no-go`, `--max-mutants` default, `timeouts.jobOverheadSeconds`, `schemata.publishStrategy`).

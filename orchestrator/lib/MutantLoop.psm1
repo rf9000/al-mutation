@@ -101,6 +101,12 @@ if (-not (Get-Command -Name 'Test-MutSoapRunner' -ErrorAction SilentlyContinue))
         throw 'Test-MutSoapRunner: no backend module has been imported into this session.'
     }
 }
+if (-not (Get-Command -Name 'Invoke-MutRunnerTests' -ErrorAction SilentlyContinue)) {
+    function global:Invoke-MutRunnerTests {
+        param($Env, [int[]]$CodeunitIds, [int]$TimeoutSec)
+        throw 'Invoke-MutRunnerTests: no backend module has been imported into this session.'
+    }
+}
 
 # FIX (F3, run 8 -- finding I6): recovery-attempt cap (Confirm-MutEnvironmentServing, below).
 # Reset to 0 at the top of every Invoke-MutMutantLoop call. A small constant per the task brief

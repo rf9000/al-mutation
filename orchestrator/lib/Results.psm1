@@ -370,7 +370,10 @@ function Get-MutSummaryMarkdown {
         $StrictScore = $null,
         # §6.11.2: the baseline's flaky tests [ {test; passed; failed; error} ]; the table is omitted when empty.
         [AllowNull()]
-        [object[]]$FlakyTests = @()
+        [object[]]$FlakyTests = @(),
+        # §6.11.6: the tests that fail through the runner with no mutant active [ {test; error} ].
+        [AllowNull()]
+        [object[]]$RunnerFailingTests = @()
     )
 
     $lines = @()
@@ -528,6 +531,22 @@ function Get-MutSummaryMarkdown {
         $lines += ''
     }
 
+    $runnerFailingList = @(@($RunnerFailingTests) | Where-Object { $null -ne $_ })
+    if ($runnerFailingList.Count -gt 0) {
+        $lines += '## Tests that fail through the runner'
+        $lines += ''
+        $lines += 'These tests pass in the baseline but fail through the runner with no mutant active. A kill by such a test alone is unreliable.'
+        $lines += ''
+        $lines += Format-MutMarkdownTableRow @('Test', 'Error')
+        $lines += Format-MutMarkdownTableRow @('---', '---')
+        foreach ($entry in $runnerFailingList) {
+            $entryError = ''
+            if ((Test-MutHasProperty $entry 'error') -and ($null -ne $entry.error)) { $entryError = [string]$entry.error }
+            $lines += Format-MutMarkdownTableRow @([string]$entry.test, $entryError)
+        }
+        $lines += ''
+    }
+
     $unreliableRows = @($MergedRows | Where-Object { $_.status -eq 'Killed' -and $_.unreliable })
     if ($unreliableRows.Count -gt 0) {
         $lines += '## Unreliable kills'
@@ -627,7 +646,10 @@ function Export-MutResults {
         [switch]$Partial,
         # §6.11.2: the baseline's flaky tests [ {test; passed; failed; error} ], for the summary.
         [AllowNull()]
-        [object[]]$FlakyTests = @()
+        [object[]]$FlakyTests = @(),
+        # §6.11.6: the tests that fail through the runner with no mutant active [ {test; error} ].
+        [AllowNull()]
+        [object[]]$RunnerFailingTests = @()
     )
 
     if (-not (Test-Path -Path $OutDir)) {
@@ -665,6 +687,8 @@ function Export-MutResults {
         # only exists at all because Get-MutMergedMutantRows (below) happens to render an
         # unrun mutant as Pending.
         aborted         = [bool]$Partial
+        # §6.11.6: always present; empty on the cli transport.
+        runnerFailingTests = @(@($RunnerFailingTests) | Where-Object { $null -ne $_ })
         mutants         = $mergedRows
     }
 
@@ -686,7 +710,7 @@ function Export-MutResults {
     $summaryMarkdown = Get-MutSummaryMarkdown -RunNo $RunNo -Backend $Config.backend -EnvironmentName $Env.Name `
         -AutVersion $Config.aut.version -StartedUtc $startedUtcString -FinishedUtc $finishedUtcString `
         -WallClock $wallClock -Totals $totals -Score $score -MergedRows $mergedRows `
-        -StrictScore $strictScore -FlakyTests @($FlakyTests)
+        -StrictScore $strictScore -FlakyTests @($FlakyTests) -RunnerFailingTests @($RunnerFailingTests)
 
     $summaryPath = Join-Path $OutDir "$RunNo-summary.md"
     [System.IO.File]::WriteAllText($summaryPath, $summaryMarkdown, $noBomUtf8)
